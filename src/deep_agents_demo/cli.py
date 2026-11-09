@@ -1,0 +1,124 @@
+"""Command-line entry point for the Deep Agents demo.
+
+    uv run deep-agents-demo
+    uv run deep-agents-demo --thread another-conversation
+
+Settings come from .env in the project root (see .env.example); existing shell
+variables take precedence. Local agent files live in demo_workspace/, memory and
+document vectors in data/, and conversation checkpoints in
+demo_checkpoints.sqlite. The same user/thread resumes history; a new thread
+keeps the user's memories. The harness owns the model/tool loop; the loop below
+only handles chat. Context compression is built in, so a short demo may never
+trigger it.
+"""
+import argparse
+import json
+import os
+from contextlib import ExitStack
+from pathlib import Path
+
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+from deep_agents_demo.agent import build_agent
+from deep_agents_demo.config import CHECKPOINTS, DATA, ENV_FILE, WORKSPACE, enabled
+from deep_agents_demo.memory import close_memory, make_memory, memory_tools
+from deep_agents_demo.rag import DocumentIndex
+from deep_agents_demo.sandbox import make_backend
+from deep_agents_demo.workspace import seed_files
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        prog="deep-agents-demo", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--thread", default="city-demo")
+    parser.add_argument("--user", default="demo-user", help="Mem0 user namespace; not authentication")
+    parser.add_argument("--index-docs", type=Path, help="Rebuild RAG index from .md/.txt files, then exit")
+    parser.add_argument("--prompt", help="Run one prompt instead of interactive chat")
+    return parser, parser.parse_args()
+
+
+def index_docs(parser, folder: Path) -> None:
+    folder = folder.resolve()
+    if not folder.is_dir():
+        parser.error("--index-docs must name an existing directory")
+    index = DocumentIndex(DATA)
+    try:
+        print(f"Indexed {index.index(folder)} chunks from {folder}")
+    finally:
+        index.close()
+
+
+def stream_turn(agent, prompt, config) -> None:
+    # One stream call runs the entire multi-step agent loop.
+    # Include child updates so delegation/tool calls are observable.
+    for namespace, update in agent.stream(
+        {"messages": [{"role": "user", "content": prompt}]},
+        config=config, stream_mode="updates", subgraphs=True,
+    ):
+        for node, state in update.items():
+            if not isinstance(state, dict):
+                continue
+            label = "subagent" if namespace else "main"
+            for message in state.get("messages", []):
+                print(f"\n[{label} / {node}]")
+                message.pretty_print()
+            if "todos" in state:
+                print("[plan]", json.dumps(state["todos"], ensure_ascii=False))
+
+
+def main() -> None:
+    parser, args = parse_args()
+    # Explicit path: works even when launched from another directory.
+    # Existing shell environment variables take precedence over .env.
+    load_dotenv(ENV_FILE, override=False)
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    model_name = os.environ.get("AGENT_MODEL", "").strip()
+    endpoint = os.environ.get("OPENAI_BASE_URL", "").strip() or None
+    if not args.index_docs and (not api_key or api_key == "your-api-key"
+                                or not model_name or model_name == "your-model-id"):
+        parser.error("Fill in OPENAI_API_KEY and AGENT_MODEL in .env in the project root "
+                     "(or set them in your environment).")
+    seed_files(WORKSPACE)
+    DATA.mkdir(exist_ok=True)
+    if args.index_docs:
+        index_docs(parser, args.index_docs)
+        return
+
+    model = ChatOpenAI(model=model_name, api_key=api_key, base_url=endpoint)
+    config = {"configurable": {"thread_id": json.dumps([args.user, args.thread])}, "recursion_limit": 80}
+    print("Try: Plan a city scene with trees, cars and buildings under 100000 triangles.")
+    print("Then: Remember that I prefer pine trees.\nType exit to quit.")
+    with ExitStack() as stack:
+        saver = stack.enter_context(SqliteSaver.from_conn_string(str(CHECKPOINTS)))
+        extras = []
+        use_mem0 = enabled("MEMORY_ENABLED")
+        if use_mem0:
+            memory = make_memory(DATA)
+            stack.callback(close_memory, memory)
+            extras.extend(memory_tools(memory, args.user))
+        if enabled("RAG_ENABLED"):
+            index = DocumentIndex(DATA)
+            stack.callback(index.close)
+            extras.append(index.tool())
+        backend, prefix, _sandbox = make_backend(WORKSPACE, DATA)
+        agent = build_agent(model, saver, backend, extras, prefix, use_mem0)
+        while True:
+            try:
+                prompt = args.prompt or input("\nYou: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if prompt.lower() in {"exit", "quit"}:
+                break
+            if not prompt:
+                continue
+            stream_turn(agent, prompt, config)
+            if args.prompt:
+                break
+
+
+if __name__ == "__main__":
+    main()
