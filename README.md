@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/ohGioggio/deep-agents-demo/actions/workflows/ci.yml"><img src="https://github.com/ohGioggio/deep-agents-demo/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"/></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat&logo=python&logoColor=white" alt="Python 3.11+"/></a>
   <a href="https://docs.astral.sh/uv/"><img src="https://img.shields.io/badge/uv-managed-de5fe9?style=flat&logo=uv&logoColor=white" alt="uv"/></a>
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat" alt="License: MIT"/></a>
