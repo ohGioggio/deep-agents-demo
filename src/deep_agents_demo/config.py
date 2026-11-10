@@ -1,5 +1,13 @@
-"""Project paths and environment settings."""
+"""Project paths and typed settings.
+
+Settings are read from the environment once, by ``Settings.from_env()``, and
+passed to whatever needs them. No other module reads environment variables, so
+every dependency on configuration is visible in a function signature, and
+tests build a ``Settings`` instead of patching ``os.environ``.
+"""
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # The package is installed in editable mode from src/, so the project root is
@@ -11,42 +19,146 @@ WORKSPACE = ROOT / "demo_workspace"
 CHECKPOINTS = ROOT / "demo_checkpoints.sqlite"
 ENV_FILE = ROOT / ".env"
 
+RECALL_MODES = ("tool", "auto", "both")
+SANDBOX_PROVIDERS = ("none", "daytona", "openshell")
+PLACEHOLDERS = {"your-api-key", "your-model-id"}
 
-def setting(name, fallback=None):
-    """Return a stripped environment variable, or ``fallback`` when blank."""
-    return os.getenv(name, "").strip() or fallback
+
+@dataclass(frozen=True)
+class ChatSettings:
+    api_key: str | None
+    model: str | None
+    base_url: str | None
+
+    def problem(self) -> str | None:
+        """Why a chat model can't be used, or None if it can."""
+        if not self.api_key or not self.model or {self.api_key, self.model} & PLACEHOLDERS:
+            return ("Fill in OPENAI_API_KEY and AGENT_MODEL in .env in the project root "
+                    "(or set them in your environment).")
+        return None
 
 
-def enabled(name, default="true"):
-    return setting(name, default).lower() == "true"
+@dataclass(frozen=True)
+class EmbeddingSettings:
+    model: str = "text-embedding-3-small"
+    api_key: str | None = None
+    base_url: str = "https://api.openai.com/v1"
+    provider: str = "auto"
+    dimensions: int = 1536
+    batch_size: int = 16
+
+
+@dataclass(frozen=True)
+class MemorySettings:
+    enabled: bool = True
+    recall_mode: str = "auto"
+    # Mem0's extraction model; from_env fills blanks from the chat settings.
+    model: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+
+
+@dataclass(frozen=True)
+class SandboxSettings:
+    provider: str = "none"
+    daytona_api_key: str | None = None
+    daytona_sandbox_id: str | None = None
+    openshell_name: str = "deep-agents-demo"
+    openshell_workspace: str = "default"
+    openshell_workdir: str = "/sandbox"
+
+
+@dataclass(frozen=True)
+class Paths:
+    data: Path = DATA
+    workspace: Path = WORKSPACE
+    checkpoints: Path = CHECKPOINTS
+
+
+@dataclass(frozen=True)
+class Settings:
+    chat: ChatSettings
+    embeddings: EmbeddingSettings = field(default_factory=EmbeddingSettings)
+    memory: MemorySettings = field(default_factory=MemorySettings)
+    sandbox: SandboxSettings = field(default_factory=SandboxSettings)
+    rag_enabled: bool = True
+    requests_per_minute: float = 0.0  # 0 = no cap
+    paths: Paths = field(default_factory=Paths)
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] = os.environ) -> "Settings":
+        """Read and validate every setting. Raises ValueError with a readable message."""
+
+        def get(name, default=None):
+            return (env.get(name) or "").strip() or default
+
+        def flag(name, default="true"):
+            return get(name, default).lower() == "true"
+
+        def number(name, default, kind=int):
+            raw = get(name, str(default))
+            try:
+                return kind(raw)
+            except ValueError:
+                raise ValueError(f"{name} must be a number, not {raw!r}") from None
+
+        chat = ChatSettings(api_key=get("OPENAI_API_KEY"), model=get("AGENT_MODEL"),
+                            base_url=get("OPENAI_BASE_URL"))
+        recall_mode = get("MEMORY_RECALL", "auto").lower()
+        if recall_mode not in RECALL_MODES:
+            raise ValueError(f"MEMORY_RECALL must be one of: {', '.join(RECALL_MODES)}")
+        provider = get("SANDBOX_PROVIDER", "none").lower()
+        if provider not in SANDBOX_PROVIDERS:
+            raise ValueError(f"SANDBOX_PROVIDER must be one of: {', '.join(SANDBOX_PROVIDERS)}")
+        if provider == "daytona" and not get("DAYTONA_API_KEY"):
+            raise ValueError("Set DAYTONA_API_KEY to enable sandbox execution")
+        batch_size = number("EMBEDDING_BATCH_SIZE", 16)
+        if batch_size < 1:
+            raise ValueError("EMBEDDING_BATCH_SIZE must be at least 1")
+        return cls(
+            chat=chat,
+            embeddings=EmbeddingSettings(
+                model=get("EMBEDDING_MODEL", "text-embedding-3-small"),
+                api_key=get("EMBEDDING_API_KEY", chat.api_key),
+                base_url=get("EMBEDDING_BASE_URL", "https://api.openai.com/v1"),
+                provider=get("EMBEDDING_PROVIDER", "auto"),
+                dimensions=number("EMBEDDING_DIMENSIONS", 1536),
+                batch_size=batch_size,
+            ),
+            memory=MemorySettings(
+                enabled=flag("MEMORY_ENABLED"),
+                recall_mode=recall_mode,
+                model=get("MEMORY_MODEL", chat.model),
+                api_key=get("MEMORY_API_KEY", chat.api_key),
+                base_url=get("MEMORY_BASE_URL", chat.base_url),
+            ),
+            sandbox=SandboxSettings(
+                provider=provider,
+                daytona_api_key=get("DAYTONA_API_KEY"),
+                daytona_sandbox_id=get("DAYTONA_SANDBOX_ID"),
+                openshell_name=get("OPENSHELL_SANDBOX_NAME", "deep-agents-demo"),
+                openshell_workspace=get("OPENSHELL_WORKSPACE", "default"),
+                openshell_workdir=get("OPENSHELL_WORKDIR", "/sandbox"),
+            ),
+            rag_enabled=flag("RAG_ENABLED"),
+            requests_per_minute=number("API_REQUESTS_PER_MINUTE", 0, float),
+        )
 
 
 _limiters = {}
 
 
-def shared_rate_limiter():
-    """One limiter for every chat and embedding request, or None if unlimited.
+def rate_limiter(requests_per_minute: float):
+    """One shared limiter per rate, or None if unlimited.
 
-    API_REQUESTS_PER_MINUTE caps the total across chat and embeddings, because a
-    provider's limit (NVIDIA's free tier: about 40 per minute) usually applies
-    to the API key, not to each kind of request.
+    The cap covers chat and embeddings together, because a provider's limit
+    (NVIDIA's free tier: about 40 per minute) usually applies to the API key,
+    not to each kind of request. The same rate always returns the same limiter.
     """
-    rpm = float(setting("API_REQUESTS_PER_MINUTE", "0") or 0)
-    if rpm <= 0:
+    if requests_per_minute <= 0:
         return None
-    if rpm not in _limiters:
+    if requests_per_minute not in _limiters:
         from langchain_core.rate_limiters import InMemoryRateLimiter
-        _limiters[rpm] = InMemoryRateLimiter(requests_per_second=rpm / 60,
-                                             check_every_n_seconds=0.1, max_bucket_size=1)
-    return _limiters[rpm]
-
-
-def embedding_settings():
-    return {
-        "model": setting("EMBEDDING_MODEL", "text-embedding-3-small"),
-        "api_key": setting("EMBEDDING_API_KEY", setting("OPENAI_API_KEY")),
-        "base_url": setting("EMBEDDING_BASE_URL", "https://api.openai.com/v1"),
-        "provider": setting("EMBEDDING_PROVIDER", "auto"),
-        "rate_limiter": shared_rate_limiter(),
-        "batch_size": int(setting("EMBEDDING_BATCH_SIZE", "16")),
-    }
+        _limiters[requests_per_minute] = InMemoryRateLimiter(
+            requests_per_second=requests_per_minute / 60, check_every_n_seconds=0.1, max_bucket_size=1)
+    return _limiters[requests_per_minute]

@@ -107,10 +107,10 @@ class RetryTests(unittest.TestCase):
                          "after a split, later batches start at the size that worked")
 
     def test_batch_size_setting(self):
-        from unittest.mock import patch
-        from deep_agents_demo.config import embedding_settings
-        with patch.dict("os.environ", {"EMBEDDING_BATCH_SIZE": "1"}):
-            self.assertEqual(embedding_settings()["batch_size"], 1)
+        from deep_agents_demo.config import EmbeddingSettings, Settings
+        self.assertEqual(Settings.from_env({"EMBEDDING_BATCH_SIZE": "1"}).embeddings.batch_size, 1)
+        embed = CompatibleEmbeddings.from_settings(EmbeddingSettings(api_key="k", batch_size=1))
+        self.assertEqual(embed.batch_size, 1)
         embed, client = self.embeddings(ok_response(), ok_response(), batch_size=1)
         embed.embed_documents(["a", "b"])
         self.assertEqual(client.embeddings.create.call_count, 2)
@@ -143,14 +143,12 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(limiter.acquire.call_count, 2)
 
     def test_shared_rate_limiter_follows_the_setting(self):
-        from unittest.mock import patch
-        from deep_agents_demo.config import shared_rate_limiter
-        with patch.dict("os.environ", {"API_REQUESTS_PER_MINUTE": ""}):
-            self.assertIsNone(shared_rate_limiter())
-        with patch.dict("os.environ", {"API_REQUESTS_PER_MINUTE": "40"}):
-            first, second = shared_rate_limiter(), shared_rate_limiter()
-            self.assertIs(first, second, "chat and embeddings must share one limiter")
-            self.assertAlmostEqual(first.requests_per_second, 40 / 60)
+        from deep_agents_demo.config import Settings, rate_limiter
+        self.assertIsNone(rate_limiter(Settings.from_env({}).requests_per_minute))
+        rpm = Settings.from_env({"API_REQUESTS_PER_MINUTE": "40"}).requests_per_minute
+        first, second = rate_limiter(rpm), rate_limiter(rpm)
+        self.assertIs(first, second, "chat and embeddings must share one limiter")
+        self.assertAlmostEqual(first.requests_per_second, 40 / 60)
 
 
 if __name__ == "__main__":

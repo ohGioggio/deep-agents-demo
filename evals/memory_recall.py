@@ -25,7 +25,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,10 +32,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from deepagents.backends import FilesystemBackend  # noqa: E402
 
+from deep_agents_demo import app  # noqa: E402
 from deep_agents_demo.agent import build_agent  # noqa: E402
-from deep_agents_demo.config import shared_rate_limiter  # noqa: E402
-from deep_agents_demo.memory import (RECALL_MODES, AutoRecallMiddleware, close_memory,  # noqa: E402
-                                     make_memory, memory_tools)
+from deep_agents_demo.config import RECALL_MODES, Settings  # noqa: E402
+from deep_agents_demo.memory import AutoRecallMiddleware, close_memory, make_memory, memory_tools  # noqa: E402
 from deep_agents_demo.workspace import seed_files  # noqa: E402
 
 USER = "eval-user"
@@ -72,11 +71,13 @@ def grade(name, answer, keywords):
             and not any(h in words for h in HEDGES.get(name, [])))
 
 
-def model_from_env():
+def settings_from_env() -> Settings:
     load_dotenv(ROOT / ".env", override=False)
-    return ChatOpenAI(model=os.environ["AGENT_MODEL"], api_key=os.environ["OPENAI_API_KEY"],
-                      base_url=os.environ.get("OPENAI_BASE_URL") or None,
-                      rate_limiter=shared_rate_limiter(), max_retries=6)
+    settings = Settings.from_env()
+    problem = settings.chat.problem()
+    if problem:
+        raise SystemExit(problem)
+    return settings
 
 
 def run_turn(agent, prompt, thread):
@@ -97,11 +98,11 @@ def run_turn(agent, prompt, thread):
     }
 
 
-def run_mode(mode, model, run_index):
+def run_mode(mode, settings, model, run_index):
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         tmp = Path(tmp)
         os.environ["MEM0_DIR"] = str(tmp / "mem0_internal")
-        memory = make_memory(tmp)
+        memory = make_memory(tmp, settings.memory, settings.embeddings, app.embeddings(settings))
         try:
             for fact in SEED:
                 memory.add([{"role": "user", "content": fact}], user_id=USER, infer=False)
@@ -159,18 +160,19 @@ def main():
     parser.add_argument("--modes", nargs="+", choices=RECALL_MODES, default=list(RECALL_MODES))
     parser.add_argument("--runs", type=int, default=1)
     args = parser.parse_args()
-    model = model_from_env()
+    settings = settings_from_env()
+    model = app.chat_model(settings)
     rows = []
     for run_index in range(1, args.runs + 1):
         for mode in args.modes:
             print(f"run {run_index}, mode {mode}", flush=True)
-            rows.extend(run_mode(mode, model, run_index))
+            rows.extend(run_mode(mode, settings, model, run_index))
     table = summarize(rows, args.modes)
     print("\n" + table)
     out = ROOT / "data" / "evals"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"memory_recall-{datetime.now():%Y%m%d-%H%M%S}.json"
-    path.write_text(json.dumps({"model": os.environ.get("AGENT_MODEL"), "runs": args.runs,
+    path.write_text(json.dumps({"model": settings.chat.model, "runs": args.runs,
                                 "summary": table, "rows": rows}, indent=2, default=str), encoding="utf-8")
     print(f"\nSaved {path.relative_to(ROOT)}")
 

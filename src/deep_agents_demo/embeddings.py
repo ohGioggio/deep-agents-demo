@@ -45,6 +45,12 @@ class CompatibleEmbeddings(Embeddings):
         # Shrinks when the server rejects a batch, so later batches start at a size that works.
         self.batch_size = max(1, int(batch_size))
 
+    @classmethod
+    def from_settings(cls, settings, rate_limiter=None):
+        """Build from ``config.EmbeddingSettings``."""
+        return cls(settings.model, settings.api_key, settings.base_url, settings.provider,
+                   rate_limiter=rate_limiter, batch_size=settings.batch_size)
+
     def _create(self, retry_server_errors=True, **kwargs):
         """One request, with backoff on rate limits and transient failures.
 

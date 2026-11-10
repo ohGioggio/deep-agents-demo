@@ -5,17 +5,15 @@ import uuid
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient, models
 
-from deep_agents_demo.config import embedding_settings
-from deep_agents_demo.embeddings import CompatibleEmbeddings
 
 
 class DocumentIndex:
     """A separate Qdrant collection for local Markdown/text source passages."""
     collection = "project_documents"
 
-    def __init__(self, data, embeddings=None):
+    def __init__(self, data, embeddings):
         self.client = QdrantClient(path=str(data / "document_vectors"))
-        self.embeddings = embeddings or CompatibleEmbeddings(**embedding_settings())
+        self.embeddings = embeddings
 
     def index(self, folder):
         paths = sorted(p for p in folder.rglob("*")

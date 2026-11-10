@@ -536,10 +536,13 @@ EMBEDDING_DIMENSIONS=4096
 
 ```text
 src/deep_agents_demo/
-├── cli.py          # command-line entry point and chat loop
+├── cli.py          # parses arguments and dispatches; nothing else
+├── config.py       # Settings: every setting, read from the environment once and validated
+├── app.py          # composition root: builds model, memory, documents, sandbox and agent
+├── chat.py         # interactive chat loop, slash commands and streamed output
+├── commands.py     # one-shot commands: index docs, clear sandbox, manage chats
 ├── agent.py        # deep agent, system prompt and researcher subagent
-├── catalog.py      # fictional asset catalog and its tools
-├── config.py       # project paths and environment settings
+├── catalog.py      # example tools: fictional asset catalog
 ├── workspace.py    # copies seed/ into demo_workspace/ on first run
 ├── seed/           # starter memory file and skills (SKILL.md files)
 ├── memory.py       # Mem0 memory: remember, recall, list, forget, automatic recall
@@ -547,9 +550,13 @@ src/deep_agents_demo/
 ├── rag.py          # Qdrant document index and the search_docs tool
 ├── embeddings.py   # OpenAI / NVIDIA-compatible embedding client
 ├── threads.py      # chat management: list, show, rename, delete
-├── sandbox.py      # backend selection: local files, OpenShell or Daytona
+├── sandbox.py      # backend selection: local files, OpenShell or Daytona (lazy)
 └── openshell_backend.py  # OpenShell sandbox backend for Deep Agents
 ```
+
+Settings flow one way: `cli.py` reads them once into a frozen `Settings`, and
+`app.py` passes each component only the part it needs. No other module reads
+environment variables, so every dependency is visible in a function signature.
 
 ## Where data is stored
 

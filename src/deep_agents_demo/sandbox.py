@@ -4,9 +4,6 @@ import shlex
 from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse
 from deepagents.backends.sandbox import BaseSandbox
 
-from deep_agents_demo.config import setting
-
-PROVIDERS = ("none", "daytona", "openshell")
 
 # Empties the working directory and removes the sandbox user's own top-level
 # entries in the temp directory. If the working directory lives inside the temp
@@ -106,39 +103,37 @@ class LazySandbox(BaseSandbox):
         return backend.download_files(paths)
 
 
-def make_backend(workspace, data, stack, say=print):
+def make_backend(settings, workspace, data, stack, say=print):
     """Return ``(backend, skills_prefix, workdir)``.
 
     With a sandbox, normal paths are remote and only ``/instructions/`` maps to
-    the local skills. ``stack`` (an ExitStack) receives any cleanup callbacks.
+    the local skills. ``settings`` is a ``config.SandboxSettings`` (already
+    validated); ``stack`` (an ExitStack) receives any cleanup callbacks.
     """
     from deepagents.backends import CompositeBackend, FilesystemBackend
-    provider = setting("SANDBOX_PROVIDER", "none")
     local = FilesystemBackend(root_dir=str(workspace), virtual_mode=True)
-    if provider == "none":
+    if settings.provider == "none":
         return local, "", None
-    if provider == "daytona":
-        if not setting("DAYTONA_API_KEY"):
-            raise ValueError("Set DAYTONA_API_KEY to enable sandbox execution")
-        remote = LazySandbox(lambda: _daytona(data), "Daytona sandbox", say)
+    if settings.provider == "daytona":
+        remote = LazySandbox(lambda: _daytona(data, settings.daytona_sandbox_id),
+                             "Daytona sandbox", say)
         workdir = "/home/daytona"
-    elif provider == "openshell":
-        name = setting("OPENSHELL_SANDBOX_NAME", "deep-agents-demo")
-        workdir = setting("OPENSHELL_WORKDIR", "/sandbox")
-        remote = LazySandbox(lambda: _openshell(stack, name, workdir),
-                             f"OpenShell sandbox '{name}'", say)
+    elif settings.provider == "openshell":
+        workdir = settings.openshell_workdir
+        remote = LazySandbox(lambda: _openshell(stack, settings),
+                             f"OpenShell sandbox '{settings.openshell_name}'", say)
     else:
-        raise ValueError(f"SANDBOX_PROVIDER must be one of: {', '.join(PROVIDERS)}")
+        raise ValueError(f"Unknown sandbox provider {settings.provider!r}")
     backend = CompositeBackend(default=remote, routes={"/instructions/": local})
     return backend, "/instructions", workdir
 
 
-def _daytona(data):
+def _daytona(data, sandbox_id=None):
+    # The Daytona client reads DAYTONA_API_KEY from the environment itself.
     from daytona import Daytona
     from langchain_daytona import DaytonaSandbox
     client = Daytona()
     id_file = data / "daytona_sandbox_id.txt"
-    sandbox_id = setting("DAYTONA_SANDBOX_ID")
     if not sandbox_id and id_file.exists():
         sandbox_id = id_file.read_text().strip()
     sandbox = client.get(sandbox_id) if sandbox_id else client.create()
@@ -146,8 +141,8 @@ def _daytona(data):
     return DaytonaSandbox(sandbox=sandbox, timeout=120)
 
 
-def _openshell(stack, name, workdir):
+def _openshell(stack, settings):
     from deep_agents_demo.openshell_backend import OpenShellBackend, connect
-    client, session = connect(name, setting("OPENSHELL_WORKSPACE", "default"))
+    client, session = connect(settings.openshell_name, settings.openshell_workspace)
     stack.callback(client.close)
-    return OpenShellBackend(session, workdir=workdir)
+    return OpenShellBackend(session, workdir=settings.openshell_workdir)

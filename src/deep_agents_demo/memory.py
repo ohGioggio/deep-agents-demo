@@ -6,8 +6,7 @@ import os
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
 
-from deep_agents_demo.config import embedding_settings, setting
-from deep_agents_demo.embeddings import CompatibleEmbeddings, Mem0EmbeddingAdapter
+from deep_agents_demo.embeddings import Mem0EmbeddingAdapter
 from deep_agents_demo.memory_policy import find_secrets, redact
 
 
@@ -29,13 +28,18 @@ for _name in ("mem0.utils.spacy_models", "mem0.vector_stores.qdrant"):
     logging.getLogger(_name).addFilter(_OptionalExtrasFilter())
 
 
-def make_memory(data):
+def make_memory(data, memory_settings, embedding_settings, embeddings):
+    """Mem0 with a local Qdrant index in ``data``.
+
+    ``embeddings`` (a CompatibleEmbeddings) replaces Mem0's own embedder, so
+    memory and RAG share retries, batching and NVIDIA's passage/query modes.
+    """
+    # Mem0 reads these two from the environment; they are its interface, not ours.
     os.environ.setdefault("MEM0_DIR", str(data / "mem0_internal"))
     os.environ.setdefault("MEM0_TELEMETRY", "false")
     from mem0 import Memory
-    e = embedding_settings()
-    dimensions = int(setting("EMBEDDING_DIMENSIONS", "1536"))
-    if e["model"] == "nvidia/nemotron-3.5-embed-8b" and dimensions != 4096:
+    dimensions = embedding_settings.dimensions
+    if embedding_settings.model == "nvidia/nemotron-3.5-embed-8b" and dimensions != 4096:
         raise ValueError("nvidia/nemotron-3.5-embed-8b returns 4096 dimensions in this demo. "
                          "Set EMBEDDING_DIMENSIONS=4096; migrate any existing 1536-wide memory index.")
     memory = Memory.from_config({
@@ -46,18 +50,18 @@ def make_memory(data):
             "embedding_model_dims": dimensions,
         }},
         "llm": {"provider": "openai", "config": {
-            "model": setting("MEMORY_MODEL", setting("AGENT_MODEL")),
-            "api_key": setting("MEMORY_API_KEY", setting("OPENAI_API_KEY")),
-            "openai_base_url": setting("MEMORY_BASE_URL", setting("OPENAI_BASE_URL")),
+            "model": memory_settings.model,
+            "api_key": memory_settings.api_key,
+            "openai_base_url": memory_settings.base_url,
         }},
         "embedder": {"provider": "openai", "config": {
-            "model": e["model"], "api_key": e["api_key"],
-            "openai_base_url": e["base_url"],
+            "model": embedding_settings.model, "api_key": embedding_settings.api_key,
+            "openai_base_url": embedding_settings.base_url,
         }},
     })
     # Mem0's stock OpenAI embedder does not send NVIDIA's input_type.
     # Use a shared adapter for add/update=passage and search=query.
-    memory.embedding_model = Mem0EmbeddingAdapter(CompatibleEmbeddings(**e), dimensions)
+    memory.embedding_model = Mem0EmbeddingAdapter(embeddings, dimensions)
     return memory
 
 
@@ -72,7 +76,6 @@ def close_memory(memory):
             seen.add(id(client))
 
 
-RECALL_MODES = ("tool", "auto", "both")
 RECALL_TOP_K = 5
 
 

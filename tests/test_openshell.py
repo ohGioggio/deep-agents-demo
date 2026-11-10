@@ -190,18 +190,19 @@ class ConnectTests(unittest.TestCase):
 
 class ProviderSelectionTests(unittest.TestCase):
     def test_local_shell_provider_is_rejected(self):
-        with patch.dict("os.environ", {"SANDBOX_PROVIDER": "local"}):
-            with self.assertRaisesRegex(ValueError, "none, daytona, openshell"):
-                make_backend(Path("."), Path("."), contextlib.ExitStack())
+        from deep_agents_demo.config import Settings
+        with self.assertRaisesRegex(ValueError, "none, daytona, openshell"):
+            Settings.from_env({"SANDBOX_PROVIDER": "local"})
 
     def test_openshell_connects_on_first_use_and_routes_skills_locally(self):
         client = Mock()
         client.exec.return_value = ExecResult(exit_code=0, stdout="hi\n", stderr="")
         said = []
-        with patch.dict("os.environ", {"SANDBOX_PROVIDER": "openshell"}), \
-                patch("openshell.SandboxClient.from_active_cluster", return_value=client) as connect, \
+        from deep_agents_demo.config import SandboxSettings
+        with patch("openshell.SandboxClient.from_active_cluster", return_value=client) as connect, \
                 contextlib.ExitStack() as stack:
-            backend, prefix, workdir = make_backend(Path("."), Path("."), stack, said.append)
+            backend, prefix, workdir = make_backend(SandboxSettings(provider="openshell"),
+                                                    Path("."), Path("."), stack, said.append)
             self.assertEqual((prefix, workdir), ("/instructions", "/sandbox"))
             self.assertIsInstance(backend.default, LazySandbox)
             connect.assert_not_called()  # starting a chat doesn't need the sandbox
