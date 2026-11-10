@@ -188,6 +188,21 @@ class ApproverTests(Workspace):
         self.assertIn("too vague", decision["message"])
 
 
+class ConcurrencyTests(Workspace):
+    def test_parallel_tool_threads_do_not_corrupt_the_store(self):
+        from concurrent.futures import ThreadPoolExecutor
+        names = [f"skill-{i}" for i in range(12)]
+        for name in names:
+            self.create(name)
+        remove = {tool.__name__: tool for tool in self.manager.tools()}["remove_skill"]
+        with ThreadPoolExecutor(len(names)) as pool:
+            results = list(pool.map(remove, names))
+        self.assertTrue(all('"saved": true' in r for r in results), results)
+        self.assertEqual(self.store.list_current("user", "alice"), [])
+        for name in names:
+            self.assertEqual([v.version for v in self.store.history("user", "alice", name)], [1, 2])
+
+
 class MarketplaceTests(Workspace):
     def bob(self):
         return SkillManager(self.store, "bob", self.root)
@@ -333,6 +348,27 @@ class EndToEndTests(Workspace):
                 self.run_turn(delegate, create, AIMessage(content="sub done"), answers=answers)
                 versions = [v.version for v in self.store.history("user", "alice", "via-sub")]
                 self.assertEqual(versions, expected)
+
+    def test_parallel_approved_calls_in_one_step(self):
+        """Regression: "remove all my skills" made three calls in one step; LangGraph ran
+        them in parallel threads on one SQLite connection and the store crashed."""
+        self.create("first-skill")
+        self.create("second-skill")
+        bob = SkillManager(self.store, "bob", self.root)
+        bob.apply(bob.plan_create("shared", "Shared.", "1. Hi."))
+        bob.apply(bob.plan_publish("shared"))
+        self.manager.apply(self.manager.plan_install("shared"))
+        step = AIMessage(content="", tool_calls=[
+            {"name": "remove_skill", "id": "r1", "args": {"name": "first-skill", "scope": "user"}},
+            {"name": "remove_skill", "id": "r2", "args": {"name": "second-skill", "scope": "user"}},
+            {"name": "uninstall_skill", "id": "u1", "args": {"name": "shared"}}])
+        with patch("builtins.print"):
+            messages = self.run_turn(step, answers=["a", "a", "a"])
+        results = [str(m.content) for m in messages if m.type == "tool"]
+        self.assertEqual(len(results), 3)
+        self.assertTrue(all('"saved": true' in r for r in results), results)
+        self.assertEqual(self.store.list_current("user", "alice"), [])
+        self.assertEqual(self.store.installed("alice"), [])
 
     def test_skill_tools_need_approval_everywhere(self):
         import deep_agents_demo.agent as agent_module

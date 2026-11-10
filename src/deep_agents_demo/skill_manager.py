@@ -13,6 +13,7 @@ import difflib
 import json
 import re
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -188,6 +189,9 @@ class SkillManager:
         self.installed_rel = f"installed-skills/{folder}/"
         self.folder = Path(workspace) / self.folder_rel
         self.installed_folder = Path(workspace) / self.installed_rel
+        # Approved calls from one step run in parallel threads: apply them one at a time,
+        # so each re-plans against the latest state and folder rewrites don't overlap.
+        self.lock = threading.RLock()
 
     def _owner(self, scope):
         if scope not in SCOPES:
@@ -309,6 +313,10 @@ class SkillManager:
 
     # applying ---------------------------------------------------------------------
     def apply(self, change: SkillChange) -> dict:
+        with self.lock:
+            return self._apply(change)
+
+    def _apply(self, change: SkillChange) -> dict:
         if change.errors:
             return {"saved": False, "errors": change.errors}
         result = {"saved": True, "action": change.action, "name": change.name, "scope": change.scope}
@@ -326,6 +334,10 @@ class SkillManager:
 
     def sync_folder(self):
         """Rewrite the user's skill folders from the database (the source of truth)."""
+        with self.lock:
+            self._sync_folder()
+
+    def _sync_folder(self):
         installed = [self._live(name, MARKETPLACE) for name in self.store.installed(self.owner)]
         for folder, skills in ((self.folder, self.store.list_current(USER, self.owner)),
                                (self.installed_folder, [s for s in installed if s])):
@@ -366,8 +378,10 @@ class SkillManager:
 
     # the agent's tools ----------------------------------------------------------------
     def tools(self):
-        def done(change):
-            return json.dumps(self.apply(change), default=str)
+        def done(plan, *args):
+            # Plan and apply under one lock, so parallel calls see each other's results.
+            with self.lock:
+                return json.dumps(self._apply(plan(*args)), default=str)
 
         def create_skill(name: str, description: str, instructions: str,
                          files: dict[str, str] | None = None, scope: str = "user") -> str:
@@ -376,7 +390,7 @@ class SkillManager:
             SKILL.md body, as clear steps. files: optional extra files, relative path -> text.
             scope: "user" (default) or "marketplace" (shared with everyone; only if asked).
             The user approves the change before it is saved."""
-            return done(self.plan_create(name, description, instructions, files, scope))
+            return done(self.plan_create, name, description, instructions, files, scope)
 
         def update_skill(name: str, description: str | None = None, instructions: str | None = None,
                          files: dict[str, str] | None = None, delete_files: list[str] | None = None,
@@ -384,35 +398,35 @@ class SkillManager:
             """Update a skill (only when asked). Give only what changes: description,
             instructions (the whole new SKILL.md body), files to add or replace, or
             delete_files. scope: "user" (default) or "marketplace". Needs approval."""
-            return done(self.plan_update(name, description, instructions, files, delete_files, scope))
+            return done(self.plan_update, name, description, instructions, files, delete_files, scope)
 
         def remove_skill(name: str, scope: str = "user") -> str:
             """Remove a skill (only when asked); its history is kept. scope: "user" (default)
             or "marketplace" (removes it for everyone who installed it). Needs approval."""
-            return done(self.plan_remove(name, scope))
+            return done(self.plan_remove, name, scope)
 
         def import_skill(path: str, scope: str = "user") -> str:
             """Import a skill from a SKILL.md file or a folder containing one, on the user's
             machine (only when asked). scope: "user" (default) or "marketplace". Needs approval."""
-            return done(self.plan_import(path, scope))
+            return done(self.plan_import, path, scope)
 
         def restore_skill(name: str, version: int, scope: str = "user") -> str:
             """Restore an earlier version of a skill (see skill_history). Needs approval."""
-            return done(self.plan_restore(name, version, scope))
+            return done(self.plan_restore, name, version, scope)
 
         def publish_skill(name: str) -> str:
             """Publish one of the user's skills to the marketplace, as a new skill or a new
             version (only when asked). Needs approval."""
-            return done(self.plan_publish(name))
+            return done(self.plan_publish, name)
 
         def install_skill(name: str) -> str:
             """Install a marketplace skill for this user (only when asked; see
             browse_marketplace). It follows the marketplace's latest version. Needs approval."""
-            return done(self.plan_install(name))
+            return done(self.plan_install, name)
 
         def uninstall_skill(name: str) -> str:
             """Uninstall a marketplace skill for this user (only when asked). Needs approval."""
-            return done(self.plan_uninstall(name))
+            return done(self.plan_uninstall, name)
 
         def browse_marketplace(query: str = "") -> str:
             """Search the marketplace catalogue (empty query lists everything)."""
