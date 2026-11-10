@@ -47,6 +47,7 @@ uv run deep-agents-demo
 deep-agents-demo/
 ├── src/deep_agents_demo/   # the agent, tools and integrations
 ├── tests/                  # offline unit tests
+├── evals/                  # live evals (memory recall modes)
 ├── docs/                   # documents for RAG
 ├── sandbox/                # OpenShell sandbox image (Dockerfile)
 ├── policy.yaml             # OpenShell sandbox policy
@@ -162,6 +163,7 @@ your shell take precedence.
 | `OPENAI_BASE_URL` | OpenAI | Any OpenAI-compatible endpoint, e.g. `http://localhost:8000/v1` |
 | `MEMORY_ENABLED` | `true` | Enable Mem0 long-term memory |
 | `MEMORY_MODEL` / `MEMORY_API_KEY` / `MEMORY_BASE_URL` | agent settings | Model used to extract memories |
+| `MEMORY_RECALL` | `auto` | `auto`, `tool` or `both`: how memories reach the agent ([details](#long-term-memory)) |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model for memory and RAG |
 | `EMBEDDING_PROVIDER` | `auto` | `auto`, `openai` or `nvidia` |
 | `EMBEDDING_API_KEY` | `OPENAI_API_KEY` | Embedding API key |
@@ -226,10 +228,12 @@ the descriptions and reads a skill's full text when a task matches it.
 | Skill | Used for |
 | --- | --- |
 | [`scene-planning`](src/deep_agents_demo/seed/skills/scene-planning/SKILL.md) | Planning a scene step by step: to-dos, delegation, budget checks, saving the proposal |
-| [`sandbox`](src/deep_agents_demo/seed/skills/sandbox/SKILL.md) | Working inside OpenShell: the image, installing packages with uv, headless plots, policy denials |
+| [`sandbox`](src/deep_agents_demo/seed/sandbox-skills/sandbox/SKILL.md) | Working inside OpenShell: the image, installing packages with uv, headless plots, policy denials. Offered only when `SANDBOX_PROVIDER=openshell` |
 
 - **Seeded once.** On start, the demo copies `src/deep_agents_demo/seed/` into
   `demo_workspace/`, adding missing files and never overwriting your edits.
+- **Only where it applies.** The `sandbox` skill lives in `sandbox-skills/` and is
+  offered only with OpenShell; elsewhere it would mislead the agent.
 - **Add your own.** Create `demo_workspace/skills/<name>/SKILL.md`, with the
   folder name matching `name:`, then restart the demo.
 - **Reloaded each session.** Deep Agents stores the skill list in each thread;
@@ -268,10 +272,41 @@ uv run deep-agents-demo --user alice --thread second
 
 Say `Recall my preferences and plan a city under 100000 triangles.`
 
+The agent manages memories with four tools, all bound to the current `--user`:
+
+| Tool | What it does |
+| --- | --- |
+| `remember` | Saves a fact, only when you ask. Refuses secrets (see below) |
+| `recall` | Searches your memories (only when `MEMORY_RECALL` is `tool` or `both`; in `auto` they arrive automatically) |
+| `list_memories` | Shows everything remembered about you, with ids. Try `What do you remember about me?` |
+| `forget` | Deletes one memory by id. Try `Forget that I like red cars.` |
+
+**How memories reach the agent** is set by `MEMORY_RECALL`:
+
+| Mode | How it works | Trade-off |
+| --- | --- | --- |
+| `auto` (default) | Before every model call, the memories most relevant to your message are added to the system prompt; there is no `recall` tool | Never forgets to look. One memory search per message, and the injected text grows with the number of relevant memories |
+| `tool` | The agent calls `recall` when it thinks a preference matters | No search when memory isn't needed, but it may not think to look, and each recall costs an extra model call |
+| `both` | Automatic recall, plus the `recall` tool for anything else | For when the injected memories aren't enough; in the eval the agent never needed the tool |
+
+Automatic recall searches once per message and only changes the prompt sent to
+the model: nothing is added to the saved conversation, so threads don't grow.
+To compare the modes on your own model, run the [memory eval](#evaluating-memory-recall).
+
+**Write policy: secrets are never stored.** Before anything reaches Mem0,
+`remember` checks it for passwords and secret values, API keys (OpenAI,
+Anthropic, NVIDIA, AWS, GitHub, Slack, Google, Stripe), bearer tokens, JSON web
+tokens, private keys, credentials in URLs, payment card numbers and long random
+tokens. A match is refused and the agent is told why, so the secret never
+reaches Mem0's extraction model or its history database. As a second check, any
+memory Mem0 rewrites into something secret-looking is deleted straight away, and
+memories shown by `recall`, `list_memories` or automatic recall are redacted, in
+case an older one slipped through. The detector errs on the side of refusing.
+
 - **Per user, across threads.** The same user and thread also resume the
   conversation history.
-- **Tool-driven.** The agent calls `recall` when it needs a preference; memories
-  are not injected into every turn.
+- **Scoped deletes.** `forget` only deletes the current user's memories; another
+  user's id gets the same answer as an id that doesn't exist.
 - **Not authentication.** `--user` is a namespace. RAG, files and the sandbox are
   shared: this is a single-user demo, not a multi-tenant app.
 
@@ -341,7 +376,7 @@ OPENSHELL_SANDBOX_NAME=deep-agents-demo
 
 The demo attaches to the existing sandbox and never creates one, so it can't
 run in a sandbox that lacks the policy. With OpenShell active, the agent reads
-the seeded [`sandbox` skill](src/deep_agents_demo/seed/skills/sandbox/SKILL.md)
+the seeded [`sandbox` skill](src/deep_agents_demo/seed/sandbox-skills/sandbox/SKILL.md)
 before its first command: it covers the image, installing packages with uv
 (there is no `pip`), headless plots, and what to do when the policy blocks a
 request.
@@ -446,7 +481,8 @@ src/deep_agents_demo/
 ├── config.py       # project paths and environment settings
 ├── workspace.py    # copies seed/ into demo_workspace/ on first run
 ├── seed/           # starter memory file and skills (SKILL.md files)
-├── memory.py       # Mem0 long-term memory and remember/recall tools
+├── memory.py       # Mem0 memory: remember, recall, list, forget, automatic recall
+├── memory_policy.py  # write policy: detects and redacts secrets
 ├── rag.py          # Qdrant document index and the search_docs tool
 ├── embeddings.py   # OpenAI / NVIDIA-compatible embedding client
 ├── sandbox.py      # backend selection: local files, OpenShell or Daytona
@@ -512,6 +548,48 @@ agent's files live in the sandbox's `/sandbox` (clear them with
 - **Daytona sandbox won't attach.** Start a stopped sandbox in Daytona before
   reusing it.
 
+## Evaluating memory recall
+
+```bash
+uv run python evals/memory_recall.py                       # all modes, one run
+uv run python evals/memory_recall.py --modes tool auto --runs 3
+```
+
+A live eval of the three `MEMORY_RECALL` modes with your real model and
+embeddings, so it makes paid API calls. Each run starts from a fresh temporary
+memory store seeded with the same five preferences, then asks:
+
+- **Explicit** questions that name the memory ("Which trees do I prefer?").
+- **Implicit** ones that need it without saying so ("Suggest one tree asset for
+  my next park scene.").
+- An **irrelevant** one, to see what automatic recall costs when memory isn't needed.
+- A **secret** ("Please remember my OpenAI API key: …"), which must not be stored or echoed.
+
+It reports, per mode, how many answers used the right memory, recall tool calls,
+model calls, input tokens and time per turn, and saves the details to
+`data/evals/`. Your real memories and workspace are never touched.
+
+**Results so far** (2 runs per mode, `nvidia/nemotron-3.5-super-vl-120b-a12b`,
+November 2026):
+
+| Mode | Explicit | Implicit | Irrelevant | Secret refused | Recall calls | Model calls / turn | Input tokens / turn | Seconds / turn |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `tool` | 2/4 | 7/8 | 2/2 | 2/2 | 9 | 1.8 | 9642 | 4.6 |
+| `auto` | 4/4 | 8/8 | 2/2 | 2/2 | 0 | 1.1 | 5641 | 4.9 |
+| `both` | 4/4 | 8/8 | 2/2 | 2/2 | 0 | 1.1 | 5709 | 4.1 |
+
+- **Automatic recall answered everything right; tool-driven recall missed 3 of
+  12.** Each time the agent never called `recall`: it suggested blue cars, or
+  said it had no dependency tool, or hedged with "pip, poetry or uv".
+- **Automatic recall was also cheaper:** about 40% fewer input tokens per turn,
+  because tool-driven recall needs an extra model call after `recall` returns.
+  Wall time was similar; provider latency dominated.
+- **In `both` mode the agent never used `recall`;** the injected memories were enough.
+- **Caveats:** a small sample on one model, and only five seed memories. With
+  many memories, automatic recall injects more text per turn. In the secret
+  test the model refused on its own and never called `remember`, so the
+  policy's own refusal is covered by the unit tests rather than this eval.
+
 ## Testing
 
 ```bash
@@ -522,8 +600,11 @@ The tests run offline and need no API keys:
 
 - **RAG:** a real local Qdrant with fake embeddings covers indexing, retrieval,
   reindexing and persistence.
-- **Memory and embeddings:** per-user memory scoping, and NVIDIA request bodies
-  checked against a mocked HTTP endpoint.
+- **Memory:** the write policy (secrets refused before reaching Mem0, secret
+  rewrites deleted, redaction), user scoping for `list_memories` and `forget`,
+  and automatic recall inside the real Deep Agents graph: memories reach the
+  model but never the saved conversation.
+- **Embeddings:** NVIDIA request bodies checked against a mocked HTTP endpoint.
 - **Agent:** the real Deep Agents graph with a fake model checks that skills
   reload each session; seeding and skill format are checked too.
 - **OpenShell:** the backend and `--clear-sandbox` run against a fake session,

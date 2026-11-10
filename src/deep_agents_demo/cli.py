@@ -23,7 +23,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from deep_agents_demo.agent import build_agent
 from deep_agents_demo.config import CHECKPOINTS, DATA, ENV_FILE, WORKSPACE, enabled, setting
-from deep_agents_demo.memory import close_memory, make_memory, memory_tools
+from deep_agents_demo.memory import RECALL_MODES, AutoRecallMiddleware, close_memory, make_memory, memory_tools
 from deep_agents_demo.rag import DocumentIndex
 from deep_agents_demo.sandbox import clear_sandbox, make_backend
 from deep_agents_demo.workspace import seed_files
@@ -123,12 +123,17 @@ def main() -> None:
     print("Then: Remember that I prefer pine trees.\nType exit to quit.")
     with ExitStack() as stack:
         saver = stack.enter_context(SqliteSaver.from_conn_string(str(CHECKPOINTS)))
-        extras = []
+        extras, middleware = [], []
         use_mem0 = enabled("MEMORY_ENABLED")
+        recall_mode = setting("MEMORY_RECALL", "auto").lower()
+        if recall_mode not in RECALL_MODES:
+            parser.error(f"MEMORY_RECALL must be one of: {', '.join(RECALL_MODES)}")
         if use_mem0:
             memory = make_memory(DATA)
             stack.callback(close_memory, memory)
-            extras.extend(memory_tools(memory, args.user))
+            extras.extend(memory_tools(memory, args.user, recall_tool=recall_mode != "auto"))
+            if recall_mode != "tool":
+                middleware.append(AutoRecallMiddleware(memory, args.user))
         if enabled("RAG_ENABLED"):
             index = DocumentIndex(DATA)
             stack.callback(index.close)
@@ -136,7 +141,8 @@ def main() -> None:
         backend, prefix, workdir = make_backend(WORKSPACE, DATA, stack)
         # The seeded sandbox skill describes the OpenShell image and policy.
         sandbox_skill = setting("SANDBOX_PROVIDER", "none") == "openshell"
-        agent = build_agent(model, saver, backend, extras, prefix, use_mem0, workdir, sandbox_skill)
+        agent = build_agent(model, saver, backend, extras, prefix, use_mem0, workdir, sandbox_skill,
+                            recall_mode, middleware)
         reload_skills = True  # once per session, on the first turn
         while True:
             try:
