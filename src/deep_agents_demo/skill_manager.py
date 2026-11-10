@@ -91,13 +91,25 @@ def validate(name: str, files: dict) -> list[str]:
     return errors
 
 
-def warnings(files: dict) -> list[str]:
-    """Wording that might reveal a secret: shown to the user, who decides."""
+def declared_tools(files: dict) -> list[str]:
+    """The tool names a skill's SKILL.md lists under ``allowed-tools``."""
+    raw = split_skill_md(str(files.get("SKILL.md", "")))[0].get("allowed-tools") or ""
+    items = raw if isinstance(raw, list) else re.split(r"[\s,]+", str(raw))
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def warnings(files: dict, known_tools=None) -> list[str]:
+    """Shown to the user, who decides: wording that might reveal a secret, and tools
+    the skill lists that this agent doesn't have (e.g. an imported skill)."""
     found = []
     for path, text in sorted(files.items()):
         _credentials, wording = split_findings(find_secrets(str(text)))
         if wording:
             found.append(f"{path} mentions a password, token or key; check it holds no real value")
+    if known_tools is not None:
+        unknown = [name for name in declared_tools(files) if name not in known_tools]
+        if unknown:
+            found.append(f"allowed-tools lists tools this agent doesn't have: {', '.join(unknown)}")
     return found
 
 
@@ -156,6 +168,9 @@ class SkillChange:
                  f"({self.where()}), {versions}"]
         if self.description:
             lines.append(f"  {self.description}")
+        tools = declared_tools(self.after if self.after is not None else self.before or {})
+        if tools:
+            lines.append(f"  Tools it uses: {', '.join(tools)}")
         diff = list(self._diff_lines())
         added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
         removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
@@ -192,6 +207,9 @@ class SkillManager:
         # Approved calls from one step run in parallel threads: apply them one at a time,
         # so each re-plans against the latest state and folder rewrites don't overlap.
         self.lock = threading.RLock()
+        # Names from the tools registry, set once the agent's features are known; a
+        # skill's ``tools`` must come from it. None skips the check.
+        self.known_tools = None
 
     def _owner(self, scope):
         if scope not in SCOPES:
@@ -213,27 +231,43 @@ class SkillManager:
                              errors=list(errors))
         if after is not None and not change.errors:
             change.errors = validate(name, after)
-            change.warnings = warnings(after)
+            change.warnings = warnings(after, self.known_tools)
         return change
 
-    def plan_create(self, name, description, instructions, files=None, scope=USER):
+    def _tool_errors(self, tools):
+        """A skill's declared tools must exist in the registry (the agent can't add tools)."""
+        if tools is None:
+            return []
+        if not isinstance(tools, (list, tuple)) or not all(isinstance(t, str) for t in tools):
+            return ["tools must be a list of tool names"]
+        unknown = [t for t in tools if self.known_tools is not None and t not in self.known_tools]
+        if unknown:
+            return [f"no tool named {', '.join(unknown)} "
+                    f"(available: {', '.join(sorted(self.known_tools))})"]
+        return []
+
+    def plan_create(self, name, description, instructions, files=None, scope=USER, tools=None):
         if self._live(name, scope):
             return self._change("create", name, None, [f"a {scope} skill named {name!r} already "
                                                        "exists; use update_skill"], scope)
-        return self._change("create", name, {**(files or {}),
-                                             "SKILL.md": render_skill_md(name, description, instructions)},
-                            scope=scope)
+        extra = {"allowed-tools": " ".join(dict.fromkeys(tools))} if tools else None
+        after = {**(files or {}), "SKILL.md": render_skill_md(name, description, instructions, extra)}
+        return self._change("create", name, after, self._tool_errors(tools), scope=scope)
 
     def plan_update(self, name, description=None, instructions=None, files=None, delete_files=None,
-                    scope=USER):
+                    scope=USER, tools=None):
         current = self._live(name, scope)
         if current is None:
             return self._change("update", name, None, [f"no {scope} skill named {name!r}; use "
                                                        "create_skill"], scope)
         after = dict(current.files)
-        if description is not None or instructions is not None:
+        if description is not None or instructions is not None or tools is not None:
             front, body = split_skill_md(after["SKILL.md"])
             extra = {k: v for k, v in front.items() if k not in ("name", "description")}
+            if tools is not None:  # [] removes the declaration
+                extra.pop("allowed-tools", None)
+                if tools:
+                    extra["allowed-tools"] = " ".join(dict.fromkeys(tools))
             after["SKILL.md"] = render_skill_md(name, description or str(front.get("description", "")),
                                                 instructions if instructions is not None else body, extra)
         after.update(files or {})
@@ -242,7 +276,7 @@ class SkillManager:
                 return self._change("update", name, None, ["SKILL.md can't be deleted; use remove_skill"],
                                     scope)
             after.pop(path, None)
-        return self._change("update", name, after, scope=scope)
+        return self._change("update", name, after, self._tool_errors(tools), scope=scope)
 
     def plan_remove(self, name, scope=USER):
         if self._live(name, scope) is None:
@@ -378,27 +412,31 @@ class SkillManager:
 
     # the agent's tools ----------------------------------------------------------------
     def tools(self):
-        def done(plan, *args):
+        def done(plan, *args, **kwargs):
             # Plan and apply under one lock, so parallel calls see each other's results.
             with self.lock:
-                return json.dumps(self._apply(plan(*args)), default=str)
+                return json.dumps(self._apply(plan(*args, **kwargs)), default=str)
 
         def create_skill(name: str, description: str, instructions: str,
-                         files: dict[str, str] | None = None, scope: str = "user") -> str:
+                         files: dict[str, str] | None = None, scope: str = "user",
+                         tools: list[str] | None = None) -> str:
             """Create a new skill (only when the user asks). name: lowercase words joined by
             hyphens. description: what the skill does and when to use it. instructions: the
             SKILL.md body, as clear steps. files: optional extra files, relative path -> text.
             scope: "user" (default) or "marketplace" (shared with everyone; only if asked).
+            tools: names of existing tools the instructions use (saved as allowed-tools).
             The user approves the change before it is saved."""
-            return done(self.plan_create, name, description, instructions, files, scope)
+            return done(self.plan_create, name, description, instructions, files, scope, tools=tools)
 
         def update_skill(name: str, description: str | None = None, instructions: str | None = None,
                          files: dict[str, str] | None = None, delete_files: list[str] | None = None,
-                         scope: str = "user") -> str:
+                         scope: str = "user", tools: list[str] | None = None) -> str:
             """Update a skill (only when asked). Give only what changes: description,
-            instructions (the whole new SKILL.md body), files to add or replace, or
-            delete_files. scope: "user" (default) or "marketplace". Needs approval."""
-            return done(self.plan_update, name, description, instructions, files, delete_files, scope)
+            instructions (the whole new SKILL.md body), files to add or replace,
+            delete_files, or tools (the full new list of tools it uses; [] for none).
+            scope: "user" (default) or "marketplace". Needs approval."""
+            return done(self.plan_update, name, description, instructions, files, delete_files, scope,
+                        tools=tools)
 
         def remove_skill(name: str, scope: str = "user") -> str:
             """Remove a skill (only when asked); its history is kept. scope: "user" (default)
@@ -462,7 +500,8 @@ class SkillManager:
                   "browse_marketplace, list_skills and skill_history only read. Each change is "
                   "shown to the user for approval first; if it is rejected, don't retry unless "
                   "the user asks. The tools write the SKILL.md format themselves, so don't read "
-                  "other skills first. File tools can't write to skill folders. A change is "
+                  "other skills first. When a skill's steps use specific tools, list them in "
+                  "tools (existing tools only). File tools can't write to skill folders. A change is "
                   "available from the next message. ")
         return Feature(name="skills", prompt=prompt, tools=tuple(self.tools()),
                        skill_dirs=(self.installed_rel, self.folder_rel), approvals=GATED_TOOLS)

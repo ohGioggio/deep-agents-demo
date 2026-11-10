@@ -17,7 +17,9 @@ SUPERSEDED = {
     # "Use metres. Prefer realistic assets." test preferences.
     "memories/AGENTS.md": {"a3afad1c5f45a4f98d44599a28712dafd13e47d36ab3f65f0c150a555efacc9a"},
     # Scene-planning skill that used the removed asset-researcher subagent.
-    "skills/scene-planning/SKILL.md": {"f3c5e9a23b13fb33bb9ad2a3dde67d6b8a4f3ef2df4c1c50b17048cd7492ae16"},
+    # ... and the version before it declared its tools (allowed-tools).
+    "skills/scene-planning/SKILL.md": {"f3c5e9a23b13fb33bb9ad2a3dde67d6b8a4f3ef2df4c1c50b17048cd7492ae16",
+                                       "e0169860721c38ec66e3bcba27f5f5f5e3a79196d3f15f49a58d45eb3548e2c6"},
 }
 
 

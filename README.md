@@ -273,8 +273,8 @@ Skill change requested: CREATE 'greeting-style' (user: demo-user), new, v1
 
 | Tool | What it does |
 | --- | --- |
-| `create_skill` | A new skill: name, description, instructions, optional extra files |
-| `update_skill` | Change only what you ask: description, instructions, files |
+| `create_skill` | A new skill: name, description, instructions, optional extra files and the tools it uses |
+| `update_skill` | Change only what you ask: description, instructions, files, tools |
 | `remove_skill` | Remove a skill; its history is kept |
 | `import_skill` | Import a `SKILL.md`, or the folder holding one, from your machine |
 | `restore_skill` | Bring back an earlier version |
@@ -312,7 +312,31 @@ marketplace changes: approval is the gate.
   from the database on every start: edit skills through the agent, not by hand.
 
 Design notes: [design/specs/2026-11-10-agent-written-skills-design.md](design/specs/2026-11-10-agent-written-skills-design.md).
-A tools registry is planned next.
+
+## Tools: the registry and DISABLED_TOOLS
+
+[`tools.py`](src/deep_agents_demo/tools.py) keeps a registry of every tool the agent
+can have: Deep Agents' built-ins (files, shell, planning, delegation) and each
+feature's tools, with their group and a one-line description. It's for the code
+and its configuration: there's no chat command to list or switch tools.
+
+- **Turn tools off in `.env`:** `DISABLED_TOOLS=execute,delete` hides those tools
+  from the model and refuses them if called anyway, for the main agent and both
+  subagents. `ls`, `read_file` and `write_todos` can't be turned off (skills and
+  planning need them), and an unknown name prints a warning at start-up.
+- **No shell detour.** With `delete` off, `execute` also refuses commands that
+  delete files (`rm`, `rmdir`, `unlink`, `find -delete`, `git rm`/`git clean`,
+  Python's `os.remove`/`shutil.rmtree`). The patterns live in `SHELL_EQUIVALENTS`;
+  they're a safety net, so turn off `execute` too for a hard guarantee.
+- **Skills declare their tools** under `allowed-tools` in `SKILL.md`, which
+  `create_skill` and `update_skill` fill from their `tools` argument. Only tools
+  in the registry are accepted (the agent can't create tools); an imported skill
+  that lists other tools gets a warning in the approval summary.
+- **Skill-only tools stay out of the way.** A feature can mark tools
+  `skill_only`: the agent sees them only after it reads a skill that lists them.
+  The example catalog tools appear once the agent opens `scene-planning`.
+- **Conflicts are explained.** If a skill needs a turned-off tool, the agent is
+  told, so it says which tool is off instead of working around it.
 
 ## Searching your documents (RAG)
 
@@ -640,6 +664,7 @@ src/deep_agents_demo/
 ├── threads.py      # chat management: list, show, rename, delete
 ├── skill_manager.py  # agent-written skills: plan, validate, approve, save, tools
 ├── skill_store.py  # versioned skill storage in SQLite
+├── tools.py        # tools registry, DISABLED_TOOLS and skill-only tools
 ├── approvals.py    # the approval prompt for paused tool calls
 ├── guardrails.py   # risky actions (dangerous commands, delete, forget) ask first
 ├── sandbox.py      # backend selection: local files, OpenShell or Daytona (lazy)
@@ -661,6 +686,8 @@ skill folders), built in its own module: `memory_feature`, `documents_feature`,
   `PROVIDERS` (and listed in `config.SANDBOX_PROVIDERS`; a test keeps them in sync).
 - **A new slash command** is a `ChatSession` method decorated with `@command`;
   the lookup and `/help` are built from the decorators.
+- **A tool only a skill needs** is listed in its feature's `skill_only` and in
+  that skill's `allowed-tools`; the agent sees it once it reads the skill.
 - **A tool that needs your approval** is listed in its feature's `approvals`,
   either by name (always ask) or as `(name, when)` to ask only when `when(request)`
   says so; the chat loop then pauses before it runs and asks you.

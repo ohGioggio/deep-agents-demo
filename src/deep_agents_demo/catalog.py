@@ -29,5 +29,9 @@ def triangle_budget(asset_ids: list[str], copies: list[int]) -> str:
 
 
 def catalog_feature() -> Feature:
-    """The example catalog: both tools for the agent, the search for the researcher."""
-    return Feature(name="catalog", tools=(search_assets, triangle_budget), lookups=(search_assets,))
+    """The example catalog: both tools for the agent, the search for the researcher.
+
+    They are skill-only: the main agent sees them once it reads a skill that lists
+    them under ``allowed-tools`` (the example ``scene-planning``)."""
+    return Feature(name="catalog", tools=(search_assets, triangle_budget), lookups=(search_assets,),
+                   skill_only=("search_assets", "triangle_budget"))

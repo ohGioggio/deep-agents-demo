@@ -6,6 +6,7 @@ every dependency on configuration is visible in a function signature, and
 tests build a ``Settings`` instead of patching ``os.environ``.
 """
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,6 +84,7 @@ class Settings:
     sandbox: SandboxSettings = field(default_factory=SandboxSettings)
     rag_enabled: bool = True
     requests_per_minute: float = 0.0  # 0 = no cap
+    disabled_tools: tuple = ()        # tool names hidden from the agent and refused
     paths: Paths = field(default_factory=Paths)
 
     @classmethod
@@ -142,6 +144,8 @@ class Settings:
             ),
             rag_enabled=flag("RAG_ENABLED"),
             requests_per_minute=number("API_REQUESTS_PER_MINUTE", 0, float),
+            disabled_tools=tuple(dict.fromkeys(
+                name for name in re.split(r"[\s,]+", get("DISABLED_TOOLS", "")) if name)),
         )
 
 

@@ -11,7 +11,10 @@ from dataclasses import dataclass, field
 
 from deepagents import create_deep_agent
 from deepagents.middleware.filesystem import FilesystemPermission
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.agents.middleware import TodoListMiddleware
+
+from deep_agents_demo.tools import ToolAccess, ToolRegistry, shell_block, tool_name
 
 IDENTITY = (
     "You are a capable general-purpose assistant. Help with whatever the user asks: "
@@ -50,6 +53,7 @@ class Feature:
     skill_dirs: tuple = ()           # extra skill folders, relative to the skills prefix
     memory_sources: tuple = ()       # files for Deep Agents' file-based memory
     approvals: tuple = ()            # tools that pause for approval: name, or (name, when)
+    skill_only: tuple = ()           # tools hidden until a skill listing them is read
 
 
 def approval_configs(features) -> dict:
@@ -74,27 +78,52 @@ def approval_configs(features) -> dict:
     return configs
 
 
-def system_prompt(features=()) -> str:
+def system_prompt(features=(), has_researcher=None) -> str:
     """Identity, then each feature's section in order, then the closing rules."""
-    has_researcher = any(f.lookups for f in features)
+    if has_researcher is None:
+        has_researcher = any(f.lookups for f in features)
     return (IDENTITY + DELEGATION[has_researcher]
             + "".join(f.prompt for f in features) + CLOSING)
 
 
-def build_agent(model, checkpointer, backend, features=(), *, skills_prefix=""):
+def _skip_blocked(config, off):
+    """An execute approval that never asks about a command ToolAccess will refuse."""
+    when = config.get("when")
+
+    def ask(request):
+        command = str(request.tool_call.get("args", {}).get("command", ""))
+        return shell_block(command, off) is None and (when is None or when(request))
+    return {**config, "when": ask}
+
+
+def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", disabled_tools=()):
     """Assemble a deep agent from features.
 
     ``backend`` is where the file tools act (local files or a sandbox);
     ``skills_prefix`` is where skill folders are mounted on it ("" locally,
-    "/instructions" when a sandbox is the default backend).
+    "/instructions" when a sandbox is the default backend). ``disabled_tools``
+    are hidden and refused everywhere, subagents included (unknown and core
+    names are ignored; ``ToolRegistry.problems`` explains why).
     """
     features = tuple(features)
+    registry = ToolRegistry(features)
+    off = registry.disabled(disabled_tools)
     skill_sources = [f"{skills_prefix}/skills/",
                      *(f"{skills_prefix}/{d}" for f in features for d in f.skill_dirs)]
-    interrupt_on = approval_configs(features)
-    lookups = [tool for f in features for tool in f.lookups]
+    # A disabled tool is refused before it runs, so it never needs the user's approval.
+    interrupt_on = {name: config for name, config in approval_configs(features).items()
+                    if name not in off}
+    if "execute" in interrupt_on and off:
+        interrupt_on["execute"] = _skip_blocked(interrupt_on["execute"], off)
+    tools = [tool for f in features for tool in f.tools if tool_name(tool) not in off]
+    lookups = [tool for f in features for tool in f.lookups if tool_name(tool) not in off]
     memory_sources = [source for f in features for source in f.memory_sources]
-    subagents = [{
+    # Our own general-purpose subagent: the default one is built without caller
+    # middleware, so it would see disabled and skill-only tools. It inherits the main
+    # agent's tools, permissions and approvals.
+    general_purpose = {**GENERAL_PURPOSE_SUBAGENT, "model": model, "skills": skill_sources,
+                       "middleware": [ToolAccess(off, registry.skill_only())]}
+    researcher = [{
         "name": "researcher",
         "description": ("Read-only research helper: looks things up with the available "
                         "lookup tools (documents, catalog) and returns a concise summary "
@@ -103,11 +132,14 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix=""):
         "system_prompt": RESEARCHER_PROMPT,
         "tools": lookups,
         "model": model,
+        # Its lookups are its purpose, so only disabled tools are kept from it.
+        "middleware": [ToolAccess(off)],
     }] if lookups else []
+    subagents = [general_purpose, *researcher]
     return create_deep_agent(
         model=model,
-        tools=[tool for f in features for tool in f.tools],
-        system_prompt=system_prompt(features),
+        tools=tools,
+        system_prompt=system_prompt(features, has_researcher=bool(researcher)),
         backend=backend,
         # None, not []: any list (even empty) adds Deep Agents' file-memory middleware,
         # whose prompt tells the agent to save memories to files, competing with Mem0.
@@ -119,9 +151,8 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix=""):
                                           paths=[f"{source}**" for source in skill_sources])],
         # Paused for the user's decision before they run; subagents inherit this.
         interrupt_on=interrupt_on or None,
-        middleware=[TodoListMiddleware(), *(m for f in features for m in f.middleware)],
-        # Deep Agents also adds its built-in general-purpose subagent, which has
-        # every tool the main agent has.
+        middleware=[TodoListMiddleware(), *(m for f in features for m in f.middleware),
+                    ToolAccess(off, registry.skill_only())],
         subagents=subagents,
         checkpointer=checkpointer,
         # Deep Agents supplies summarization and large-output offloading.

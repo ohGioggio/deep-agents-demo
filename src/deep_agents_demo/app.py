@@ -23,6 +23,7 @@ from deep_agents_demo.sandbox import BackendSetup, make_backend
 from deep_agents_demo.skill_manager import SkillManager
 from deep_agents_demo.skill_store import SkillStore
 from deep_agents_demo.threads import Chats
+from deep_agents_demo.tools import ToolRegistry
 from deep_agents_demo.workspace import seed_files
 
 
@@ -99,9 +100,13 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
     setup = sandbox_backend(settings, stack, say)
     skills = skill_manager(settings, user, stack)
     guardrails = Guardrails()
-    agent = build_agent(chat_model(settings), saver, setup.backend,
-                        list(features(settings, user, stack, setup, skills, guardrails)),
-                        skills_prefix=setup.skills_prefix)
+    enabled = list(features(settings, user, stack, setup, skills, guardrails))
+    registry = ToolRegistry(enabled)
+    for problem in registry.problems(settings.disabled_tools):
+        say(f"Warning: {problem}")
+    skills.known_tools = registry.names()  # a skill may only declare tools that exist
+    agent = build_agent(chat_model(settings), saver, setup.backend, enabled,
+                        skills_prefix=setup.skills_prefix, disabled_tools=settings.disabled_tools)
 
     def preview(name, args):
         return skills.plan(name, args) or guardrails.preview(name, args)

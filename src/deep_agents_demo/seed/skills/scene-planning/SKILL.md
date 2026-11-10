@@ -1,6 +1,7 @@
 ---
 name: scene-planning
 description: Example skill. Plan a small 3D city scene from the fictional asset catalog within a triangle budget. Use only when the user asks for a 3D scene or city plan.
+allowed-tools: search_assets triangle_budget
 ---
 1. Create a short to-do plan using write_todos.
 2. Find tree, car and building options with search_assets (or ask the researcher subagent).

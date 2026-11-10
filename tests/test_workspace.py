@@ -68,7 +68,7 @@ class SkillFormatTests(unittest.TestCase):
         for skill in SEED_DIR.glob("*/*/SKILL.md"):
             # Windows checkouts may use CRLF line endings.
             text = skill.read_text(encoding="utf-8").replace("\r\n", "\n")
-            match = re.match(r"---\nname: (.+)\ndescription: (.+)\n---\n", text)
+            match = re.match(r"---\nname: (.+)\ndescription: (.+)\n(?:allowed-tools: .+\n)?---\n", text)
             self.assertIsNotNone(match, skill)
             self.assertEqual(match.group(1), skill.parent.name)
 
@@ -111,14 +111,16 @@ class FeatureAssemblyTests(unittest.TestCase):
                              Feature("documents", tools=(search_docs,), lookups=(search_docs,))])
         self.assertEqual([t.__name__ for t in kwargs["tools"]],
                          ["search_assets", "triangle_budget", "remember", "search_docs"])
-        [researcher] = kwargs["subagents"]
+        general, researcher = kwargs["subagents"]
+        self.assertEqual(general["name"], "general-purpose")
+        self.assertNotIn("tools", general, "it inherits the main agent's tools")
         self.assertEqual([t.__name__ for t in researcher["tools"]], ["search_assets", "search_docs"])
         self.assertIn(marker, kwargs["middleware"])
         self.assertIsNone(kwargs["memory"], "no file memory unless a feature asks for it")
 
     def test_no_lookups_means_no_researcher(self):
         kwargs = self.build([])
-        self.assertEqual(kwargs["subagents"], [])
+        self.assertEqual([s["name"] for s in kwargs["subagents"]], ["general-purpose"])
         self.assertNotIn("researcher", kwargs["system_prompt"])
 
     def test_file_memory_feature_turns_on_file_memory(self):
