@@ -10,3 +10,6 @@ data/
 # Your own documents for RAG stay local; only the example is part of the repo.
 docs/*
 !docs/example_requirements.md
+
+# Local diagram sources (see assets/diagrams/README.md)
+assets/diagrams/
