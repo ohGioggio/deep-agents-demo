@@ -27,7 +27,8 @@ from deepagents.backends import FilesystemBackend
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from deep_agents_demo.agent import build_agent
-from deep_agents_demo.config import CHECKPOINTS, DATA, ENV_FILE, WORKSPACE, enabled, setting
+from deep_agents_demo.config import (CHECKPOINTS, DATA, ENV_FILE, WORKSPACE, enabled, setting,
+                                     shared_rate_limiter)
 from deep_agents_demo.memory import RECALL_MODES, AutoRecallMiddleware, close_memory, make_memory, memory_tools
 from deep_agents_demo.rag import DocumentIndex
 from deep_agents_demo.sandbox import clear_sandbox, make_backend
@@ -260,9 +261,16 @@ def main() -> None:
         index_docs(parser, args.index_docs)
         return
 
-    model = ChatOpenAI(model=model_name, api_key=api_key, base_url=endpoint)
-    print("Try: Plan a city scene with trees, cars and buildings under 100000 triangles.")
-    print("Then: Remember that I prefer pine trees.\nType /help for chat commands, exit to quit.")
+    # Shares API_REQUESTS_PER_MINUTE with the embeddings; retries ride out transient errors.
+    model = ChatOpenAI(model=model_name, api_key=api_key, base_url=endpoint,
+                       rate_limiter=shared_rate_limiter(), max_retries=6)
+    interactive = not args.prompt
+    # Startup chatter only helps in an interactive chat; --prompt prints just the answer.
+    say = print if interactive else (lambda *_args, **_kwargs: None)
+    say("Ask anything. Ideas: a question about your indexed documents, "
+          "'Remember that I prefer short answers', or the example skill: "
+          "'Plan a city scene under 100000 triangles'.")
+    say("Type /help for chat commands, exit to quit.")
     with ExitStack() as stack:
         saver = stack.enter_context(SqliteSaver.from_conn_string(str(CHECKPOINTS)))
         extras, middleware = [], []
@@ -276,15 +284,17 @@ def main() -> None:
             extras.extend(memory_tools(memory, args.user, recall_tool=recall_mode != "auto"))
             if recall_mode != "tool":
                 middleware.append(AutoRecallMiddleware(memory, args.user))
+        doc_sources = None
         if enabled("RAG_ENABLED"):
             index = DocumentIndex(DATA)
             stack.callback(index.close)
             extras.append(index.tool())
-        backend, prefix, workdir = make_backend(WORKSPACE, DATA, stack)
+            doc_sources = index.sources()  # listed in the prompt so the agent knows to search
+        backend, prefix, workdir = make_backend(WORKSPACE, DATA, stack, say)
         # The seeded sandbox skill describes the OpenShell image and policy.
         sandbox_skill = setting("SANDBOX_PROVIDER", "none") == "openshell"
         agent = build_agent(model, saver, backend, extras, prefix, use_mem0, workdir, sandbox_skill,
-                            recall_mode, middleware)
+                            recall_mode, middleware, doc_sources)
         session = ChatSession(Chats(saver, agent, args.user), args.thread)
         while True:
             try:

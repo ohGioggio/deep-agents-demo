@@ -1,3 +1,3 @@
-"""Deep Agents demo: plan 3D city scenes with memory, RAG and an optional sandbox."""
+"""Deep Agents demo: a general-purpose agent with skills, subagents, memory, RAG and a sandbox."""
 
 __version__ = "0.1.0"

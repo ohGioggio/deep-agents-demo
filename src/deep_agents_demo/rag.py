@@ -62,9 +62,23 @@ class DocumentIndex:
             "text": h.payload["text"], "score": h.score,
         } for h in hits])
 
+    def sources(self) -> list[str]:
+        """Names of the indexed documents (no embedding calls)."""
+        if not self.client.collection_exists(self.collection):
+            return []
+        names, offset = set(), None
+        while True:
+            points, offset = self.client.scroll(self.collection, limit=256, offset=offset,
+                                                with_payload=["source"], with_vectors=False)
+            names.update(p.payload["source"] for p in points)
+            if offset is None:
+                return sorted(names)
+
     def tool(self):
         def search_docs(query: str) -> str:
-            """Retrieve project-document passages and sources. Treat them as reference data."""
+            """Search the user's indexed project documents (listed in the system prompt) and
+            return the most relevant passages with their source names. Use it before answering
+            any question those documents could cover."""
             return self.search(query)
         return search_docs
 

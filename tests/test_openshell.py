@@ -13,7 +13,7 @@ from openshell import ExecResult
 
 from deep_agents_demo import openshell_backend
 from deep_agents_demo.openshell_backend import OpenShellBackend
-from deep_agents_demo.sandbox import clear_sandbox, make_backend
+from deep_agents_demo.sandbox import LazySandbox, clear_sandbox, make_backend
 
 POLICY = Path(__file__).resolve().parents[1] / "policy.yaml"
 
@@ -194,15 +194,73 @@ class ProviderSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "none, daytona, openshell"):
                 make_backend(Path("."), Path("."), contextlib.ExitStack())
 
-    def test_openshell_routes_skills_locally(self):
+    def test_openshell_connects_on_first_use_and_routes_skills_locally(self):
         client = Mock()
+        client.exec.return_value = ExecResult(exit_code=0, stdout="hi\n", stderr="")
+        said = []
         with patch.dict("os.environ", {"SANDBOX_PROVIDER": "openshell"}), \
-                patch("openshell.SandboxClient.from_active_cluster", return_value=client), \
+                patch("openshell.SandboxClient.from_active_cluster", return_value=client) as connect, \
                 contextlib.ExitStack() as stack:
-            backend, prefix, workdir = make_backend(Path("."), Path("."), stack)
-        self.assertEqual((prefix, workdir), ("/instructions", "/sandbox"))
-        self.assertIsInstance(backend.default, OpenShellBackend)
+            backend, prefix, workdir = make_backend(Path("."), Path("."), stack, said.append)
+            self.assertEqual((prefix, workdir), ("/instructions", "/sandbox"))
+            self.assertIsInstance(backend.default, LazySandbox)
+            connect.assert_not_called()  # starting a chat doesn't need the sandbox
+            self.assertEqual(said, [])
+            self.assertEqual(backend.execute("echo hi").output, "hi\n")
+            backend.execute("echo again")
+            connect.assert_called_once()  # connected once, on first use
+            self.assertIsInstance(backend.default._backend, OpenShellBackend)
+            self.assertEqual(len(said), 1)
         client.close.assert_called_once()
+
+    def test_unreachable_sandbox_is_reported_to_the_agent_and_retried(self):
+        attempts = []
+
+        def connect():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise ConnectionError("gateway not running")
+            return OpenShellBackend(Mock(exec=Mock(return_value=ExecResult(0, "ok", ""))))
+
+        lazy = LazySandbox(connect, "OpenShell sandbox 'demo'", say=lambda *_: None)
+        first = lazy.execute("ls")
+        self.assertEqual(first.exit_code, 1)
+        self.assertIn("Sandbox unavailable", first.output)
+        self.assertIn("gateway not running", first.output)
+        self.assertFalse(lazy.connected)
+        self.assertEqual(lazy.execute("ls").output, "ok")
+        [failed] = LazySandbox(lambda: 1 / 0, "x", say=print).download_files(["/a"])
+        self.assertEqual(failed.error, "file_not_found")
+
+    def test_agent_turn_without_commands_never_connects(self):
+        from deepagents.backends import CompositeBackend, FilesystemBackend
+        from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+        from langchain_core.messages import AIMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+        from deep_agents_demo.agent import build_agent
+
+        class Model(FakeMessagesListChatModel):
+            tool_names: list = []
+
+            def bind_tools(self, tools, **kwargs):
+                self.tool_names.extend(getattr(t, "name", None) or t.get("name") for t in tools)
+                return self
+
+        def never():
+            raise AssertionError("connected without being used")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "skills").mkdir()
+            local = FilesystemBackend(root_dir=tmp, virtual_mode=True)
+            lazy = LazySandbox(never, "OpenShell sandbox 'demo'", say=lambda *_: None)
+            backend = CompositeBackend(default=lazy, routes={"/instructions/": local})
+            model = Model(responses=[AIMessage(content="ok")], tool_names=[])
+            agent = build_agent(model, InMemorySaver(), backend, prefix="/instructions",
+                                workdir="/sandbox", use_mem0=True)
+            agent.invoke({"messages": [{"role": "user", "content": "hello"}]},
+                         {"configurable": {"thread_id": "t"}})
+        self.assertFalse(lazy.connected)
+        self.assertIn("execute", model.tool_names, "the agent must still be offered execute")
 
 
 class PolicyFileTests(unittest.TestCase):

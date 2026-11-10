@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/ohGioggio/deep-agents-demo"><img src="assets/banner.svg" width="900" alt="Deep Agents Demo: an agent harness that plans 3D city scenes"/></a>
+  <a href="https://github.com/ohGioggio/deep-agents-demo"><img src="assets/banner.svg" width="900" alt="Deep Agents Demo: a general-purpose agent harness built on LangChain Deep Agents"/></a>
 </p>
 
 <p align="center">
@@ -17,10 +17,11 @@
 <p align="center"><b>Planning, skills, subagents, memory, RAG and a sandbox, in about 700 lines of Python.</b><br/>
 A small, readable reference for building on <a href="https://github.com/langchain-ai/deepagents">LangChain Deep Agents</a>.</p>
 
-Deep Agents Demo is a command-line agent that **plans 3D city scenes** from a
-fictional asset catalog. Ask for a scene under a triangle budget and watch it
-**write a to-do plan, delegate research to a subagent, check the budget and save
-a proposal**, with every step streamed to your terminal.
+Deep Agents Demo is a **general-purpose command-line agent**: ask it anything,
+from questions about your own documents to research, writing or code. It
+**plans multi-step work, uses skills, delegates to subagents, remembers you
+across chats and can run code in a sandbox**, with every step streamed to your
+terminal.
 
 - **Every harness feature in one place.** Planning, skills, subagent delegation,
   streaming, checkpoints and context management, wired together and visible.
@@ -30,8 +31,10 @@ a proposal**, with every step streamed to your terminal.
   NIM. Embeddings can use a different provider from chat.
 
 > [!NOTE]
-> The agent produces scene **proposals** (asset IDs, counts and triangle totals),
-> not 3D geometry. The catalog is fictional, so the demo needs only a model API key.
+> The demo ships with **examples** to try the harness on: a fictional 3D asset
+> catalog with two tools, and a `scene-planning` skill that plans a city scene
+> within a triangle budget (proposals, not geometry). They are things the agent
+> *can* use, not what it is for. Add your own documents, skills and tools.
 
 **Get started** (30 seconds).
 
@@ -59,7 +62,8 @@ deep-agents-demo/
 
 ## See it in action
 
-Start a chat and ask for a scene:
+Start a chat and ask anything. The example skill makes a good first test,
+because it exercises planning, skills and tools in one request:
 
 ```text
 You: Plan a city scene with trees, cars and buildings under 100000 triangles.
@@ -69,27 +73,28 @@ Each update is labelled with the agent that produced it, so you can follow the
 plan, the delegation and the tool calls as they happen:
 
 ```text
-[main / model]          the main agent reads the scene-planning skill
+[main / model]          the agent picks the matching skill (scene-planning)
 [plan]                  the to-do list it writes, updated as tasks complete
-[subagent / tools]      asset-researcher searches the catalog
-[main / tools]          triangle_budget checks the total
+[main / tools]          search_assets and triangle_budget check the options
+[subagent / tools]      a subagent, if it delegates a lookup
 [main / tools]          the proposal is saved to /scene_plan.md
 ```
 
-Then say `Remember that I prefer pine trees.` and start a new thread: the
+Then try a question about your [indexed documents](#searching-your-documents-rag),
+or say `Remember that I prefer short answers.` and start a new chat: the
 preference is still there.
 
 ## Architecture
 
 <p align="center">
-  <a href="assets/architecture.svg"><img src="assets/architecture.svg" width="100%" alt="Architecture: the CLI feeds the Deep Agents loop, which drives planning, context management, chats saved as SQLite checkpoints, skills and the asset-researcher subagent; uses Mem0 and Qdrant for memory (remember, list and forget tools, automatic recall into every turn, secrets refused) and RAG; and runs code in an OpenShell sandbox whose policy proxy only allows PyPI and GitHub, or in Daytona. Chat and embedding models are external providers."/></a>
+  <a href="assets/architecture.svg"><img src="assets/architecture.svg" width="100%" alt="Architecture: the CLI feeds the Deep Agents loop, which drives planning, context management, chats saved as SQLite checkpoints, skills and subagents (researcher and the built-in general-purpose); uses Mem0 and Qdrant for memory (remember, list and forget tools, automatic recall into every turn, secrets refused) and RAG; and runs code in an OpenShell sandbox whose policy proxy only allows PyPI and GitHub, or in Daytona. Chat and embedding models are external providers."/></a>
 </p>
 
 - **Agent loop.** Deep Agents runs the model and its tools until the task is
   done; every step streams to your terminal.
-- **Harness.** Planning, context management, skills and the `asset-researcher`
-  subagent are built in and wired to the loop. Every conversation is saved as a
-  [chat](#chats) you can list, switch, rename and delete.
+- **Harness.** Planning, context management, skills and subagents are built in
+  and wired to the loop. Every conversation is saved as a [chat](#chats) you can
+  list, switch, rename and delete.
 - **Memory and knowledge.** The agent manages per-user Mem0 memories with
   `remember`, `list_memories` and `forget`, and relevant memories are recalled
   into every turn automatically. Secrets are refused before anything is stored.
@@ -104,9 +109,9 @@ preference is still there.
 | Capability | What you get |
 | --- | --- |
 | **Planning** | A `write_todos` list, streamed as `[plan]` updates |
-| **Skills** | Seeded skills: `scene-planning` for scenes, `sandbox` for working inside OpenShell |
-| **Delegation** | An `asset-researcher` subagent that searches the catalog |
-| **Tools** | `triangle_budget`, `search_assets`, `search_docs`, `remember`, `recall` |
+| **Skills** | Loaded on demand when a task matches: an example `scene-planning` skill, and `sandbox` for working inside OpenShell |
+| **Delegation** | A read-only `researcher` subagent (documents and catalog lookups) plus Deep Agents' built-in `general-purpose` subagent |
+| **Tools** | `search_docs`, `remember`, `list_memories`, `forget`, the example catalog tools `search_assets` and `triangle_budget`, plus Deep Agents' file tools |
 | **Persistence** | Conversations resume by thread from `demo_checkpoints.sqlite` |
 | **Context management** | Built-in summarization and large-output offloading |
 | **Long-term memory** | Per-user Mem0 memories that survive across threads |
@@ -165,6 +170,7 @@ your shell take precedence.
 | `OPENAI_API_KEY` | required | API key for the chat model |
 | `AGENT_MODEL` | required | Chat model ID |
 | `OPENAI_BASE_URL` | OpenAI | Any OpenAI-compatible endpoint, e.g. `http://localhost:8000/v1` |
+| `API_REQUESTS_PER_MINUTE` | no cap | Total requests per minute across chat and embeddings; set `40` for NVIDIA's free tier |
 | `MEMORY_ENABLED` | `true` | Enable Mem0 long-term memory |
 | `MEMORY_MODEL` / `MEMORY_API_KEY` / `MEMORY_BASE_URL` | agent settings | Model used to extract memories |
 | `MEMORY_RECALL` | `auto` | `auto`, `tool` or `both`: how memories reach the agent ([details](#long-term-memory)) |
@@ -173,6 +179,7 @@ your shell take precedence.
 | `EMBEDDING_API_KEY` | `OPENAI_API_KEY` | Embedding API key |
 | `EMBEDDING_BASE_URL` | OpenAI | Embedding endpoint, independent of the chat endpoint |
 | `EMBEDDING_DIMENSIONS` | `1536` | Must equal the model's real output width |
+| `EMBEDDING_BATCH_SIZE` | `16` | Texts per embedding request; set `1` for NVIDIA's hosted embedder ([why](#troubleshooting)) |
 | `RAG_ENABLED` | `true` | Enable the `search_docs` tool |
 | `SANDBOX_PROVIDER` | `none` | `none` (local files, no shell), `openshell` or `daytona` |
 | `OPENSHELL_SANDBOX_NAME` | `deep-agents-demo` | Existing OpenShell sandbox to attach to |
@@ -236,7 +243,7 @@ the descriptions and reads a skill's full text when a task matches it.
 
 | Skill | Used for |
 | --- | --- |
-| [`scene-planning`](src/deep_agents_demo/seed/skills/scene-planning/SKILL.md) | Planning a scene step by step: to-dos, delegation, budget checks, saving the proposal |
+| [`scene-planning`](src/deep_agents_demo/seed/skills/scene-planning/SKILL.md) | Example: planning a 3D scene step by step with to-dos, catalog lookups, budget checks and a saved proposal |
 | [`sandbox`](src/deep_agents_demo/seed/sandbox-skills/sandbox/SKILL.md) | Working inside OpenShell: the image, installing packages with uv, headless plots, policy denials. Offered only when `SANDBOX_PROVIDER=openshell` |
 
 - **Seeded once.** On start, the demo copies `src/deep_agents_demo/seed/` into
@@ -262,6 +269,10 @@ uv run deep-agents-demo --prompt "Search the documents for the default triangle 
 
 - **Full rebuilds.** Indexing replaces the whole collection, so chunks from
   deleted files disappear. Empty input leaves the existing index untouched.
+- **The agent knows what's indexed.** The names of your indexed documents are
+  listed in its system prompt, so it calls `search_docs` for questions they
+  could answer, even when you don't mention documents, and says so when they
+  have nothing relevant before falling back to general knowledge.
 - **Cited results.** Each search returns four passages with source, chunk and score.
 - **Text only.** PDF and other binary formats are not supported.
 - **One process at a time.** A local Qdrant directory can be opened by only one
@@ -358,7 +369,11 @@ model: `--list-threads`, `--show-thread`, `--rename-thread` and
 
 With a sandbox the agent gets file tools and a shell, but on a separate machine
 or container: normal paths are inside the sandbox, and only `/instructions/`
-maps to the local skills. Commands time out after 120 seconds. Pick one:
+maps to the local skills. Commands time out after 120 seconds. The demo
+connects on the agent's first command or sandbox file operation, not when a
+chat starts, so chats that don't need it work even with the sandbox offline;
+if it can't be reached then, the agent is told so instead of the chat failing.
+Pick one:
 
 | Provider | Runs on | Isolation |
 | --- | --- | --- |
@@ -520,7 +535,7 @@ EMBEDDING_DIMENSIONS=4096
 ```text
 src/deep_agents_demo/
 ├── cli.py          # command-line entry point and chat loop
-├── agent.py        # deep agent, system prompt and asset-researcher subagent
+├── agent.py        # deep agent, system prompt and researcher subagent
 ├── catalog.py      # fictional asset catalog and its tools
 ├── config.py       # project paths and environment settings
 ├── workspace.py    # copies seed/ into demo_workspace/ on first run
@@ -574,6 +589,14 @@ agent's files live in the sandbox's `/sandbox` (clear them with
   width of your model. If the Mem0 index was created with the wrong size, stop
   the app, back up `data/memory_vectors/` and move it aside; a fresh index is
   created on the next start, without the old memories.
+- **"Error code: 500 - service inference failed" from NVIDIA,** often while
+  indexing. NVIDIA returns this for two different things. Its hosted
+  `nemotron-3.5-embed-8b` rejects requests with more than one text, and the
+  free tier's rate limit (about 40 requests per minute per key) is reported the
+  same way, not as a 429. The client handles both: it splits rejected batches,
+  remembers the size that works, and retries single texts with waits of up to
+  a minute. To avoid the errors entirely, set `EMBEDDING_BATCH_SIZE=1` and
+  `API_REQUESTS_PER_MINUTE=40`.
 - **Switched embedding models.** Rebuild RAG with `--index-docs docs` and recreate
   the Mem0 index. Never mix embeddings from different models.
 - **URLs not loading from `.env`.** Lines must not end with a backslash or contain

@@ -55,6 +55,21 @@ class DocumentIndexTests(unittest.TestCase):
             finally:
                 close(idx)
 
+    def test_sources_lists_indexed_documents_without_embedding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / "docs"
+            (docs / "sub").mkdir(parents=True)
+            (docs / "uv.md").write_text("Use uv for dependencies.")
+            (docs / "sub" / "brief.txt").write_text("Street works brief.")
+            idx = DocumentIndex(root, FakeEmbeddings())
+            try:
+                self.assertEqual(idx.sources(), [])
+                idx.index(docs)
+                self.assertEqual(idx.sources(), ["sub/brief.txt", "uv.md"])
+            finally:
+                close(idx)
+
     def test_search_without_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             idx = DocumentIndex(Path(tmp), FakeEmbeddings())

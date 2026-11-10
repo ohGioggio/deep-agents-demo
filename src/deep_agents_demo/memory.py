@@ -1,5 +1,6 @@
 """Mem0 long-term memory backed by a local Qdrant index."""
 import json
+import logging
 import os
 
 from langchain.agents.middleware import AgentMiddleware
@@ -8,6 +9,24 @@ from langchain_core.messages import SystemMessage
 from deep_agents_demo.config import embedding_settings, setting
 from deep_agents_demo.embeddings import CompatibleEmbeddings, Mem0EmbeddingAdapter
 from deep_agents_demo.memory_policy import find_secrets, redact
+
+
+class _OptionalExtrasFilter(logging.Filter):
+    """Drop Mem0's notices about optional extras this demo doesn't use.
+
+    Mem0 2.2.1 can add spaCy lemmatisation and fastembed BM25 keyword search to
+    memory search. Without them it uses vector similarity only, which is what
+    the memory eval measures, so the notices are noise. Other warnings pass.
+    """
+
+    def filter(self, record):
+        message = record.getMessage()
+        return not (message.startswith("Failed to load spaCy")
+                    or message.startswith("fastembed not installed"))
+
+
+for _name in ("mem0.utils.spacy_models", "mem0.vector_stores.qdrant"):
+    logging.getLogger(_name).addFilter(_OptionalExtrasFilter())
 
 
 def make_memory(data):

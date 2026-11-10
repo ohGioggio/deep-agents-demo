@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from deepagents.backends import FilesystemBackend  # noqa: E402
 
 from deep_agents_demo.agent import build_agent  # noqa: E402
+from deep_agents_demo.config import shared_rate_limiter  # noqa: E402
 from deep_agents_demo.memory import (RECALL_MODES, AutoRecallMiddleware, close_memory,  # noqa: E402
                                      make_memory, memory_tools)
 from deep_agents_demo.workspace import seed_files  # noqa: E402
@@ -74,7 +75,8 @@ def grade(name, answer, keywords):
 def model_from_env():
     load_dotenv(ROOT / ".env", override=False)
     return ChatOpenAI(model=os.environ["AGENT_MODEL"], api_key=os.environ["OPENAI_API_KEY"],
-                      base_url=os.environ.get("OPENAI_BASE_URL") or None)
+                      base_url=os.environ.get("OPENAI_BASE_URL") or None,
+                      rate_limiter=shared_rate_limiter(), max_retries=6)
 
 
 def run_turn(agent, prompt, thread):

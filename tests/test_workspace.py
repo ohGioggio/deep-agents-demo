@@ -1,4 +1,4 @@
-"""Workspace seeding and skill tests."""
+"""Workspace seeding, skills and system prompt tests."""
 import re
 import tempfile
 import unittest
@@ -7,7 +7,7 @@ from pathlib import Path
 from deep_agents_demo.agent import system_prompt
 from deep_agents_demo.workspace import SEED_DIR, seed_files
 
-SKILLS = SEED_DIR / "skills"
+OLD_MEMORY = b"# User preferences\nUse metres. Prefer realistic assets.\n"
 
 
 class SeedTests(unittest.TestCase):
@@ -42,6 +42,27 @@ class SeedTests(unittest.TestCase):
                 self.assertEqual(old.exists(), kept)
 
 
+class SupersededSeedTests(unittest.TestCase):
+    def test_unedited_old_seeds_are_upgraded_even_with_crlf(self):
+        for content in (OLD_MEMORY, OLD_MEMORY.replace(b"\n", b"\r\n")):
+            with tempfile.TemporaryDirectory() as tmp:
+                workspace = Path(tmp)
+                target = workspace / "memories/AGENTS.md"
+                target.parent.mkdir(parents=True)
+                target.write_bytes(content)
+                seed_files(workspace)
+                self.assertEqual(target.read_bytes(), (SEED_DIR / "memories/AGENTS.md").read_bytes())
+
+    def test_edited_seeds_are_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            target = workspace / "memories/AGENTS.md"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(OLD_MEMORY + b"I also like oak.\n")
+            seed_files(workspace)
+            self.assertIn(b"I also like oak.", target.read_bytes())
+
+
 class SkillFormatTests(unittest.TestCase):
     def test_skills_have_frontmatter_matching_their_folder(self):
         for skill in SEED_DIR.glob("*/*/SKILL.md"):
@@ -69,6 +90,39 @@ class SkillSourceTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
+    def test_indexed_documents_are_named_and_searched_first(self):
+        prompt = system_prompt(doc_sources=["street-works-brief.md"])
+        self.assertIn("indexed documents are: street-works-brief.md", prompt)
+        self.assertIn("call search_docs first", prompt)
+        self.assertIn("Use search_docs for questions about the user's documents", system_prompt())
+
+    def test_prompt_is_general_purpose(self):
+        prompt = system_prompt()
+        self.assertIn("general-purpose assistant", prompt)
+        for scene_specific in ("3D", "scene", "catalog research", "asset-researcher"):
+            self.assertNotIn(scene_specific, prompt)
+
+    def test_researcher_gets_read_only_lookups(self):
+        from unittest.mock import patch
+        import deep_agents_demo.agent as agent_module
+
+        def search_docs(query: str) -> str:
+            """Search documents."""
+            return ""
+
+        def remember(fact: str) -> str:
+            """Save a fact."""
+            return ""
+
+        with patch.object(agent_module, "create_deep_agent") as create:
+            agent_module.build_agent(None, None, backend=object(), extra_tools=[search_docs, remember])
+        kwargs = create.call_args.kwargs
+        [researcher] = kwargs["subagents"]
+        self.assertEqual(researcher["name"], "researcher")
+        self.assertEqual([t.__name__ for t in researcher["tools"]], ["search_assets", "search_docs"])
+        self.assertEqual([t.__name__ for t in kwargs["tools"]],
+                         ["search_assets", "triangle_budget", "search_docs", "remember"])
+
     def test_sandbox_skill_hint_only_for_openshell(self):
         self.assertIn("sandbox skill", system_prompt("/instructions", True, "/sandbox", True))
         self.assertNotIn("sandbox skill", system_prompt("/instructions", True, "/home/daytona"))

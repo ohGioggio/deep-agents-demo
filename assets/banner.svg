@@ -71,7 +71,7 @@
   <g font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif">
     <text x="64" y="72" font-size="16" font-weight="600" letter-spacing="3" fill="#22d3ee">LANGCHAIN · DEEP AGENTS</text>
     <text x="62" y="146" font-size="64" font-weight="700" fill="#f8fafc">Deep Agents Demo</text>
-    <text x="64" y="188" font-size="22" fill="#cbd5e1">An agent harness that plans 3D city scenes</text>
+    <text x="64" y="188" font-size="22" fill="#cbd5e1">A general-purpose agent harness on Deep Agents</text>
     <g font-size="15" font-weight="600" fill="#e0e7ff">
       <rect x="64" y="222" width="96" height="32" rx="16" fill="#ffffff" fill-opacity="0.07" stroke="#a78bfa" stroke-opacity="0.5"/>
       <text x="112" y="243" text-anchor="middle">Planning</text>

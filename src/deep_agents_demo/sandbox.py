@@ -1,6 +1,9 @@
 """Backend selection: local files only, or a Daytona / OpenShell sandbox."""
 import shlex
 
+from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse
+from deepagents.backends.sandbox import BaseSandbox
+
 from deep_agents_demo.config import setting
 
 PROVIDERS = ("none", "daytona", "openshell")
@@ -48,7 +51,62 @@ def clear_sandbox(backend, workdir, tmpdir="/tmp"):
     return int(work), int(tmp)
 
 
-def make_backend(workspace, data, stack):
+class LazySandbox(BaseSandbox):
+    """Connects to the real sandbox on first use, not when the chat starts.
+
+    Chats that never run a command or touch a sandbox file don't need the
+    sandbox (or its gateway and Docker) at all. Deep Agents still sees a sandbox,
+    so the execute tool is offered, and every file tool goes through execute,
+    upload_files and download_files, which are the only methods wrapped here.
+    If the sandbox can't be reached, the tool gets an error message instead of
+    the chat crashing, and the next call tries to connect again.
+    """
+
+    def __init__(self, connect, label, say=print):
+        self._connect, self._label, self._say = connect, label, say
+        self._backend = None
+
+    @property
+    def connected(self) -> bool:
+        return self._backend is not None
+
+    @property
+    def id(self) -> str:
+        return self._backend.id if self._backend is not None else self._label
+
+    def _get(self):
+        if self._backend is None:
+            self._backend = self._connect()
+            self._say(f"Connected to {self._label} (first use in this session).")
+        return self._backend
+
+    def _unavailable(self, error) -> str:
+        return (f"Sandbox unavailable ({self._label}): {error}. The command did not run. "
+                "Tell the user the sandbox could not be reached.")
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        try:
+            backend = self._get()
+        except Exception as error:  # gateway down, Docker off, sandbox missing...
+            return ExecuteResponse(output=self._unavailable(error), exit_code=1, truncated=False)
+        return backend.execute(command, timeout=timeout)
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        try:
+            backend = self._get()
+        except Exception:
+            return [FileUploadResponse(path=path, error="permission_denied") for path, _ in files]
+        return backend.upload_files(files)
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        try:
+            backend = self._get()
+        except Exception:
+            return [FileDownloadResponse(path=path, content=None, error="file_not_found") for path in paths]
+        return backend.download_files(paths)
+
+
+def make_backend(workspace, data, stack, say=print):
     """Return ``(backend, skills_prefix, workdir)``.
 
     With a sandbox, normal paths are remote and only ``/instructions/`` maps to
@@ -60,9 +118,15 @@ def make_backend(workspace, data, stack):
     if provider == "none":
         return local, "", None
     if provider == "daytona":
-        remote, workdir = _daytona(data)
+        if not setting("DAYTONA_API_KEY"):
+            raise ValueError("Set DAYTONA_API_KEY to enable sandbox execution")
+        remote = LazySandbox(lambda: _daytona(data), "Daytona sandbox", say)
+        workdir = "/home/daytona"
     elif provider == "openshell":
-        remote, workdir = _openshell(stack)
+        name = setting("OPENSHELL_SANDBOX_NAME", "deep-agents-demo")
+        workdir = setting("OPENSHELL_WORKDIR", "/sandbox")
+        remote = LazySandbox(lambda: _openshell(stack, name, workdir),
+                             f"OpenShell sandbox '{name}'", say)
     else:
         raise ValueError(f"SANDBOX_PROVIDER must be one of: {', '.join(PROVIDERS)}")
     backend = CompositeBackend(default=remote, routes={"/instructions/": local})
@@ -70,8 +134,6 @@ def make_backend(workspace, data, stack):
 
 
 def _daytona(data):
-    if not setting("DAYTONA_API_KEY"):
-        raise ValueError("Set DAYTONA_API_KEY to enable sandbox execution")
     from daytona import Daytona
     from langchain_daytona import DaytonaSandbox
     client = Daytona()
@@ -81,16 +143,11 @@ def _daytona(data):
         sandbox_id = id_file.read_text().strip()
     sandbox = client.get(sandbox_id) if sandbox_id else client.create()
     id_file.write_text(sandbox.id)
-    print(f"Daytona sandbox: {sandbox.id} (retained; manage/delete it in Daytona)")
-    return DaytonaSandbox(sandbox=sandbox, timeout=120), "/home/daytona"
+    return DaytonaSandbox(sandbox=sandbox, timeout=120)
 
 
-def _openshell(stack):
+def _openshell(stack, name, workdir):
     from deep_agents_demo.openshell_backend import OpenShellBackend, connect
-    name = setting("OPENSHELL_SANDBOX_NAME", "deep-agents-demo")
-    workspace = setting("OPENSHELL_WORKSPACE", "default")
-    workdir = setting("OPENSHELL_WORKDIR", "/sandbox")
-    client, session = connect(name, workspace)
+    client, session = connect(name, setting("OPENSHELL_WORKSPACE", "default"))
     stack.callback(client.close)
-    print(f"OpenShell sandbox: {name} (workspace {workspace}; retained, delete it with the CLI)")
-    return OpenShellBackend(session, workdir=workdir), workdir
+    return OpenShellBackend(session, workdir=workdir)

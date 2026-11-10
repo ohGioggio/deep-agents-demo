@@ -1,5 +1,6 @@
 """Memory lifecycle tests: tools, write policy, user scoping and automatic recall."""
 import itertools
+import logging
 import json
 import tempfile
 import unittest
@@ -188,6 +189,17 @@ class AutoRecallTests(unittest.TestCase):
         self.assertEqual(mem.search_calls, 1)
         systems, _ = self.run_agent(mem, "What is my budget?")
         self.assertNotIn(HEADER, self.system_text(systems[0]))
+
+
+class OptionalExtrasNoticeTests(unittest.TestCase):
+    def test_only_mem0_optional_extras_notices_are_silenced(self):
+        import deep_agents_demo.memory  # noqa: F401  (installs the filters)
+        for name, notice in (("mem0.utils.spacy_models", "Failed to load spaCy lemma model: x"),
+                             ("mem0.vector_stores.qdrant", "fastembed not installed - BM25 keyword search disabled.")):
+            with self.assertLogs(name, "WARNING") as logs:
+                logging.getLogger(name).warning(notice)
+                logging.getLogger(name).warning("Collection is corrupt")
+            self.assertEqual([r.getMessage() for r in logs.records], ["Collection is corrupt"])
 
 
 if __name__ == "__main__":
