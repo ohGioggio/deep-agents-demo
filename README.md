@@ -14,7 +14,7 @@
   <a href="https://www.daytona.io/"><img src="https://img.shields.io/badge/Sandbox-Daytona-0b7285?style=flat" alt="Daytona"/></a>
 </p>
 
-<p align="center"><b>Planning, skills, subagents, memory, RAG and a sandbox, in about 700 lines of Python.</b><br/>
+<p align="center"><b>Planning, skills, subagents, memory, RAG and a sandbox, with every risky step behind your approval.</b><br/>
 A small, readable reference for building on <a href="https://github.com/langchain-ai/deepagents">LangChain Deep Agents</a>.</p>
 
 Deep Agents Demo is a **general-purpose command-line agent**: ask it anything,
@@ -29,6 +29,10 @@ terminal.
   (local OpenShell or remote Daytona) are each one setting away from disabled.
 - **Any OpenAI-compatible model.** Point it at OpenAI, a local server or NVIDIA
   NIM. Embeddings can use a different provider from chat.
+- **You stay in control.** The agent writes and updates skills only on request,
+  and you approve each change; skills are versioned and can be shared through a
+  marketplace. Risky commands pause for your yes or no, and `DISABLED_TOOLS`
+  takes tools away entirely.
 
 > [!NOTE]
 > The demo ships with **examples** to try the harness on: a fictional 3D asset
@@ -87,14 +91,20 @@ preference is still there.
 ## Architecture
 
 <p align="center">
-  <a href="assets/architecture.svg"><img src="assets/architecture.svg" width="100%" alt="Architecture: the CLI feeds the Deep Agents loop, which drives planning, context management, chats saved as SQLite checkpoints, skills and subagents (researcher and the built-in general-purpose); uses Mem0 and Qdrant for memory (remember, list and forget tools, automatic recall into every turn, secrets refused) and RAG; and runs code in an OpenShell sandbox whose policy proxy only allows PyPI and GitHub, or in Daytona. Chat and embedding models are external providers."/></a>
+  <a href="assets/architecture.svg"><img src="assets/architecture.svg" width="100%" alt="Architecture: the CLI feeds the Deep Agents loop. Every tool call passes a tool gate, where the registry hides disabled and skill-only tools and skill changes and risky actions wait for your approval. The loop drives planning, context management, chats saved as SQLite checkpoints, skills with a versioned skill store and marketplace, and subagents (researcher and general-purpose); uses Mem0 and Qdrant for memory (remember, list and forget tools, automatic recall into every turn, secrets refused) and RAG; and runs code in an OpenShell sandbox whose policy proxy only allows PyPI and GitHub, or in Daytona. Chat and embedding models are external providers."/></a>
 </p>
 
 - **Agent loop.** Deep Agents runs the model and its tools until the task is
   done; every step streams to your terminal.
+- **Tool gate.** Every tool call passes the [tools registry](#tools-the-registry-and-disabled_tools),
+  which hides tools turned off in `DISABLED_TOOLS` and skill-only tools until
+  their skill is read. Skill changes and [risky actions](#guardrails-risky-actions-ask-first)
+  pause for your approval first.
 - **Harness.** Planning, context management, skills and subagents are built in
-  and wired to the loop. Every conversation is saved as a [chat](#chats) you can
-  list, switch, rename and delete.
+  and wired to the loop. Skills the agent writes are versioned in a SQLite
+  [skill store](#skills-the-agent-writes-with-your-approval) and can be shared
+  through the marketplace. Every conversation is saved as a [chat](#chats) you
+  can list, switch, rename and delete.
 - **Memory and knowledge.** The agent manages per-user Mem0 memories with
   `remember`, `list_memories` and `forget`, and relevant memories are recalled
   into every turn automatically. Secrets are refused before anything is stored.
@@ -109,9 +119,13 @@ preference is still there.
 | Capability | What you get |
 | --- | --- |
 | **Planning** | A `write_todos` list, streamed as `[plan]` updates |
-| **Skills** | Loaded on demand when a task matches: an example `scene-planning` skill, and `sandbox` for working inside OpenShell |
-| **Delegation** | A read-only `researcher` subagent (documents and catalog lookups) plus Deep Agents' built-in `general-purpose` subagent |
-| **Tools** | `search_docs`, `remember`, `list_memories`, `forget`, the example catalog tools `search_assets` and `triangle_budget`, plus Deep Agents' file tools |
+| **Skills** | Loaded on demand when a task matches: seeded examples, marketplace skills you installed, and your own |
+| **Agent-written skills** | Created, updated, removed and restored on request, each change approved by you and saved as a version |
+| **Marketplace** | A shared, versioned catalogue: publish your skills, install others' |
+| **Approvals and guardrails** | Skill changes, deletes, forgetting and risky shell commands (`rm -rf`, `git push`, ...) pause for your yes or no |
+| **Tools registry** | Every tool in one list; `DISABLED_TOOLS` hides and refuses tools, skills declare the tools they use |
+| **Delegation** | A read-only `researcher` subagent (documents and catalog lookups) plus a `general-purpose` subagent with the main agent's tools and limits |
+| **Tools** | `search_docs`, `remember`, `list_memories`, `forget`, the skill tools, the example catalog tools `search_assets` and `triangle_budget`, plus Deep Agents' file tools |
 | **Persistence** | Conversations resume by thread from `demo_checkpoints.sqlite` |
 | **Context management** | Built-in summarization and large-output offloading |
 | **Long-term memory** | Per-user Mem0 memories that survive across threads |
@@ -259,6 +273,10 @@ the descriptions and reads a skill's full text when a task matches it.
   `/instructions/` route; they are never copied into the sandbox.
 
 ### Skills the agent writes, with your approval
+
+<p align="center">
+  <a href="assets/skills.svg"><img src="assets/skills.svg" width="100%" alt="Skills and the marketplace: alice asks the agent for a skill; the change waits for her approval, then is saved as a new version in the SQLite skill store, which rewrites her folders. The agent loads three kinds of skill: her own (user-skills, wins on a name clash), marketplace skills she installed (installed-skills, following the latest version), and seeded examples (skills). Her skills can be published to the marketplace, a shared versioned catalogue, from which she and other users such as bob install skills. A SKILL.md has a name, a description, allowed-tools and the instructions."/></a>
+</p>
 
 Ask the agent to create, update, remove, import or restore a skill, and it uses a
 skill tool. Each change pauses the chat until you decide:
