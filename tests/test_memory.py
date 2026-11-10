@@ -134,7 +134,7 @@ class LifecycleTests(unittest.TestCase):
     def test_prompt_matches_recall_mode(self):
         service = MemoryService(self.mem, "alice")
         prompt = {mode: memory_feature(service, mode).prompt for mode in ("tool", "auto", "both")}
-        self.assertIn("Use recall", prompt["tool"])
+        self.assertIn("unless you call recall", prompt["tool"])
         self.assertIn("There is no recall tool", prompt["auto"])
         self.assertIn("forget with an id from list_memories when", prompt["auto"])
         self.assertIn("Never store secrets", prompt["both"])

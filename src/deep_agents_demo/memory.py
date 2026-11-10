@@ -238,11 +238,14 @@ class AutoRecallMiddleware(AgentMiddleware):
 
 
 _RECALL_PROMPT = {
-    "tool": "Use recall to retrieve relevant user preferences before relying on them. ",
+    "tool": "You can't see the user's saved preferences unless you call recall. Call it "
+            "first whenever the answer could depend on who the user is or what they prefer: "
+            "questions about the user, and recommendations or choices a personal preference "
+            "could change (tools, styles, units, budgets, colours). ",
     "auto": "Relevant memories are added automatically under 'Recalled memories'; use "
             "them when they apply. There is no recall tool. ",
-    "both": "Relevant memories are added automatically under 'Recalled memories'; use "
-            "recall to search for anything else you need. ",
+    "both": "Relevant memories are added automatically under 'Recalled memories'; if they "
+            "don't cover a preference the answer depends on, call recall. ",
 }
 
 

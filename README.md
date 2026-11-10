@@ -677,6 +677,13 @@ November 2026):
   because tool-driven recall needs an extra model call after `recall` returns.
   Wall time was similar; provider latency dominated.
 - **In `both` mode the agent never used `recall`;** the injected memories were enough.
+- **After the agent became general-purpose,** tool-driven recall got worse: a
+  general assistant has even less reason to suspect a question depends on your
+  preferences. With the current prompt, which tells it exactly when to call
+  `recall`, `tool` got 8 of 18 memory questions right over 3 runs (explicit 4/6,
+  implicit 4/12), and individual runs ranged from 1/6 to 7/12: the model
+  decides inconsistently whether to call `recall`. Automatic recall got 12 of
+  12 over 2 runs. That is why `auto` is the default.
 - **Caveats:** a small sample on one model, and only five seed memories. With
   many memories, automatic recall injects more text per turn. In the secret
   test the model refused on its own and never called `remember`, so the
