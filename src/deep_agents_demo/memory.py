@@ -142,6 +142,13 @@ class MemoryService:
         items = _results(self.memory.get_all(filters={"user_id": self.user_id}, top_k=limit))
         return [self._shown(item) for item in items]
 
+    def describe(self, memory_id: str) -> str | None:
+        """The (redacted) text of one of this user's memories, or None."""
+        item = self.memory.get(memory_id)
+        if not item or item.get("user_id") != self.user_id:
+            return None
+        return self.policy.redact(item.get("memory", ""))
+
     def forget(self, memory_id: str) -> dict:
         item = self.memory.get(memory_id)
         # Same answer for "missing" and "someone else's": don't reveal other users' ids.

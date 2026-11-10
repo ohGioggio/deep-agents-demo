@@ -199,7 +199,7 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
     with ExitStack() as stack:
         runtime = build_runtime(settings, user, stack, say)
         session = ChatSession(runtime.chats, thread)
-        approver = Approver(preview=runtime.skills.plan if runtime.skills else None,
+        approver = Approver(preview=runtime.preview,
                             interactive=prompt is None)
         while True:
             try:

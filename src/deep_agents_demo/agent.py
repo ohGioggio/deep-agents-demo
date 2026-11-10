@@ -49,7 +49,29 @@ class Feature:
     lookups: tuple = ()              # read-only tools the researcher subagent also gets
     skill_dirs: tuple = ()           # extra skill folders, relative to the skills prefix
     memory_sources: tuple = ()       # files for Deep Agents' file-based memory
-    approvals: tuple = ()            # tool names that pause for human approval
+    approvals: tuple = ()            # tools that pause for approval: name, or (name, when)
+
+
+def approval_configs(features) -> dict:
+    """HumanInTheLoopMiddleware settings from every feature's ``approvals``.
+
+    An entry is a tool name (always pause) or ``(name, when)``, where
+    ``when(request)`` decides per call. A tool pauses always if any feature gates it
+    unconditionally; otherwise it pauses when any of its conditions holds.
+    """
+    conditions = {}
+    for feature in features:
+        for entry in feature.approvals:
+            name, when = (entry, None) if isinstance(entry, str) else entry
+            conditions.setdefault(name, []).append(when)
+    configs = {}
+    for name, whens in sorted(conditions.items()):
+        config = {"allowed_decisions": ["approve", "reject"]}
+        if None not in whens:
+            config["when"] = whens[0] if len(whens) == 1 else (
+                lambda request, whens=tuple(whens): any(when(request) for when in whens))
+        configs[name] = config
+    return configs
 
 
 def system_prompt(features=()) -> str:
@@ -69,7 +91,7 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix=""):
     features = tuple(features)
     skill_sources = [f"{skills_prefix}/skills/",
                      *(f"{skills_prefix}/{d}" for f in features for d in f.skill_dirs)]
-    approvals = {name for f in features for name in f.approvals}
+    interrupt_on = approval_configs(features)
     lookups = [tool for f in features for tool in f.lookups]
     memory_sources = [source for f in features for source in f.memory_sources]
     subagents = [{
@@ -96,8 +118,7 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix=""):
         permissions=[FilesystemPermission(operations=["write"], mode="deny",
                                           paths=[f"{source}**" for source in skill_sources])],
         # Paused for the user's decision before they run; subagents inherit this.
-        interrupt_on={name: {"allowed_decisions": ["approve", "reject"]}
-                      for name in sorted(approvals)} or None,
+        interrupt_on=interrupt_on or None,
         middleware=[TodoListMiddleware(), *(m for f in features for m in f.middleware)],
         # Deep Agents also adds its built-in general-purpose subagent, which has
         # every tool the main agent has.

@@ -312,7 +312,7 @@ marketplace changes: approval is the gate.
   from the database on every start: edit skills through the agent, not by hand.
 
 Design notes: [design/specs/2026-11-10-agent-written-skills-design.md](design/specs/2026-11-10-agent-written-skills-design.md).
-A tools registry and alerts for risky tools are planned next.
+A tools registry is planned next.
 
 ## Searching your documents (RAG)
 
@@ -425,6 +425,35 @@ model: `--list-threads`, `--show-thread`, `--rename-thread` and
   conversation, not what the agent remembers about you; use `forget` for that.
 - **A new chat is saved on its first message,** so an empty `/new` leaves nothing behind.
 - **Names** use letters, digits, `.`, `_` and `-` (up to 64 characters).
+
+## Guardrails: risky actions ask first
+
+Some actions pause the chat for your yes or no, with the same prompt as skill
+changes:
+
+```text
+Risky action requested: execute
+  Command: rm -rf build/
+  Why it's flagged: deletes files recursively
+[a]pprove  [r]eject (with a reason)  [d]iff  [f]ull file >
+```
+
+| Action | When it asks |
+| --- | --- |
+| `execute` | Only for commands matching a danger pattern: recursive or forced deletes (`rm -rf`, `find … -delete`), `git push`, `git reset --hard`, `git clean -f`, `git branch -D`, piping a download into a shell, `dd`, `mkfs`, `shred`, killing processes, uninstalling packages, `sudo`, recursive `chmod`/`chown`, `chmod 777` |
+| `delete` | Always (removing a file or folder) |
+| `forget` | Always; the prompt shows the memory that would be removed |
+
+- **Ordinary commands run freely:** `ls`, `python script.py`, `uv pip install …`,
+  `git clone` and so on never ask.
+- **Rejecting tells the agent why**, and it's told not to retry or work around it.
+- **Subagents are covered too**, and with `--prompt` (nobody to ask) risky actions
+  are refused.
+- **The patterns are a safety net, not a parser:** a command that only *mentions*
+  `rm -rf` inside quotes still asks. The sandbox policy remains the real boundary.
+
+The patterns live in [`guardrails.py`](src/deep_agents_demo/guardrails.py); add a
+line to `DANGER` to cover another command.
 
 ## Running code in a sandbox
 
@@ -612,6 +641,7 @@ src/deep_agents_demo/
 ├── skill_manager.py  # agent-written skills: plan, validate, approve, save, tools
 ├── skill_store.py  # versioned skill storage in SQLite
 ├── approvals.py    # the approval prompt for paused tool calls
+├── guardrails.py   # risky actions (dangerous commands, delete, forget) ask first
 ├── sandbox.py      # backend selection: local files, OpenShell or Daytona (lazy)
 └── openshell_backend.py  # OpenShell sandbox backend for Deep Agents
 ```
@@ -631,8 +661,9 @@ skill folders), built in its own module: `memory_feature`, `documents_feature`,
   `PROVIDERS` (and listed in `config.SANDBOX_PROVIDERS`; a test keeps them in sync).
 - **A new slash command** is a `ChatSession` method decorated with `@command`;
   the lookup and `/help` are built from the decorators.
-- **A tool that needs your approval** is listed in its feature's `approvals`;
-  the chat loop then pauses before it runs and asks you.
+- **A tool that needs your approval** is listed in its feature's `approvals`,
+  either by name (always ask) or as `(name, when)` to ask only when `when(request)`
+  says so; the chat loop then pauses before it runs and asks you.
 
 ## Where data is stored
 

@@ -14,6 +14,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from deep_agents_demo.agent import build_agent
 from deep_agents_demo.config import Settings, rate_limiter
 from deep_agents_demo.embeddings import CompatibleEmbeddings
+from deep_agents_demo.guardrails import Guardrails
 from deep_agents_demo.catalog import catalog_feature
 from deep_agents_demo.memory import (MemoryService, close_memory, file_memory_feature, make_memory,
                                      memory_feature)
@@ -56,7 +57,7 @@ class Runtime:
     """Everything a chat session needs, all closed by the ExitStack it was built with."""
     agent: object
     chats: Chats
-    skills: SkillManager | None = None  # previews skill changes for approval
+    preview: object = None  # describes a paused tool call for the approval prompt
 
 
 def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManager:
@@ -67,7 +68,7 @@ def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManag
     return manager
 
 
-def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None):
+def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None, guardrails=None):
     """The features this configuration turns on, in prompt order."""
     yield catalog_feature()  # example tools, always available
     if skills is not None:
@@ -76,7 +77,10 @@ def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None
         memory = make_memory(settings.paths.data, settings.memory, settings.embeddings,
                              embeddings(settings))
         stack.callback(close_memory, memory)
-        yield memory_feature(MemoryService(memory, user), settings.memory.recall_mode)
+        service = MemoryService(memory, user)
+        if guardrails is not None:
+            guardrails.describe_memory = service.describe  # show what `forget` would remove
+        yield memory_feature(service, settings.memory.recall_mode)
     else:
         yield file_memory_feature(setup.skills_prefix)
     if settings.rag_enabled:
@@ -85,6 +89,8 @@ def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None
         yield documents_feature(index)
     if setup.feature is not None:
         yield setup.feature  # how to work in the sandbox
+    if guardrails is not None:
+        yield guardrails.feature()  # risky actions pause for the user
 
 
 def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) -> Runtime:
@@ -92,10 +98,15 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
     saver = stack.enter_context(SqliteSaver.from_conn_string(str(settings.paths.checkpoints)))
     setup = sandbox_backend(settings, stack, say)
     skills = skill_manager(settings, user, stack)
+    guardrails = Guardrails()
     agent = build_agent(chat_model(settings), saver, setup.backend,
-                        list(features(settings, user, stack, setup, skills)),
+                        list(features(settings, user, stack, setup, skills, guardrails)),
                         skills_prefix=setup.skills_prefix)
-    return Runtime(agent=agent, chats=Chats(saver, agent, user), skills=skills)
+
+    def preview(name, args):
+        return skills.plan(name, args) or guardrails.preview(name, args)
+
+    return Runtime(agent=agent, chats=Chats(saver, agent, user), preview=preview)
 
 
 def history_runtime(settings: Settings, user: str, stack: ExitStack) -> Runtime:
