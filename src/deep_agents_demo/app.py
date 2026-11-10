@@ -19,6 +19,8 @@ from deep_agents_demo.memory import (MemoryService, close_memory, file_memory_fe
                                      memory_feature)
 from deep_agents_demo.rag import DocumentIndex, documents_feature
 from deep_agents_demo.sandbox import BackendSetup, make_backend
+from deep_agents_demo.skill_manager import SkillManager
+from deep_agents_demo.skill_store import SkillStore
 from deep_agents_demo.threads import Chats
 from deep_agents_demo.workspace import seed_files
 
@@ -54,11 +56,22 @@ class Runtime:
     """Everything a chat session needs, all closed by the ExitStack it was built with."""
     agent: object
     chats: Chats
+    skills: SkillManager | None = None  # previews skill changes for approval
 
 
-def features(settings: Settings, user: str, stack: ExitStack, setup):
+def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManager:
+    store = SkillStore(settings.paths.data / "skills.sqlite")
+    stack.callback(store.close)
+    manager = SkillManager(store, user, settings.paths.workspace)
+    manager.sync_folder()  # the database is the source of truth
+    return manager
+
+
+def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None):
     """The features this configuration turns on, in prompt order."""
     yield catalog_feature()  # example tools, always available
+    if skills is not None:
+        yield skills.feature()
     if settings.memory.enabled:
         memory = make_memory(settings.paths.data, settings.memory, settings.embeddings,
                              embeddings(settings))
@@ -78,10 +91,11 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
     """The full agent for one user: model, features, sandbox, checkpoints."""
     saver = stack.enter_context(SqliteSaver.from_conn_string(str(settings.paths.checkpoints)))
     setup = sandbox_backend(settings, stack, say)
+    skills = skill_manager(settings, user, stack)
     agent = build_agent(chat_model(settings), saver, setup.backend,
-                        list(features(settings, user, stack, setup)),
+                        list(features(settings, user, stack, setup, skills)),
                         skills_prefix=setup.skills_prefix)
-    return Runtime(agent=agent, chats=Chats(saver, agent, user))
+    return Runtime(agent=agent, chats=Chats(saver, agent, user), skills=skills)
 
 
 def history_runtime(settings: Settings, user: str, stack: ExitStack) -> Runtime:

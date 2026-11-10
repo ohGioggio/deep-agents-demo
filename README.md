@@ -258,6 +258,47 @@ the descriptions and reads a skill's full text when a task matches it.
 - **Local even with a sandbox.** Skills are read from your machine through the
   `/instructions/` route; they are never copied into the sandbox.
 
+### Skills the agent writes, with your approval
+
+Ask the agent to create, update, remove, import or restore a skill, and it uses a
+skill tool. Each change pauses the chat until you decide:
+
+```text
+Skill change requested: CREATE 'greeting-style' (user: demo-user), new, v1
+  Instructs the agent to greet the user briefly and then ask how it can help.
+  Changes: +14 lines, -0 lines · files: SKILL.md
+  Checks: format OK · no credentials found
+[a]pprove  [r]eject (with a reason)  [d]iff  [f]ull file >
+```
+
+| Tool | What it does |
+| --- | --- |
+| `create_skill` | A new skill: name, description, instructions, optional extra files |
+| `update_skill` | Change only what you ask: description, instructions, files |
+| `remove_skill` | Remove a skill; its history is kept |
+| `import_skill` | Import a `SKILL.md`, or the folder holding one, from your machine |
+| `restore_skill` | Bring back an earlier version |
+| `skill_history` | List a skill's versions (no approval needed) |
+
+- **Only on request, always approved.** The agent uses these tools only when you
+  ask, and every change except `skill_history` waits for your approval, also when
+  a subagent makes it. With `--prompt` there's nobody to ask, so changes are refused.
+- **Checked before you see it.** Skills are validated with Deep Agents' own rules
+  (name format, matching folder, frontmatter). A change that fails, or that
+  contains a concrete credential (an API key, a private key, a password in a URL),
+  is rejected without asking, and the agent is told why. Wording such as "the
+  token is rotated every 90 days" only adds a warning: you decide.
+- **Versioned.** Every approved change is a new version in `data/skills.sqlite`;
+  removing and restoring add versions too, so nothing is lost.
+- **No back door.** The agent's file tools can read skill folders but not write,
+  edit or delete in them, so the skill tools are the only way to change a skill.
+- **Per user.** Your skills live in `demo_workspace/user-skills/<user>/`, which is
+  rewritten from the database on every start: edit skills through the agent, not
+  by hand. A user skill overrides a seeded skill with the same name.
+
+Design notes: [design/specs/2026-11-10-agent-written-skills-design.md](design/specs/2026-11-10-agent-written-skills-design.md).
+A shared "marketplace" of global skills and a tools registry are planned next.
+
 ## Searching your documents (RAG)
 
 Put UTF-8 `.md` and `.txt` files in `docs/`, index them, then ask. Anything you
@@ -553,6 +594,9 @@ src/deep_agents_demo/
 ├── rag.py          # Qdrant document index and the search_docs tool
 ├── embeddings.py   # OpenAI / NVIDIA-compatible embedding client
 ├── threads.py      # chat management: list, show, rename, delete
+├── skill_manager.py  # agent-written skills: plan, validate, approve, save, tools
+├── skill_store.py  # versioned skill storage in SQLite
+├── approvals.py    # the approval prompt for paused tool calls
 ├── sandbox.py      # backend selection: local files, OpenShell or Daytona (lazy)
 └── openshell_backend.py  # OpenShell sandbox backend for Deep Agents
 ```
@@ -572,6 +616,8 @@ skill folders), built in its own module: `memory_feature`, `documents_feature`,
   `PROVIDERS` (and listed in `config.SANDBOX_PROVIDERS`; a test keeps them in sync).
 - **A new slash command** is a `ChatSession` method decorated with `@command`;
   the lookup and `/help` are built from the decorators.
+- **A tool that needs your approval** is listed in its feature's `approvals`;
+  the chat loop then pauses before it runs and asks you.
 
 ## Where data is stored
 
@@ -584,6 +630,8 @@ skill folders), built in its own module: `memory_feature`, `documents_feature`,
 | `data/mem0_internal/` | Auxiliary Mem0 data, if created |
 | `data/daytona_sandbox_id.txt` | Saved sandbox ID |
 | `demo_workspace/` | Agent files and the seeded skills |
+| `data/skills.sqlite` | Skills written by the agent, every version |
+| `demo_workspace/user-skills/` | Each user's current skills, regenerated from the database |
 
 All of these, and `.env`, are excluded by `.gitignore`. With OpenShell, the
 agent's files live in the sandbox's `/sandbox` (clear them with

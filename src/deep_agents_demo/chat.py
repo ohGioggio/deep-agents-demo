@@ -2,7 +2,10 @@
 import json
 from contextlib import ExitStack
 
+from langgraph.types import Command
+
 from deep_agents_demo.app import build_runtime, prepare_workspace
+from deep_agents_demo.approvals import Approver
 from deep_agents_demo.config import Settings
 from deep_agents_demo.threads import Chats, format_table, format_transcript, new_name, thread_id, valid_name
 
@@ -32,22 +35,48 @@ def turn_input(prompt, reload_skills=False):
     return payload
 
 
-def stream_turn(agent, prompt, config, reload_skills=False) -> None:
-    # One stream call runs the entire multi-step agent loop.
+def stream_once(agent, payload, config, shown=None) -> list:
+    """Stream one run of the agent loop; return the approval requests it paused on.
+
+    ``shown`` collects the ids of printed messages: after a pause, LangGraph sends
+    the paused AI message again, and it should be printed once per turn.
+    """
+    paused, shown = {}, shown if shown is not None else set()
     # Include child updates so delegation/tool calls are observable.
-    for namespace, update in agent.stream(
-        turn_input(prompt, reload_skills),
-        config=config, stream_mode="updates", subgraphs=True,
-    ):
+    for namespace, update in agent.stream(payload, config=config, stream_mode="updates",
+                                          subgraphs=True):
         for node, state in update.items():
+            if node == "__interrupt__":
+                # A subagent's pause can surface at several levels; keep each once.
+                paused.update({item.id: item for item in state})
+                continue
             if not isinstance(state, dict):
                 continue
             label = "subagent" if namespace else "main"
             for message in state.get("messages", []):
+                key = message.id or id(message)
+                if key in shown:
+                    continue
+                shown.add(key)
                 print(f"\n[{label} / {node}]")
                 message.pretty_print()
             if "todos" in state:
                 print("[plan]", json.dumps(state["todos"], ensure_ascii=False))
+    return list(paused.values())
+
+
+def stream_turn(agent, prompt, config, reload_skills=True, approver=None) -> None:
+    """Run one user turn to the end, asking ``approver`` about every paused tool call.
+
+    Without an approver, paused calls are rejected (nobody can approve them).
+    """
+    approver = approver or Approver(interactive=False)
+    payload, shown = turn_input(prompt, reload_skills), set()
+    while True:
+        paused = stream_once(agent, payload, config, shown)
+        if not paused:
+            return
+        payload = Command(resume={item.id: approver.decide(item.value) for item in paused})
 
 
 def command(*names, usage, summary):
@@ -170,6 +199,8 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
     with ExitStack() as stack:
         runtime = build_runtime(settings, user, stack, say)
         session = ChatSession(runtime.chats, thread)
+        approver = Approver(preview=runtime.skills.plan if runtime.skills else None,
+                            interactive=prompt is None)
         while True:
             try:
                 line = prompt if prompt is not None else input(f"\n[{session.current}] You: ").strip()
@@ -181,7 +212,8 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
                 if prompt is not None:
                     break
                 continue
-            stream_turn(runtime.agent, line, session.config, session.reload_skills)
-            session.reload_skills = False
+            # Skills reload every turn (local files, cheap), so an approved change is
+            # visible from the next message.
+            stream_turn(runtime.agent, line, session.config, reload_skills=True, approver=approver)
             if prompt is not None:
                 break

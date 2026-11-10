@@ -10,6 +10,7 @@ more feature, not editing this file.
 from dataclasses import dataclass, field
 
 from deepagents import create_deep_agent
+from deepagents.middleware.filesystem import FilesystemPermission
 from langchain.agents.middleware import TodoListMiddleware
 
 IDENTITY = (
@@ -48,6 +49,7 @@ class Feature:
     lookups: tuple = ()              # read-only tools the researcher subagent also gets
     skill_dirs: tuple = ()           # extra skill folders, relative to the skills prefix
     memory_sources: tuple = ()       # files for Deep Agents' file-based memory
+    approvals: tuple = ()            # tool names that pause for human approval
 
 
 def system_prompt(features=()) -> str:
@@ -65,6 +67,9 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix=""):
     "/instructions" when a sandbox is the default backend).
     """
     features = tuple(features)
+    skill_sources = [f"{skills_prefix}/skills/",
+                     *(f"{skills_prefix}/{d}" for f in features for d in f.skill_dirs)]
+    approvals = {name for f in features for name in f.approvals}
     lookups = [tool for f in features for tool in f.lookups]
     memory_sources = [source for f in features for source in f.memory_sources]
     subagents = [{
@@ -85,8 +90,14 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix=""):
         # None, not []: any list (even empty) adds Deep Agents' file-memory middleware,
         # whose prompt tells the agent to save memories to files, competing with Mem0.
         memory=memory_sources or None,
-        skills=[f"{skills_prefix}/skills/",
-                *(f"{skills_prefix}/{d}" for f in features for d in f.skill_dirs)],
+        skills=skill_sources,
+        # Skills change only through approved tools: the file tools may read skill
+        # folders but never write, edit or delete in them.
+        permissions=[FilesystemPermission(operations=["write"], mode="deny",
+                                          paths=[f"{source}**" for source in skill_sources])],
+        # Paused for the user's decision before they run; subagents inherit this.
+        interrupt_on={name: {"allowed_decisions": ["approve", "reject"]}
+                      for name in sorted(approvals)} or None,
         middleware=[TodoListMiddleware(), *(m for f in features for m in f.middleware)],
         # Deep Agents also adds its built-in general-purpose subagent, which has
         # every tool the main agent has.

@@ -72,6 +72,17 @@ def _matches(text):
         yield "random-looking token", m
 
 
+# Findings matched from wording ("the token is ...") rather than a credential's
+# format. Fine as a hard rule for short personal memories, but skills legitimately
+# explain keys and tokens, so for skills these are warnings a human reviews.
+WORDING_KINDS = frozenset({"password or secret value"})
+
+
+def split_findings(kinds) -> tuple[list[str], list[str]]:
+    """(concrete credential kinds, wording-based kinds) of ``find_secrets`` results."""
+    return [k for k in kinds if k not in WORDING_KINDS], [k for k in kinds if k in WORDING_KINDS]
+
+
 def find_secrets(text: str) -> list[str]:
     """Names of the kinds of secrets found in ``text`` (empty if none)."""
     return sorted({name for name, _ in _matches(text or "")})
