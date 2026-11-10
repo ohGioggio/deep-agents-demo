@@ -164,13 +164,15 @@ class ToolAccess(AgentMiddleware):
                          "'Allowed tools': read that SKILL.md first.")
         if self.disabled:
             lines.append(f"Turned off in this setup: {', '.join(sorted(self.disabled))}. Don't try "
-                         "to use them or work around them.")
+                         "to use them or work around them. If the user asks for something that "
+                         "needs one, say which tool is off and that it can be turned back on by "
+                         "removing it from DISABLED_TOOLS in the .env file.")
             blocked = [f"{skill['name']} (needs {', '.join(sorted(needs))})"
                        for skill in self._skills(state)
                        if (needs := set(skill.get("allowed_tools") or []) & self.disabled)]
             if blocked:
                 lines.append("Skills that need a turned-off tool: " + "; ".join(blocked)
-                             + ". If the user asks for one, tell them which tool is off.")
+                             + ". If the user asks for one, say which tool is off.")
         return "\n\n## Tool availability\n" + "\n".join(lines) if lines else ""
 
     def _request(self, request):
@@ -193,10 +195,12 @@ class ToolAccess(AgentMiddleware):
         tool = shell_block(str(request.tool_call.get("args", {}).get("command", "")),
                            self.disabled) if name == "execute" else None
         if name in self.disabled:
-            reason = f"Error: {name} is turned off in this setup. Don't retry it or work around it."
+            reason = (f"Error: {name} is turned off in this setup. Don't retry it or work around it; "
+                      f"tell the user it can be turned back on in DISABLED_TOOLS (.env).")
         elif tool:
             reason = (f"Error: this command does what {tool} does, and {tool} is turned off in this "
-                      "setup. Don't retry it another way; tell the user it's off.")
+                      "setup. Don't retry it another way; tell the user it can be turned back on in "
+                      "DISABLED_TOOLS (.env).")
         elif name in self.skill_only and name not in self.unlocked(
                 request.state, (request.state or {}).get("messages", [])):
             reason = (f"Error: {name} is only available after reading a skill that lists it under "
