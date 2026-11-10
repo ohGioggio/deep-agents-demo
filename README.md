@@ -278,11 +278,26 @@ Skill change requested: CREATE 'greeting-style' (user: demo-user), new, v1
 | `remove_skill` | Remove a skill; its history is kept |
 | `import_skill` | Import a `SKILL.md`, or the folder holding one, from your machine |
 | `restore_skill` | Bring back an earlier version |
-| `skill_history` | List a skill's versions (no approval needed) |
+| `publish_skill` | Share one of your skills in the marketplace |
+| `install_skill` / `uninstall_skill` | Activate or deactivate a marketplace skill for you |
+| `browse_marketplace` | Search the marketplace catalogue (read-only) |
+| `list_skills` | Your own and installed skills, with versions (read-only) |
+| `skill_history` | List a skill's versions (read-only) |
+
+**The marketplace** is a shared catalogue of skills. A marketplace skill is active
+only for users who install it, and an installed skill always follows the latest
+marketplace version. `create_skill`, `update_skill`, `remove_skill`,
+`import_skill`, `restore_skill` and `skill_history` take `scope="marketplace"` to
+work on the catalogue (the summary then says "marketplace, shared with
+everyone"). The same name can exist in both: your own skill overrides an
+installed marketplace skill, which overrides a seeded example. If a marketplace
+skill is removed, it disappears for everyone who installed it, and `list_skills`
+says so. `--user` is a name, not a login, so in this demo anyone can propose
+marketplace changes: approval is the gate.
 
 - **Only on request, always approved.** The agent uses these tools only when you
-  ask, and every change except `skill_history` waits for your approval, also when
-  a subagent makes it. With `--prompt` there's nobody to ask, so changes are refused.
+  ask, and every change (all but the three read-only tools) waits for your
+  approval, also when a subagent makes it. With `--prompt` there's nobody to ask, so changes are refused.
 - **Checked before you see it.** Skills are validated with Deep Agents' own rules
   (name format, matching folder, frontmatter). A change that fails, or that
   contains a concrete credential (an API key, a private key, a password in a URL),
@@ -292,12 +307,12 @@ Skill change requested: CREATE 'greeting-style' (user: demo-user), new, v1
   removing and restoring add versions too, so nothing is lost.
 - **No back door.** The agent's file tools can read skill folders but not write,
   edit or delete in them, so the skill tools are the only way to change a skill.
-- **Per user.** Your skills live in `demo_workspace/user-skills/<user>/`, which is
-  rewritten from the database on every start: edit skills through the agent, not
-  by hand. A user skill overrides a seeded skill with the same name.
+- **Per user.** Your skills live in `demo_workspace/user-skills/<user>/` and your
+  installed ones in `demo_workspace/installed-skills/<user>/`. Both are rewritten
+  from the database on every start: edit skills through the agent, not by hand.
 
 Design notes: [design/specs/2026-11-10-agent-written-skills-design.md](design/specs/2026-11-10-agent-written-skills-design.md).
-A shared "marketplace" of global skills and a tools registry are planned next.
+A tools registry and alerts for risky tools are planned next.
 
 ## Searching your documents (RAG)
 
@@ -630,8 +645,9 @@ skill folders), built in its own module: `memory_feature`, `documents_feature`,
 | `data/mem0_internal/` | Auxiliary Mem0 data, if created |
 | `data/daytona_sandbox_id.txt` | Saved sandbox ID |
 | `demo_workspace/` | Agent files and the seeded skills |
-| `data/skills.sqlite` | Skills written by the agent, every version |
+| `data/skills.sqlite` | User and marketplace skills (every version) and installs |
 | `demo_workspace/user-skills/` | Each user's current skills, regenerated from the database |
+| `demo_workspace/installed-skills/` | Each user's installed marketplace skills, regenerated likewise |
 
 All of these, and `.env`, are excluded by `.gitignore`. With OpenShell, the
 agent's files live in the sandbox's `/sandbox` (clear them with

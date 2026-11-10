@@ -188,6 +188,86 @@ class ApproverTests(Workspace):
         self.assertIn("too vague", decision["message"])
 
 
+class MarketplaceTests(Workspace):
+    def bob(self):
+        return SkillManager(self.store, "bob", self.root)
+
+    def publish(self, manager, name="meeting-notes", instructions="1. Summarise."):
+        manager.apply(manager.plan_create(name, "Turns notes into a summary.", instructions))
+        return manager.apply(manager.plan_publish(name))
+
+    def test_publish_then_install_by_another_user(self):
+        result = self.publish(self.manager)
+        self.assertEqual((result["scope"], result["version"]), ("marketplace", 1))
+        bob = self.bob()
+        [listed] = bob.browse()
+        self.assertEqual((listed["name"], listed["installed"]), ("meeting-notes", False))
+        self.assertEqual(bob.browse("nothing-like-this"), [])
+        change = bob.plan_install("meeting-notes")
+        self.assertEqual(change.errors, [])
+        self.assertIn("INSTALL 'meeting-notes' (marketplace skill, for user bob), marketplace v1",
+                      change.summary())
+        bob.apply(change)
+        self.assertTrue(bob.browse()[0]["installed"])
+        self.assertTrue((bob.installed_folder / "meeting-notes" / "SKILL.md").is_file())
+        self.assertEqual(self.store.installed("alice"), [], "installs are per user")
+
+    def test_installed_skills_follow_the_latest_version(self):
+        self.publish(self.manager)
+        bob = self.bob()
+        bob.apply(bob.plan_install("meeting-notes"))
+        self.manager.apply(self.manager.plan_update("meeting-notes", instructions="1. Shorter.",
+                                                    scope="marketplace"))
+        bob.sync_folder()
+        self.assertIn("1. Shorter.", (bob.installed_folder / "meeting-notes" / "SKILL.md").read_text())
+
+    def test_marketplace_changes_are_labelled_shared(self):
+        change = self.manager.plan_create("shared-one", "Shared.", "Steps", scope="marketplace")
+        self.assertIn("(marketplace, shared with everyone), new, v1", change.summary())
+        self.manager.apply(change)
+        self.assertEqual(self.store.list_current("user", "alice"), [])
+        self.assertEqual([s.name for s in self.store.list_current("marketplace", "")], ["shared-one"])
+
+    def test_same_name_in_both_scopes_and_overview(self):
+        self.publish(self.manager)
+        bob = self.bob()
+        bob.apply(bob.plan_install("meeting-notes"))
+        bob.apply(bob.plan_create("meeting-notes", "Bob's own.", "1. Bob's way."))
+        rows = {(r["name"], r["source"]): r for r in bob.overview()}
+        self.assertIn(("meeting-notes", "user"), rows)
+        self.assertIn("overridden", rows[("meeting-notes", "marketplace (installed)")]["note"])
+        sources = bob.feature().skill_dirs
+        self.assertEqual(sources, (bob.installed_rel, bob.folder_rel), "user skills load last and win")
+
+    def test_removed_marketplace_skill_disappears_for_installers(self):
+        self.publish(self.manager)
+        bob = self.bob()
+        bob.apply(bob.plan_install("meeting-notes"))
+        self.manager.apply(self.manager.plan_remove("meeting-notes", scope="marketplace"))
+        bob.sync_folder()
+        self.assertFalse((bob.installed_folder / "meeting-notes").exists())
+        [row] = bob.overview()
+        self.assertEqual(row["note"], "removed from the marketplace")
+        self.assertTrue(bob.apply(bob.plan_uninstall("meeting-notes"))["saved"])
+
+    def test_install_and_publish_errors(self):
+        bob = self.bob()
+        self.assertTrue(bob.plan_install("missing").errors)
+        self.assertTrue(bob.plan_uninstall("missing").errors)
+        self.assertTrue(bob.plan_publish("missing").errors)
+        self.publish(self.manager)
+        bob.apply(bob.plan_install("meeting-notes"))
+        self.assertIn("already installed", bob.plan_install("meeting-notes").errors[0])
+        self.assertTrue(self.manager.plan("create_skill", {"name": "x", "description": "d",
+                                                           "instructions": "s", "scope": "global"}).errors)
+
+    def test_secrets_cannot_be_published(self):
+        self.manager.apply(self.manager.plan_create("ok-skill", "Fine.", "1. Fine."))
+        self.store.save("user", "alice", "ok-skill",
+                        {"SKILL.md": render_skill_md("ok-skill", "Fine.", f"Use {KEY}.")}, "update")
+        self.assertTrue(any("credential" in e for e in self.manager.plan_publish("ok-skill").errors))
+
+
 class Model(FakeMessagesListChatModel):
     def bind_tools(self, tools, **kwargs):
         return self

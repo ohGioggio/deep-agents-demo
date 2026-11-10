@@ -190,7 +190,8 @@ def sandbox_feature(workdir, openshell_skill=False) -> Feature:
     if openshell_skill:
         # The sandbox skill describes the OpenShell image; offering it without that
         # sandbox misleads the agent (it told users to pip install inside /sandbox).
-        prompt += ("Read the sandbox skill before your first command in the sandbox, and "
-                   "follow it for installing packages and handling blocked network access. ")
+        prompt += ("Before your first shell command (execute), read the sandbox skill and "
+                   "follow it for installing packages and handling blocked network access; "
+                   "other tools don't need it. ")
     return Feature(name="sandbox", prompt=prompt,
                    skill_dirs=("sandbox-skills/",) if openshell_skill else ())

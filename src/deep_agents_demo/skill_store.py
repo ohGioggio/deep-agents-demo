@@ -1,7 +1,8 @@
 """Versioned skill storage in SQLite.
 
-A skill is identified by (scope, owner, name): scope is "user" now ("marketplace"
-comes later), and owner is the user id ("" for shared scopes). Every change adds a
+A skill is identified by (scope, owner, name): scope is "user" or "marketplace",
+and owner is the user id ("" for the shared marketplace). Installs record which
+marketplace skills each user has activated. Every change adds a
 version holding all of the skill's files, so nothing is ever overwritten: removing
 a skill adds a "remove" version, and restoring copies an old version forward.
 """
@@ -28,6 +29,12 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     files TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY (skill_id, version)
+);
+CREATE TABLE IF NOT EXISTS installs (
+    owner TEXT NOT NULL,
+    name TEXT NOT NULL,
+    installed_at TEXT NOT NULL,
+    PRIMARY KEY (owner, name)
 );
 """
 
@@ -109,6 +116,21 @@ class SkillStore:
         if current is None or current.removed:
             raise KeyError(name)
         return self._add_version(scope, owner, name, current.files, "remove", removed=True)
+
+    # marketplace installs: which catalogue skills a user has activated
+    def installed(self, owner: str) -> list[str]:
+        return [n for (n,) in self.db.execute(
+            "SELECT name FROM installs WHERE owner=? ORDER BY name", (owner,))]
+
+    def install(self, owner: str, name: str) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self.db:
+            self.db.execute("INSERT OR IGNORE INTO installs (owner, name, installed_at) VALUES (?,?,?)",
+                            (owner, name, now))
+
+    def uninstall(self, owner: str, name: str) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM installs WHERE owner=? AND name=?", (owner, name))
 
     def _add_version(self, scope, owner, name, files, action, removed):
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")

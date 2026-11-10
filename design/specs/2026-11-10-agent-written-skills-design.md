@@ -1,7 +1,8 @@
 # Agent-written skills with approval (pieces 1 and 2)
 
-Status: approved in chat on 2026-11-10 ("its good, start"). Pieces 3 (marketplace)
-and 4 (tools registry) and the risky-tool guardrail come later.
+Status: pieces 1-2 approved in chat on 2026-11-10 ("its good, start"); piece 3
+(marketplace) approved the same day ("its a catalogue with installs"). Piece 4 (tools
+registry) and the risky-tool guardrail come later.
 
 ## Intent
 
@@ -77,3 +78,22 @@ tools are the only way to change a skill.
 ## Left to the builder
 
 Exact table columns, error wording, how the diff is formatted.
+
+## Piece 3: the marketplace (catalogue with installs)
+
+Decided by the user: the marketplace is a catalogue; a skill is active only for the
+users who install it.
+
+- Marketplace skills use scope `marketplace` (owner "") in the same versioned store;
+  an `installs` table records (user, skill). Existing tools take `scope`; new gated
+  tools `publish_skill` (copy a user skill to the catalogue), `install_skill` and
+  `uninstall_skill`; new read-only `browse_marketplace` and `list_skills`.
+- Loading order: seeded `skills/`, `installed-skills/<user>/`, `user-skills/<user>/`;
+  the last wins on a name clash, so a user's own skill overrides an installed one.
+- The approval summary labels catalogue changes "marketplace, shared with everyone"
+  and installs "marketplace skill, for user X".
+
+Calls made by Claude: installed skills follow the latest marketplace version (no
+pinning); removing a catalogue skill hides it for everyone who installed it, and
+`list_skills` reports it; anyone can propose catalogue changes (no authentication in
+this demo), approval being the gate.
