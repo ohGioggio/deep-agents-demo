@@ -51,7 +51,7 @@ deep-agents-demo/
 ├── src/deep_agents_demo/   # the agent, tools and integrations
 ├── tests/                  # offline unit tests
 ├── evals/                  # live evals (memory recall modes)
-├── docs/                   # documents for RAG
+├── docs/                   # your documents for RAG (git-ignored, except the example)
 ├── sandbox/                # OpenShell sandbox image (Dockerfile)
 ├── policy.yaml             # OpenShell sandbox policy
 ├── data/                   # memory and document vectors (created on first run)
@@ -260,7 +260,9 @@ the descriptions and reads a skill's full text when a task matches it.
 
 ## Searching your documents (RAG)
 
-Put UTF-8 `.md` and `.txt` files in `docs/`, index them, then ask:
+Put UTF-8 `.md` and `.txt` files in `docs/`, index them, then ask. Anything you
+add there is ignored by git, so your own documents stay local; only
+`example_requirements.md` is part of the repo.
 
 ```bash
 uv run deep-agents-demo --index-docs docs
