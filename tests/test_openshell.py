@@ -13,7 +13,7 @@ from openshell import ExecResult
 
 from deep_agents_demo import openshell_backend
 from deep_agents_demo.openshell_backend import OpenShellBackend
-from deep_agents_demo.sandbox import make_backend
+from deep_agents_demo.sandbox import clear_sandbox, make_backend
 
 POLICY = Path(__file__).resolve().parents[1] / "policy.yaml"
 
@@ -115,6 +115,36 @@ class BaseSandboxRoundTripTests(unittest.TestCase):
             self.assertIn(path, str(backend.grep("sandbox", path=root)))
             [download] = backend.download_files([path])
             self.assertEqual(download.content, b"print('sandbox')\n")
+
+
+class ClearSandboxTests(unittest.TestCase):
+    def test_refuses_unsafe_workdirs(self):
+        for workdir in (None, "", "/", "//", "relative/dir"):
+            with self.assertRaises(ValueError):
+                clear_sandbox(Mock(), workdir)
+
+    def test_reports_counts_and_failures(self):
+        backend = Mock()
+        backend.execute.return_value = Mock(exit_code=0, output="5 2\n")
+        self.assertEqual(clear_sandbox(backend, "/sandbox"), (5, 2))
+        self.assertIn("W=/sandbox", backend.execute.call_args.args[0])
+        backend.execute.return_value = Mock(exit_code=3, output="missing working directory")
+        with self.assertRaisesRegex(RuntimeError, "missing working directory"):
+            clear_sandbox(backend, "/sandbox")
+
+    @unittest.skipUnless(sys.platform == "linux" and shutil.which("bash"), "needs Linux bash")
+    def test_empties_workdir_including_hidden_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            workdir = Path(root) / "sandbox"
+            (workdir / ".cache/uv").mkdir(parents=True)
+            (workdir / "venv/bin").mkdir(parents=True)
+            (workdir / "plot.png").write_bytes(b"png")
+            (workdir / ".cache/uv/wheel").write_bytes(b"x")
+            backend = OpenShellBackend(LocalBashSession(), workdir=str(workdir))
+            work, _tmp = clear_sandbox(backend, str(workdir))
+            self.assertEqual(work, 3)
+            self.assertTrue(workdir.is_dir())
+            self.assertEqual(list(workdir.iterdir()), [])
 
 
 class ConnectTests(unittest.TestCase):

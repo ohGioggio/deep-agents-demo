@@ -22,10 +22,10 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from deep_agents_demo.agent import build_agent
-from deep_agents_demo.config import CHECKPOINTS, DATA, ENV_FILE, WORKSPACE, enabled
+from deep_agents_demo.config import CHECKPOINTS, DATA, ENV_FILE, WORKSPACE, enabled, setting
 from deep_agents_demo.memory import close_memory, make_memory, memory_tools
 from deep_agents_demo.rag import DocumentIndex
-from deep_agents_demo.sandbox import make_backend
+from deep_agents_demo.sandbox import clear_sandbox, make_backend
 from deep_agents_demo.workspace import seed_files
 
 
@@ -38,7 +38,20 @@ def parse_args():
     parser.add_argument("--user", default="demo-user", help="Mem0 user namespace; not authentication")
     parser.add_argument("--index-docs", type=Path, help="Rebuild RAG index from .md/.txt files, then exit")
     parser.add_argument("--prompt", help="Run one prompt instead of interactive chat")
+    parser.add_argument("--clear-sandbox", action="store_true",
+                        help="Delete all files the agent created in the OpenShell sandbox, then exit")
     return parser, parser.parse_args()
+
+
+def clear_openshell_sandbox(parser) -> None:
+    if setting("SANDBOX_PROVIDER", "none") != "openshell":
+        parser.error("--clear-sandbox needs SANDBOX_PROVIDER=openshell")
+    with ExitStack() as stack:
+        backend, _prefix, workdir = make_backend(WORKSPACE, DATA, stack)
+        work, tmp = clear_sandbox(backend, workdir)
+    print(f"Cleared {work} entries from {workdir} and {tmp} from /tmp. "
+          "The sandbox, image and policy are unchanged.")
+    print("Conversation history is kept; use a new --thread for a fresh start.")
 
 
 def index_docs(parser, folder: Path) -> None:
@@ -52,11 +65,24 @@ def index_docs(parser, folder: Path) -> None:
         index.close()
 
 
-def stream_turn(agent, prompt, config) -> None:
+def turn_input(prompt, reload_skills=False):
+    """Agent input for one user turn.
+
+    Deep Agents saves the skill list in the thread's checkpoint and loads it only
+    once per thread. ``skills_metadata=None`` asks it to reload, so skills added
+    or changed since the thread began (or a new sandbox route) are picked up.
+    """
+    payload = {"messages": [{"role": "user", "content": prompt}]}
+    if reload_skills:
+        payload["skills_metadata"] = None
+    return payload
+
+
+def stream_turn(agent, prompt, config, reload_skills=False) -> None:
     # One stream call runs the entire multi-step agent loop.
     # Include child updates so delegation/tool calls are observable.
     for namespace, update in agent.stream(
-        {"messages": [{"role": "user", "content": prompt}]},
+        turn_input(prompt, reload_skills),
         config=config, stream_mode="updates", subgraphs=True,
     ):
         for node, state in update.items():
@@ -78,6 +104,9 @@ def main() -> None:
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     model_name = os.environ.get("AGENT_MODEL", "").strip()
     endpoint = os.environ.get("OPENAI_BASE_URL", "").strip() or None
+    if args.clear_sandbox:
+        clear_openshell_sandbox(parser)
+        return
     if not args.index_docs and (not api_key or api_key == "your-api-key"
                                 or not model_name or model_name == "your-model-id"):
         parser.error("Fill in OPENAI_API_KEY and AGENT_MODEL in .env in the project root "
@@ -105,7 +134,10 @@ def main() -> None:
             stack.callback(index.close)
             extras.append(index.tool())
         backend, prefix, workdir = make_backend(WORKSPACE, DATA, stack)
-        agent = build_agent(model, saver, backend, extras, prefix, use_mem0, workdir)
+        # The seeded sandbox skill describes the OpenShell image and policy.
+        sandbox_skill = setting("SANDBOX_PROVIDER", "none") == "openshell"
+        agent = build_agent(model, saver, backend, extras, prefix, use_mem0, workdir, sandbox_skill)
+        reload_skills = True  # once per session, on the first turn
         while True:
             try:
                 prompt = args.prompt or input("\nYou: ").strip()
@@ -115,7 +147,8 @@ def main() -> None:
                 break
             if not prompt:
                 continue
-            stream_turn(agent, prompt, config)
+            stream_turn(agent, prompt, config, reload_skills)
+            reload_skills = False
             if args.prompt:
                 break
 

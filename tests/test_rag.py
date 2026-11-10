@@ -1,4 +1,5 @@
 """Document index tests with real local Qdrant and deterministic fake embeddings."""
+import gc
 import json
 import tempfile
 import unittest
@@ -15,6 +16,13 @@ class FakeEmbeddings(Embeddings):
 
     def embed_query(self, text):
         return [1.0, 0.0] if "uv" in text.lower() else [0.0, 1.0]
+
+
+def close(idx):
+    # Qdrant local mode releases its SQLite file only when garbage collected;
+    # Windows cannot delete the temporary directory while the file is open.
+    idx.close()
+    gc.collect()
 
 
 class DocumentIndexTests(unittest.TestCase):
@@ -39,13 +47,13 @@ class DocumentIndexTests(unittest.TestCase):
                     idx.index(docs)
                 self.assertIn("tests.txt", idx.search("test"))
             finally:
-                idx.close()
+                close(idx)
             # The index persists across clients.
             idx = DocumentIndex(root, FakeEmbeddings())
             try:
                 self.assertIn("tests.txt", idx.search("test"))
             finally:
-                idx.close()
+                close(idx)
 
     def test_search_without_index(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -53,7 +61,7 @@ class DocumentIndexTests(unittest.TestCase):
             try:
                 self.assertIn("No documents indexed", idx.search("anything"))
             finally:
-                idx.close()
+                close(idx)
 
 
 if __name__ == "__main__":

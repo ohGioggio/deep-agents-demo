@@ -1,26 +1,17 @@
-"""Seed the local agent workspace with starter memory and a skill."""
+"""Seed the local agent workspace with starter memory and skills."""
+import shutil
 from pathlib import Path
 
-SEED_FILES = {
-    "memories/AGENTS.md": "# User preferences\nUse metres. Prefer realistic assets.\n",
-    "skills/scene-planning/SKILL.md": """---
-name: scene-planning
-description: Plan a small 3D city scene using the fictional asset catalog and a triangle budget.
----
-1. Create a short to-do plan using write_todos.
-2. Ask the asset-researcher subagent to find tree, car, and building options.
-3. Choose quantities and calculate totals using triangle_budget.
-4. If over the requested budget, revise quantities and calculate again.
-5. Save the final proposal to /scene_plan.md, including IDs, counts and total.
-6. Mark completed tasks and summarize the result. This is a plan, not a rendered scene.
-""",
-}
+# Files under seed/ are copied into the workspace with the same relative paths.
+SEED_DIR = Path(__file__).resolve().parent / "seed"
 
 
 def seed_files(workspace: Path) -> None:
-    """Create the starter files once; preserve later edits."""
-    for relative, content in SEED_FILES.items():
-        path = workspace / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            path.write_text(content, encoding="utf-8")
+    """Copy each seed file into the workspace once; preserve later edits."""
+    for source in sorted(SEED_DIR.rglob("*")):
+        if not source.is_file():
+            continue
+        target = workspace / source.relative_to(SEED_DIR)
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)

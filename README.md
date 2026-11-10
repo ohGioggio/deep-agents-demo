@@ -14,7 +14,7 @@
   <a href="https://www.daytona.io/"><img src="https://img.shields.io/badge/Sandbox-Daytona-0b7285?style=flat" alt="Daytona"/></a>
 </p>
 
-<p align="center"><b>Planning, skills, subagents, memory, RAG and a sandbox, in about 600 lines of Python.</b><br/>
+<p align="center"><b>Planning, skills, subagents, memory, RAG and a sandbox, in about 700 lines of Python.</b><br/>
 A small, readable reference for building on <a href="https://github.com/langchain-ai/deepagents">LangChain Deep Agents</a>.</p>
 
 Deep Agents Demo is a command-line agent that **plans 3D city scenes** from a
@@ -51,7 +51,7 @@ deep-agents-demo/
 ├── sandbox/                # OpenShell sandbox image (Dockerfile)
 ├── policy.yaml             # OpenShell sandbox policy
 ├── data/                   # memory and document vectors (created on first run)
-└── demo_workspace/         # agent files and the seeded skill (created on first run)
+└── demo_workspace/         # agent files and the seeded skills (created on first run)
 ```
 
 ---
@@ -78,12 +78,28 @@ plan, the delegation and the tool calls as they happen:
 Then say `Remember that I prefer pine trees.` and start a new thread: the
 preference is still there.
 
+## Architecture
+
+<p align="center">
+  <a href="assets/architecture.svg"><img src="assets/architecture.svg" width="100%" alt="Architecture: the CLI feeds the Deep Agents loop, which drives planning, context management, checkpoints, skills and the asset-researcher subagent; uses Mem0 and Qdrant for memory and RAG; and runs code in an OpenShell sandbox whose policy proxy only allows PyPI and GitHub, or in Daytona. Chat and embedding models are external providers."/></a>
+</p>
+
+- **Agent loop.** Deep Agents runs the model and its tools until the task is
+  done; every step streams to your terminal.
+- **Harness.** Planning, context management, checkpoints, skills and the
+  `asset-researcher` subagent are built in and wired to the loop.
+- **Memory and knowledge.** Mem0 keeps per-user memories and `search_docs`
+  retrieves cited passages; both use Qdrant and your embedding provider.
+- **Execution.** The backend router sends file and shell tools to local files,
+  an OpenShell sandbox or Daytona. In OpenShell, all traffic passes the policy
+  proxy, which allows only PyPI and GitHub.
+
 ## What it does
 
 | Capability | What you get |
 | --- | --- |
 | **Planning** | A `write_todos` list, streamed as `[plan]` updates |
-| **Skills** | A seeded `scene-planning` skill the agent follows step by step |
+| **Skills** | Seeded skills: `scene-planning` for scenes, `sandbox` for working inside OpenShell |
 | **Delegation** | An `asset-researcher` subagent that searches the catalog |
 | **Tools** | `triangle_budget`, `search_assets`, `search_docs`, `remember`, `recall` |
 | **Persistence** | Conversations resume by thread from `demo_checkpoints.sqlite` |
@@ -156,6 +172,7 @@ your shell take precedence.
 | `OPENSHELL_SANDBOX_NAME` | `deep-agents-demo` | Existing OpenShell sandbox to attach to |
 | `OPENSHELL_WORKSPACE` | `default` | OpenShell workspace that owns the sandbox |
 | `OPENSHELL_WORKDIR` | `/sandbox` | Working directory inside the sandbox |
+| `XDG_CONFIG_HOME` | your home's `.config` | Where the OpenShell CLI's gateway config lives; on Windows, point it at Ubuntu ([details](#openshell-on-windows)) |
 | `DAYTONA_API_KEY` | | Daytona credentials |
 | `DAYTONA_SANDBOX_ID` | | Reuse a specific running sandbox |
 
@@ -187,6 +204,7 @@ uv run deep-agents-demo --thread second                  # new conversation, sam
 uv run deep-agents-demo --user alice                     # separate memory namespace
 uv run deep-agents-demo --prompt "Plan a small park"     # one prompt, then exit
 uv run deep-agents-demo --index-docs docs                # rebuild the RAG index
+uv run deep-agents-demo --clear-sandbox                  # delete the agent's files in OpenShell
 uv run python -m deep_agents_demo --help                 # same CLI, as a module
 uv run python -m unittest discover -s tests -v           # offline tests
 ```
@@ -197,6 +215,28 @@ uv run python -m unittest discover -s tests -v           # offline tests
 | `--user` | `demo-user` | Mem0 namespace, not authentication |
 | `--prompt` | | Run a single prompt instead of interactive chat |
 | `--index-docs DIR` | | Rebuild the RAG index from `DIR`, then exit |
+| `--clear-sandbox` | | Delete everything the agent created in the OpenShell sandbox, then exit |
+
+## Skills
+
+Skills are Markdown instructions the agent loads on demand. Each one is a
+`SKILL.md` with a `name` and `description` in its frontmatter; the agent sees
+the descriptions and reads a skill's full text when a task matches it.
+
+| Skill | Used for |
+| --- | --- |
+| [`scene-planning`](src/deep_agents_demo/seed/skills/scene-planning/SKILL.md) | Planning a scene step by step: to-dos, delegation, budget checks, saving the proposal |
+| [`sandbox`](src/deep_agents_demo/seed/skills/sandbox/SKILL.md) | Working inside OpenShell: the image, installing packages with uv, headless plots, policy denials |
+
+- **Seeded once.** On start, the demo copies `src/deep_agents_demo/seed/` into
+  `demo_workspace/`, adding missing files and never overwriting your edits.
+- **Add your own.** Create `demo_workspace/skills/<name>/SKILL.md`, with the
+  folder name matching `name:`, then restart the demo.
+- **Reloaded each session.** Deep Agents stores the skill list in each thread;
+  the demo asks it to reload on the first message of every session, so old
+  threads see new or edited skills after a restart.
+- **Local even with a sandbox.** Skills are read from your machine through the
+  `/instructions/` route; they are never copied into the sandbox.
 
 ## Searching your documents (RAG)
 
@@ -300,12 +340,21 @@ OPENSHELL_SANDBOX_NAME=deep-agents-demo
 ```
 
 The demo attaches to the existing sandbox and never creates one, so it can't
-run in a sandbox that lacks the policy.
+run in a sandbox that lacks the policy. With OpenShell active, the agent reads
+the seeded [`sandbox` skill](src/deep_agents_demo/seed/skills/sandbox/SKILL.md)
+before its first command: it covers the image, installing packages with uv
+(there is no `pip`), headless plots, and what to do when the policy blocks a
+request.
 
 - **Change network rules live** with
   `openshell policy set deep-agents-demo --policy policy.yaml --wait`.
   Filesystem, Landlock and process settings are fixed at creation: recreate the
   sandbox to change them.
+- **Start over** with `uv run deep-agents-demo --clear-sandbox`. It empties
+  `/sandbox` (code, outputs, virtual environments, uv's cache) and the agent's
+  files in `/tmp`, but keeps the sandbox, image and policy, so it's much faster
+  than recreating. Conversation history is kept; add `--thread <new>` for a
+  fresh conversation too.
 - **Watch denials** with `openshell logs deep-agents-demo --since 5m --source sandbox`.
 - **Clean up** with `openshell sandbox delete deep-agents-demo`.
 
@@ -339,6 +388,10 @@ works, with the demo itself running on Windows:
 
    Leave the value unquoted: quoting it makes `.env` parsing drop one of the
    two leading backslashes.
+
+After a reboot, the gateway can start before Docker Desktop is ready. If
+`openshell status` fails, run `systemctl --user restart openshell-gateway` in
+Ubuntu.
 
 ### Daytona (remote)
 
@@ -391,7 +444,8 @@ src/deep_agents_demo/
 ├── agent.py        # deep agent, system prompt and asset-researcher subagent
 ├── catalog.py      # fictional asset catalog and its tools
 ├── config.py       # project paths and environment settings
-├── workspace.py    # seeds the starter memory file and skill
+├── workspace.py    # copies seed/ into demo_workspace/ on first run
+├── seed/           # starter memory file and skills (SKILL.md files)
 ├── memory.py       # Mem0 long-term memory and remember/recall tools
 ├── rag.py          # Qdrant document index and the search_docs tool
 ├── embeddings.py   # OpenAI / NVIDIA-compatible embedding client
@@ -409,9 +463,12 @@ src/deep_agents_demo/
 | `data/document_vectors/` | RAG Qdrant index |
 | `data/mem0_internal/` | Auxiliary Mem0 data, if created |
 | `data/daytona_sandbox_id.txt` | Saved sandbox ID |
-| `demo_workspace/` | Agent files and the seeded skill |
+| `demo_workspace/` | Agent files and the seeded skills |
 
-All of these, and `.env`, are excluded by `.gitignore`.
+All of these, and `.env`, are excluded by `.gitignore`. With OpenShell, the
+agent's files live in the sandbox's `/sandbox` (clear them with
+`--clear-sandbox`), and the CLI keeps its gateway config and certificates in
+`~/.config/openshell/` and `~/.local/state/openshell/` on the machine running it.
 
 ## Privacy
 
@@ -443,7 +500,11 @@ All of these, and `.env`, are excluded by `.gitignore`.
 - **"OpenShell sandbox ... not found".** Create it with the command in the
   message, or set `OPENSHELL_SANDBOX_NAME` / `OPENSHELL_WORKSPACE` to match it.
 - **"no active gateway" or connection errors.** Run `openshell status` and make
-  sure Docker is running On Windows, check `XDG_CONFIG_HOME` in `.env`.
+  sure Docker is running. On Windows, check `XDG_CONFIG_HOME` in `.env`, and
+  after a reboot run `systemctl --user restart openshell-gateway` in Ubuntu.
+- **The agent ignores a new or edited skill.** Restart the demo. Deep Agents
+  saves the skill list in each thread and the demo reloads it once per session,
+  so changes made while a session is running appear only after a restart.
 - **OpenShell file tools fail with "python3: command not found".** The sandbox
   was created from the default image; recreate it with `--from` (step 3).
 - **A command can't download something.** The policy denied it. Check
@@ -457,12 +518,21 @@ All of these, and `.env`, are excluded by `.gitignore`.
 uv run python -m unittest discover -s tests -v
 ```
 
-The tests run offline. They use a real local Qdrant with fake embeddings to
-cover indexing, retrieval, reindexing and persistence, check per-user memory
-scoping and the catalog tools, and verify NVIDIA request bodies against a mocked
-HTTP endpoint. The OpenShell backend is tested against a fake session, and on
-Linux its file tools also run end to end through a real bash. Live model calls
-and real OpenShell or Daytona sandboxes are not covered.
+The tests run offline and need no API keys:
+
+- **RAG:** a real local Qdrant with fake embeddings covers indexing, retrieval,
+  reindexing and persistence.
+- **Memory and embeddings:** per-user memory scoping, and NVIDIA request bodies
+  checked against a mocked HTTP endpoint.
+- **Agent:** the real Deep Agents graph with a fake model checks that skills
+  reload each session; seeding and skill format are checked too.
+- **OpenShell:** the backend and `--clear-sandbox` run against a fake session,
+  and on Linux (as in CI) also end to end through a real bash, including all of
+  Deep Agents' file tools.
+- **Policy:** `policy.yaml` is checked to enforce every rule.
+
+Live model calls and real OpenShell or Daytona sandboxes are not covered by the
+suite; the OpenShell policy was verified by hand against a running sandbox.
 
 ## Contributing
 
