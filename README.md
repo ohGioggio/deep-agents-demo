@@ -82,15 +82,19 @@ preference is still there.
 ## Architecture
 
 <p align="center">
-  <a href="assets/architecture.svg"><img src="assets/architecture.svg" width="100%" alt="Architecture: the CLI feeds the Deep Agents loop, which drives planning, context management, checkpoints, skills and the asset-researcher subagent; uses Mem0 and Qdrant for memory and RAG; and runs code in an OpenShell sandbox whose policy proxy only allows PyPI and GitHub, or in Daytona. Chat and embedding models are external providers."/></a>
+  <a href="assets/architecture.svg"><img src="assets/architecture.svg" width="100%" alt="Architecture: the CLI feeds the Deep Agents loop, which drives planning, context management, chats saved as SQLite checkpoints, skills and the asset-researcher subagent; uses Mem0 and Qdrant for memory (remember, list and forget tools, automatic recall into every turn, secrets refused) and RAG; and runs code in an OpenShell sandbox whose policy proxy only allows PyPI and GitHub, or in Daytona. Chat and embedding models are external providers."/></a>
 </p>
 
 - **Agent loop.** Deep Agents runs the model and its tools until the task is
   done; every step streams to your terminal.
-- **Harness.** Planning, context management, checkpoints, skills and the
-  `asset-researcher` subagent are built in and wired to the loop.
-- **Memory and knowledge.** Mem0 keeps per-user memories and `search_docs`
-  retrieves cited passages; both use Qdrant and your embedding provider.
+- **Harness.** Planning, context management, skills and the `asset-researcher`
+  subagent are built in and wired to the loop. Every conversation is saved as a
+  [chat](#chats) you can list, switch, rename and delete.
+- **Memory and knowledge.** The agent manages per-user Mem0 memories with
+  `remember`, `list_memories` and `forget`, and relevant memories are recalled
+  into every turn automatically. Secrets are refused before anything is stored.
+  `search_docs` retrieves cited passages. Both use Qdrant and your embedding
+  provider.
 - **Execution.** The backend router sends file and shell tools to local files,
   an OpenShell sandbox or Daytona. In OpenShell, all traffic passes the policy
   proxy, which allows only PyPI and GitHub.
@@ -207,6 +211,7 @@ uv run deep-agents-demo --user alice                     # separate memory names
 uv run deep-agents-demo --prompt "Plan a small park"     # one prompt, then exit
 uv run deep-agents-demo --index-docs docs                # rebuild the RAG index
 uv run deep-agents-demo --clear-sandbox                  # delete the agent's files in OpenShell
+uv run deep-agents-demo --list-threads                   # your chats, most recent first
 uv run python -m deep_agents_demo --help                 # same CLI, as a module
 uv run python -m unittest discover -s tests -v           # offline tests
 ```
@@ -218,6 +223,10 @@ uv run python -m unittest discover -s tests -v           # offline tests
 | `--prompt` | | Run a single prompt instead of interactive chat |
 | `--index-docs DIR` | | Rebuild the RAG index from `DIR`, then exit |
 | `--clear-sandbox` | | Delete everything the agent created in the OpenShell sandbox, then exit |
+| `--list-threads` | | List your chats with turns, last use and last message, then exit |
+| `--show-thread NAME` | | Print a chat's transcript, then exit |
+| `--rename-thread OLD NEW` | | Rename a chat, then exit |
+| `--delete-thread NAME` | | Delete a chat after asking (`--yes` skips the question), then exit |
 
 ## Skills
 
@@ -309,6 +318,41 @@ case an older one slipped through. The detector errs on the side of refusing.
   user's id gets the same answer as an id that doesn't exist.
 - **Not authentication.** `--user` is a namespace. RAG, files and the sandbox are
   shared: this is a single-user demo, not a multi-tenant app.
+
+## Chats
+
+Every conversation is a chat (a LangGraph thread) saved in
+`demo_checkpoints.sqlite` under your `--user`. Pick one with `--thread`, or
+manage them without leaving the session:
+
+```text
+[city-demo] You: /threads
+   CHAT        TURNS  LAST USED         LAST MESSAGE
+*  city-demo       6  2026-11-10 09:12  Install matplotlib and render the sine plot a...
+   park-ideas      3  2026-11-09 18:40  Make it fit my usual budget
+[city-demo] You: /switch park-ideas
+Switched to 'park-ideas' (3 turns).
+```
+
+| Command | What it does |
+| --- | --- |
+| `/threads` | List your chats, most recent first (`*` marks the current one) |
+| `/new [name]` | Start a new chat; without a name it gets a dated one like `chat-20261110-091500` |
+| `/switch NAME` | Continue another chat with its full history |
+| `/history` | Show this chat's messages and the agent's replies |
+| `/rename NAME` | Rename this chat |
+| `/delete NAME` | Delete a chat and its history, after asking |
+| `/help` | Show these commands |
+
+The same operations work from the shell without starting a chat or calling the
+model: `--list-threads`, `--show-thread`, `--rename-thread` and
+`--delete-thread` (see [Common commands](#common-commands)).
+
+- **Per user.** You only see and change chats of the current `--user`.
+- **Memories are shared across chats.** Deleting a chat removes its
+  conversation, not what the agent remembers about you; use `forget` for that.
+- **A new chat is saved on its first message,** so an empty `/new` leaves nothing behind.
+- **Names** use letters, digits, `.`, `_` and `-` (up to 64 characters).
 
 ## Running code in a sandbox
 
@@ -485,6 +529,7 @@ src/deep_agents_demo/
 ├── memory_policy.py  # write policy: detects and redacts secrets
 ├── rag.py          # Qdrant document index and the search_docs tool
 ├── embeddings.py   # OpenAI / NVIDIA-compatible embedding client
+├── threads.py      # chat management: list, show, rename, delete
 ├── sandbox.py      # backend selection: local files, OpenShell or Daytona
 └── openshell_backend.py  # OpenShell sandbox backend for Deep Agents
 ```
@@ -493,7 +538,7 @@ src/deep_agents_demo/
 
 | Path | Contents |
 | --- | --- |
-| `demo_checkpoints.sqlite` | Conversation checkpoints |
+| `demo_checkpoints.sqlite` | Chats: every conversation, per user ([Chats](#chats)) |
 | `data/mem0_history.sqlite` | Mem0 change history |
 | `data/memory_vectors/` | Mem0 Qdrant index |
 | `data/document_vectors/` | RAG Qdrant index |
@@ -605,6 +650,8 @@ The tests run offline and need no API keys:
   and automatic recall inside the real Deep Agents graph: memories reach the
   model but never the saved conversation.
 - **Embeddings:** NVIDIA request bodies checked against a mocked HTTP endpoint.
+- **Chats:** listing, transcripts, rename and delete on a real SQLite checkpoint
+  file through the real agent graph, plus every slash command.
 - **Agent:** the real Deep Agents graph with a fake model checks that skills
   reload each session; seeding and skill format are checked too.
 - **OpenShell:** the backend and `--clear-sandbox` run against a fake session,
