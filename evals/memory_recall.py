@@ -36,7 +36,7 @@ from deep_agents_demo import app  # noqa: E402
 from deep_agents_demo.agent import build_agent  # noqa: E402
 from deep_agents_demo.config import RECALL_MODES, Settings  # noqa: E402
 from deep_agents_demo.catalog import catalog_feature  # noqa: E402
-from deep_agents_demo.memory import close_memory, make_memory, memory_feature  # noqa: E402
+from deep_agents_demo.memory import MemoryService, close_memory, make_memory, memory_feature  # noqa: E402
 from deep_agents_demo.workspace import seed_files  # noqa: E402
 
 USER = "eval-user"
@@ -110,7 +110,7 @@ def run_mode(mode, settings, model, run_index):
             seed_files(tmp / "workspace")
             agent = build_agent(model, InMemorySaver(),
                                 FilesystemBackend(root_dir=str(tmp / "workspace"), virtual_mode=True),
-                                [catalog_feature(), memory_feature(memory, USER, mode)])
+                                [catalog_feature(), memory_feature(MemoryService(memory, USER), mode)])
             rows = []
             for name, kind, prompt, keywords in SCENARIOS:
                 row = run_turn(agent, prompt + ANSWER_STYLE, f"{mode}-{run_index}-{name}")

@@ -329,6 +329,9 @@ case an older one slipped through. The detector errs on the side of refusing.
   conversation history.
 - **Scoped deletes.** `forget` only deletes the current user's memories; another
   user's id gets the same answer as an id that doesn't exist.
+- **One place for the rules.** All of this lives in `MemoryService`, the only code
+  that talks to Mem0 for a user. The tools and automatic recall go through it,
+  and its `WritePolicy` (secret detection and redaction) can be swapped.
 - **Not authentication.** `--user` is a namespace. RAG, files and the sandbox are
   shared: this is a single-user demo, not a multi-tenant app.
 
@@ -545,7 +548,7 @@ src/deep_agents_demo/
 ├── catalog.py      # example tools: fictional asset catalog
 ├── workspace.py    # copies seed/ into demo_workspace/ on first run
 ├── seed/           # starter memory file and skills (SKILL.md files)
-├── memory.py       # Mem0 memory: remember, recall, list, forget, automatic recall
+├── memory.py       # MemoryService (one user's Mem0 access + write policy), tools, auto recall
 ├── memory_policy.py  # write policy: detects and redacts secrets
 ├── rag.py          # Qdrant document index and the search_docs tool
 ├── embeddings.py   # OpenAI / NVIDIA-compatible embedding client

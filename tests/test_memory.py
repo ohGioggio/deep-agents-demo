@@ -12,8 +12,8 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deep_agents_demo.agent import build_agent
-from deep_agents_demo.memory import (AutoRecallMiddleware, file_memory_feature, memory_feature,
-                                     memory_tools)
+from deep_agents_demo.memory import (AutoRecallMiddleware, MemoryService, WritePolicy,
+                                     file_memory_feature, memory_feature, memory_tools)
 from deep_agents_demo.memory_policy import find_secrets, redact
 
 KEY = "sk-proj-abcDEF1234567890ghijKLMNOP"
@@ -57,7 +57,7 @@ class FakeMemory:
 
 
 def tools_for(memory, user="alice", recall_tool=True):
-    return {t.__name__: t for t in memory_tools(memory, user, recall_tool=recall_tool)}
+    return {t.__name__: t for t in memory_tools(MemoryService(memory, user), recall_tool=recall_tool)}
 
 
 class WritePolicyTests(unittest.TestCase):
@@ -132,25 +132,59 @@ class LifecycleTests(unittest.TestCase):
                          ["forget", "list_memories", "remember"])
 
     def test_prompt_matches_recall_mode(self):
-        prompt = {mode: memory_feature(self.mem, "alice", mode).prompt for mode in ("tool", "auto", "both")}
+        service = MemoryService(self.mem, "alice")
+        prompt = {mode: memory_feature(service, mode).prompt for mode in ("tool", "auto", "both")}
         self.assertIn("Use recall", prompt["tool"])
         self.assertIn("There is no recall tool", prompt["auto"])
         self.assertIn("forget with an id from list_memories when", prompt["auto"])
         self.assertIn("Never store secrets", prompt["both"])
 
     def test_feature_matches_recall_mode(self):
-        auto = memory_feature(self.mem, "alice", "auto")
+        service = MemoryService(self.mem, "alice")
+        auto = memory_feature(service, "auto")
         self.assertEqual([t.__name__ for t in auto.tools], ["remember", "list_memories", "forget"])
         self.assertIsInstance(auto.middleware[0], AutoRecallMiddleware)
-        tool = memory_feature(self.mem, "alice", "tool")
+        tool = memory_feature(service, "tool")
         self.assertIn("recall", [t.__name__ for t in tool.tools])
         self.assertEqual(tool.middleware, ())
-        self.assertEqual(len(memory_feature(self.mem, "alice", "both").middleware), 1)
+        self.assertEqual(len(memory_feature(service, "both").middleware), 1)
 
     def test_file_memory_feature(self):
         feature = file_memory_feature("/instructions")
         self.assertEqual(feature.memory_sources, ("/instructions/memories/AGENTS.md",))
         self.assertIn("/instructions/memories/AGENTS.md", feature.prompt)
+
+
+class MemoryServiceTests(unittest.TestCase):
+    def test_policy_is_injectable(self):
+        mem = FakeMemory()
+        strict = WritePolicy(find_secrets=lambda text: ["phone number"] if "333" in text else [],
+                             redact=lambda text: text.replace("333", "***"))
+        service = MemoryService(mem, "alice", strict)
+        refused = service.remember("Call me on 3331234567")
+        self.assertEqual((refused["stored"], refused["detected"]), (False, ["phone number"]))
+        self.assertEqual(mem.add_calls, 0)
+        mem.seed("alice", "Old note: 333 is my desk")
+        self.assertEqual(service.list()[0]["memory"], "Old note: *** is my desk")
+
+    def test_service_returns_plain_data_scoped_to_its_user(self):
+        mem = FakeMemory()
+        mem.seed("alice", "Prefers pine trees")
+        mem.seed("bob", "Prefers oak trees")
+        alice = MemoryService(mem, "alice")
+        self.assertEqual([m["memory"] for m in alice.list()], ["Prefers pine trees"])
+        self.assertEqual([m["memory"] for m in alice.search("trees")], ["Prefers pine trees"])
+        self.assertEqual(alice.search("trees")[0]["score"], 0.9)
+        stored = alice.remember("Uses uv")
+        self.assertTrue(stored["stored"])
+        self.assertTrue(alice.forget(stored["results"][0]["id"])["forgotten"])
+
+    def test_auto_recall_goes_through_the_service(self):
+        mem = FakeMemory()
+        mem.seed("alice", f"Trees note with key {KEY}")
+        mem.seed("bob", "Trees are oak for bob")
+        recalled = AutoRecallMiddleware(MemoryService(mem, "alice")).recalled("trees")
+        self.assertEqual(recalled, ["Trees note with key [REDACTED]"])
 
 
 class RecordingModel(FakeMessagesListChatModel):
@@ -173,7 +207,7 @@ class AutoRecallTests(unittest.TestCase):
             model = RecordingModel(responses=[AIMessage(content="ok")] * 4, systems=[])
             agent = build_agent(model, InMemorySaver(),
                                 FilesystemBackend(root_dir=str(root), virtual_mode=True),
-                                [memory_feature(mem, "alice", "auto")])
+                                [memory_feature(MemoryService(mem, "alice"), "auto")])
             config = {"configurable": {"thread_id": "t"}}
             agent.invoke({"messages": [{"role": "user", "content": prompt}]}, config)
             history = agent.get_state(config).values["messages"]
@@ -198,7 +232,7 @@ class AutoRecallTests(unittest.TestCase):
     def test_nothing_injected_without_matches_and_search_runs_once_per_message(self):
         mem = FakeMemory()
         mem.seed("alice", "Prefers pine trees")
-        middleware = AutoRecallMiddleware(mem, "alice")
+        middleware = AutoRecallMiddleware(MemoryService(mem, "alice"))
         self.assertEqual(middleware.recalled("budget question"), [])
         middleware.recalled("budget question")
         self.assertEqual(mem.search_calls, 1)

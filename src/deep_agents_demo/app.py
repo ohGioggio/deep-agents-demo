@@ -15,7 +15,8 @@ from deep_agents_demo.agent import build_agent
 from deep_agents_demo.config import Settings, rate_limiter
 from deep_agents_demo.embeddings import CompatibleEmbeddings
 from deep_agents_demo.catalog import catalog_feature
-from deep_agents_demo.memory import close_memory, file_memory_feature, make_memory, memory_feature
+from deep_agents_demo.memory import (MemoryService, close_memory, file_memory_feature, make_memory,
+                                     memory_feature)
 from deep_agents_demo.rag import DocumentIndex, documents_feature
 from deep_agents_demo.sandbox import BackendSetup, make_backend
 from deep_agents_demo.threads import Chats
@@ -62,7 +63,7 @@ def features(settings: Settings, user: str, stack: ExitStack, setup):
         memory = make_memory(settings.paths.data, settings.memory, settings.embeddings,
                              embeddings(settings))
         stack.callback(close_memory, memory)
-        yield memory_feature(memory, user, settings.memory.recall_mode)
+        yield memory_feature(MemoryService(memory, user), settings.memory.recall_mode)
     else:
         yield file_memory_feature(setup.skills_prefix)
     if settings.rag_enabled:

@@ -2,6 +2,8 @@
 import json
 import logging
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
@@ -85,57 +87,93 @@ def _results(response):
     return response.get("results", []) if isinstance(response, dict) else list(response or [])
 
 
-def _visible(item):
-    """A memory as shown to the model: id, redacted text, and score if present."""
-    shown = {"id": item.get("id"), "memory": redact(item.get("memory", ""))}
-    if item.get("score") is not None:
-        shown["score"] = round(float(item["score"]), 3)
-    return shown
+@dataclass(frozen=True)
+class WritePolicy:
+    """What may be stored, and how stored text is shown.
+
+    ``find_secrets(text)`` names the kinds of secrets in a text (empty if none);
+    ``redact(text)`` masks them. The default is ``memory_policy``.
+    """
+    find_secrets: Callable[[str], list] = find_secrets
+    redact: Callable[[str], str] = redact
 
 
-def memory_tools(memory, user_id, recall_tool=True):
-    """Tools bound to one user. Identity comes from trusted code, never model arguments."""
+class MemoryService:
+    """One user's long-term memory: the only code that talks to Mem0 for that user.
+
+    Every operation is scoped to ``user_id``, which comes from trusted code (the
+    CLI's --user), never from the model. Writes go through the ``WritePolicy``:
+    secrets are refused before they reach Mem0 (its extraction model and history
+    database included), and any secret-looking rewrite Mem0 produces is deleted.
+    Everything returned is redacted, in case an older memory slipped through.
+    Results are plain dicts, ready to serialize for a tool.
+    """
+
+    def __init__(self, memory, user_id: str, policy: WritePolicy = WritePolicy()):
+        self.memory, self.user_id, self.policy = memory, user_id, policy
+
+    def _shown(self, item) -> dict:
+        """A memory as shown to the model: id, redacted text, and score if present."""
+        shown = {"id": item.get("id"), "memory": self.policy.redact(item.get("memory", ""))}
+        if item.get("score") is not None:
+            shown["score"] = round(float(item["score"]), 3)
+        return shown
+
+    def remember(self, fact: str) -> dict:
+        kinds = self.policy.find_secrets(fact)
+        if kinds:
+            return {"stored": False, "reason": "refused: looks like a secret", "detected": kinds,
+                    "advice": "Secrets are never stored in memory. Tell the user to keep "
+                              "them in a password manager or environment variables."}
+        stored = _results(self.memory.add([{"role": "user", "content": fact}], user_id=self.user_id))
+        # Mem0 rewrites facts with an LLM; never keep a rewrite that looks secret.
+        removed = [item["id"] for item in stored
+                   if item.get("id") and self.policy.find_secrets(item.get("memory", ""))]
+        for memory_id in removed:
+            self.memory.delete(memory_id)
+        kept = [self._shown(item) for item in stored if item.get("id") not in removed]
+        return {"stored": bool(kept), "results": kept, "removed_as_secret": len(removed)}
+
+    def search(self, query: str, top_k: int = RECALL_TOP_K) -> list[dict]:
+        hits = _results(self.memory.search(query, filters={"user_id": self.user_id}, top_k=top_k))
+        return [self._shown(hit) for hit in hits]
+
+    def list(self, limit: int = 100) -> list[dict]:
+        items = _results(self.memory.get_all(filters={"user_id": self.user_id}, top_k=limit))
+        return [self._shown(item) for item in items]
+
+    def forget(self, memory_id: str) -> dict:
+        item = self.memory.get(memory_id)
+        # Same answer for "missing" and "someone else's": don't reveal other users' ids.
+        if not item or item.get("user_id") != self.user_id:
+            return {"forgotten": False, "reason": "no memory with that id for this user"}
+        self.memory.delete(memory_id)
+        return {"forgotten": True, "id": memory_id, "memory": self.policy.redact(item.get("memory", ""))}
+
+
+def memory_tools(service: MemoryService, recall_tool=True):
+    """The agent's memory tools: thin JSON wrappers around one user's MemoryService."""
 
     def remember(fact: str) -> str:
         """Remember a fact or preference only when the user asks to save it.
 
         Secrets (passwords, API keys, tokens, card numbers, private keys) are
         refused and never stored."""
-        kinds = find_secrets(fact)
-        if kinds:
-            return json.dumps({"stored": False, "reason": "refused: looks like a secret",
-                               "detected": kinds,
-                               "advice": "Secrets are never stored in memory. Tell the user to keep "
-                                         "them in a password manager or environment variables."})
-        stored = _results(memory.add([{"role": "user", "content": fact}], user_id=user_id))
-        # Mem0 rewrites facts with an LLM; never keep a rewrite that looks secret.
-        removed = [item["id"] for item in stored
-                   if item.get("id") and find_secrets(item.get("memory", ""))]
-        for memory_id in removed:
-            memory.delete(memory_id)
-        kept = [_visible(item) for item in stored if item.get("id") not in removed]
-        return json.dumps({"stored": bool(kept), "results": kept,
-                           "removed_as_secret": len(removed)}, default=str)
+        return json.dumps(service.remember(fact), default=str)
 
     def recall(query: str) -> str:
         """Search this user's long-term memories for relevant preferences."""
-        hits = _results(memory.search(query, filters={"user_id": user_id}, top_k=RECALL_TOP_K))
-        return json.dumps([_visible(h) for h in hits], default=str)
+        return json.dumps(service.search(query), default=str)
 
     def list_memories() -> str:
         """List everything remembered about this user, with ids for forget."""
-        items = _results(memory.get_all(filters={"user_id": user_id}, top_k=100))
-        return json.dumps({"count": len(items), "memories": [_visible(i) for i in items]}, default=str)
+        items = service.list()
+        return json.dumps({"count": len(items), "memories": items}, default=str)
 
     def forget(memory_id: str) -> str:
         """Delete one of this user's memories by id (get ids from list_memories or recall).
         Only use when the user asks to forget or correct something."""
-        item = memory.get(memory_id)
-        # Same answer for "missing" and "someone else's": don't reveal other users' ids.
-        if not item or item.get("user_id") != user_id:
-            return json.dumps({"forgotten": False, "reason": "no memory with that id for this user"})
-        memory.delete(memory_id)
-        return json.dumps({"forgotten": True, "id": memory_id, "memory": redact(item.get("memory", ""))})
+        return json.dumps(service.forget(memory_id), default=str)
 
     tools = [remember, list_memories, forget]
     if recall_tool:
@@ -161,18 +199,17 @@ class AutoRecallMiddleware(AgentMiddleware):
     checkpoints don't grow and stale memories never linger in history.
     """
 
-    def __init__(self, memory, user_id, top_k=RECALL_TOP_K):
+    def __init__(self, service: MemoryService, top_k=RECALL_TOP_K):
         super().__init__()
-        self.memory, self.user_id, self.top_k = memory, user_id, top_k
+        self.service, self.top_k = service, top_k
         self._cache = {}
 
     def recalled(self, query):
         if query not in self._cache:
             if len(self._cache) > 32:
                 self._cache.clear()
-            hits = _results(self.memory.search(query, filters={"user_id": self.user_id},
-                                               top_k=self.top_k))
-            self._cache[query] = [redact(h.get("memory", "")) for h in hits if h.get("memory")]
+            self._cache[query] = [hit["memory"] for hit in self.service.search(query, self.top_k)
+                                  if hit["memory"]]
         return self._cache[query]
 
     def _with_memories(self, request):
@@ -209,7 +246,7 @@ _RECALL_PROMPT = {
 }
 
 
-def memory_feature(memory, user_id, recall_mode="auto") -> Feature:
+def memory_feature(service: MemoryService, recall_mode="auto") -> Feature:
     """Mem0 long-term memory for one user: tools, rules and automatic recall."""
     ids_from = "list_memories" if recall_mode == "auto" else "list_memories or recall"
     prompt = (_RECALL_PROMPT[recall_mode]
@@ -222,8 +259,8 @@ def memory_feature(memory, user_id, recall_mode="auto") -> Feature:
     return Feature(
         name="memory",
         prompt=prompt,
-        tools=tuple(memory_tools(memory, user_id, recall_tool=recall_mode != "auto")),
-        middleware=(AutoRecallMiddleware(memory, user_id),) if recall_mode != "tool" else (),
+        tools=tuple(memory_tools(service, recall_tool=recall_mode != "auto")),
+        middleware=(AutoRecallMiddleware(service),) if recall_mode != "tool" else (),
     )
 
 
