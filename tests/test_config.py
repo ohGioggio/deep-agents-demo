@@ -106,5 +106,25 @@ class RunChatTests(unittest.TestCase):
         self.assertEqual(stream.call_args.args[1], "hello")
 
 
+class RegistryTests(unittest.TestCase):
+    def test_sandbox_providers_match_the_settings_check(self):
+        from deep_agents_demo.config import SANDBOX_PROVIDERS
+        from deep_agents_demo.sandbox import PROVIDERS
+        self.assertEqual(set(SANDBOX_PROVIDERS), {"none", *PROVIDERS})
+
+    def test_every_command_is_in_help_and_dispatches(self):
+        for name, method in chat.COMMANDS.items():
+            names, usage, _summary = method.command
+            self.assertIn(usage, chat.HELP)
+            self.assertIn(name, names)
+        self.assertEqual(chat.COMMANDS["chats"], chat.COMMANDS["threads"])
+        said = []
+        session = chat.ChatSession(MagicMock(), "c1", say=said.append)
+        self.assertTrue(session.handle("/HELP"))
+        self.assertEqual(said[-1], chat.HELP)
+        session.handle("/nope")
+        self.assertIn("Unknown command /nope", said[-1])
+
+
 if __name__ == "__main__":
     unittest.main()

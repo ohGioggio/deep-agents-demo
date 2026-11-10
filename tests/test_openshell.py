@@ -13,7 +13,7 @@ from openshell import ExecResult
 
 from deep_agents_demo import openshell_backend
 from deep_agents_demo.openshell_backend import OpenShellBackend
-from deep_agents_demo.sandbox import LazySandbox, clear_sandbox, make_backend
+from deep_agents_demo.sandbox import LazySandbox, clear_sandbox, make_backend, sandbox_feature
 
 POLICY = Path(__file__).resolve().parents[1] / "policy.yaml"
 
@@ -201,9 +201,11 @@ class ProviderSelectionTests(unittest.TestCase):
         from deep_agents_demo.config import SandboxSettings
         with patch("openshell.SandboxClient.from_active_cluster", return_value=client) as connect, \
                 contextlib.ExitStack() as stack:
-            backend, prefix, workdir = make_backend(SandboxSettings(provider="openshell"),
-                                                    Path("."), Path("."), stack, said.append)
-            self.assertEqual((prefix, workdir), ("/instructions", "/sandbox"))
+            setup = make_backend(SandboxSettings(provider="openshell"),
+                                 Path("."), Path("."), stack, said.append)
+            backend = setup.backend
+            self.assertEqual((setup.skills_prefix, setup.workdir), ("/instructions", "/sandbox"))
+            self.assertEqual(setup.feature.skill_dirs, ("sandbox-skills/",))
             self.assertIsInstance(backend.default, LazySandbox)
             connect.assert_not_called()  # starting a chat doesn't need the sandbox
             self.assertEqual(said, [])
@@ -256,8 +258,8 @@ class ProviderSelectionTests(unittest.TestCase):
             lazy = LazySandbox(never, "OpenShell sandbox 'demo'", say=lambda *_: None)
             backend = CompositeBackend(default=lazy, routes={"/instructions/": local})
             model = Model(responses=[AIMessage(content="ok")], tool_names=[])
-            agent = build_agent(model, InMemorySaver(), backend, prefix="/instructions",
-                                workdir="/sandbox", use_mem0=True)
+            agent = build_agent(model, InMemorySaver(), backend, [sandbox_feature("/sandbox")],
+                                skills_prefix="/instructions")
             agent.invoke({"messages": [{"role": "user", "content": "hello"}]},
                          {"configurable": {"thread_id": "t"}})
         self.assertFalse(lazy.connected)

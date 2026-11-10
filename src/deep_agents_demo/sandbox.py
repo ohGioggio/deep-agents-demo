@@ -1,8 +1,11 @@
 """Backend selection: local files only, or a Daytona / OpenShell sandbox."""
 import shlex
+from dataclasses import dataclass
 
 from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse
 from deepagents.backends.sandbox import BaseSandbox
+
+from deep_agents_demo.agent import Feature
 
 
 # Empties the working directory and removes the sandbox user's own top-level
@@ -103,46 +106,91 @@ class LazySandbox(BaseSandbox):
         return backend.download_files(paths)
 
 
-def make_backend(settings, workspace, data, stack, say=print):
-    """Return ``(backend, skills_prefix, workdir)``.
+@dataclass(frozen=True)
+class Remote:
+    """A configured remote sandbox: the (lazily connecting) backend and where to work."""
+    backend: LazySandbox
+    workdir: str
+    openshell_skill: bool = False  # offer the OpenShell sandbox skill
 
-    With a sandbox, normal paths are remote and only ``/instructions/`` maps to
-    the local skills. ``settings`` is a ``config.SandboxSettings`` (already
-    validated); ``stack`` (an ExitStack) receives any cleanup callbacks.
+
+def _daytona(settings, data, stack, say) -> Remote:
+    def connect():
+        # The Daytona client reads DAYTONA_API_KEY from the environment itself.
+        from daytona import Daytona
+        from langchain_daytona import DaytonaSandbox
+        client = Daytona()
+        id_file = data / "daytona_sandbox_id.txt"
+        sandbox_id = settings.daytona_sandbox_id
+        if not sandbox_id and id_file.exists():
+            sandbox_id = id_file.read_text().strip()
+        sandbox = client.get(sandbox_id) if sandbox_id else client.create()
+        id_file.write_text(sandbox.id)
+        return DaytonaSandbox(sandbox=sandbox, timeout=120)
+
+    return Remote(LazySandbox(connect, "Daytona sandbox", say), "/home/daytona")
+
+
+def _openshell(settings, data, stack, say) -> Remote:
+    def connect():
+        from deep_agents_demo.openshell_backend import OpenShellBackend
+        from deep_agents_demo.openshell_backend import connect as open_session
+        client, session = open_session(settings.openshell_name, settings.openshell_workspace)
+        stack.callback(client.close)
+        return OpenShellBackend(session, workdir=settings.openshell_workdir)
+
+    label = f"OpenShell sandbox '{settings.openshell_name}'"
+    return Remote(LazySandbox(connect, label, say), settings.openshell_workdir, openshell_skill=True)
+
+
+@dataclass(frozen=True)
+class BackendSetup:
+    """Where the agent's file and shell tools act, and what it needs to know about it."""
+    backend: object
+    skills_prefix: str = ""          # where the local workspace (skills, file memory) is mounted
+    feature: object = None           # sandbox rules for the agent, or None for local files
+    workdir: str | None = None       # the sandbox working directory
+
+
+# Remote sandbox providers by SANDBOX_PROVIDER value ("none" means local files).
+# To add one, write a function like the two above and register it here; the
+# settings check in config.SANDBOX_PROVIDERS must list the same names (a test
+# keeps them in sync).
+PROVIDERS = {"daytona": _daytona, "openshell": _openshell}
+
+
+def make_backend(settings, workspace, data, stack, say=print):
+    """Return a ``BackendSetup`` for the configured provider.
+
+    Without a sandbox: local files, no prefix, no feature. With one, normal paths
+    are remote and only ``/instructions/`` maps to the local workspace (skills and
+    file memory); the feature tells the agent how to work in the sandbox.
+    ``settings`` is a validated ``config.SandboxSettings``; ``stack`` (an
+    ExitStack) receives cleanup callbacks.
     """
     from deepagents.backends import CompositeBackend, FilesystemBackend
     local = FilesystemBackend(root_dir=str(workspace), virtual_mode=True)
     if settings.provider == "none":
-        return local, "", None
-    if settings.provider == "daytona":
-        remote = LazySandbox(lambda: _daytona(data, settings.daytona_sandbox_id),
-                             "Daytona sandbox", say)
-        workdir = "/home/daytona"
-    elif settings.provider == "openshell":
-        workdir = settings.openshell_workdir
-        remote = LazySandbox(lambda: _openshell(stack, settings),
-                             f"OpenShell sandbox '{settings.openshell_name}'", say)
-    else:
-        raise ValueError(f"Unknown sandbox provider {settings.provider!r}")
-    backend = CompositeBackend(default=remote, routes={"/instructions/": local})
-    return backend, "/instructions", workdir
+        return BackendSetup(local)
+    try:
+        provider = PROVIDERS[settings.provider]
+    except KeyError:
+        raise ValueError(f"Unknown sandbox provider {settings.provider!r}") from None
+    remote = provider(settings, data, stack, say)
+    backend = CompositeBackend(default=remote.backend, routes={"/instructions/": local})
+    return BackendSetup(backend, "/instructions",
+                        sandbox_feature(remote.workdir, remote.openshell_skill), remote.workdir)
 
 
-def _daytona(data, sandbox_id=None):
-    # The Daytona client reads DAYTONA_API_KEY from the environment itself.
-    from daytona import Daytona
-    from langchain_daytona import DaytonaSandbox
-    client = Daytona()
-    id_file = data / "daytona_sandbox_id.txt"
-    if not sandbox_id and id_file.exists():
-        sandbox_id = id_file.read_text().strip()
-    sandbox = client.get(sandbox_id) if sandbox_id else client.create()
-    id_file.write_text(sandbox.id)
-    return DaytonaSandbox(sandbox=sandbox, timeout=120)
-
-
-def _openshell(stack, settings):
-    from deep_agents_demo.openshell_backend import OpenShellBackend, connect
-    client, session = connect(settings.openshell_name, settings.openshell_workspace)
-    stack.callback(client.close)
-    return OpenShellBackend(session, workdir=settings.openshell_workdir)
+def sandbox_feature(workdir, openshell_skill=False) -> Feature:
+    """Rules for working in a sandbox; with OpenShell, also its skill folder."""
+    prompt = (f"You are using a sandbox. Keep code and output under {workdir}; when a skill or "
+              f"the user names a path starting with /, put it under {workdir} instead. "
+              "Local /instructions paths contain skills only. ")
+    if openshell_skill:
+        # The sandbox skill describes the OpenShell image; offering it without that
+        # sandbox misleads the agent (it told users to pip install inside /sandbox).
+        prompt += ("Read the sandbox skill before your first command in the sandbox, and "
+                   "follow it for installing packages and handling blocked network access. ")
+    return Feature(name="sandbox", prompt=prompt,
+                   skill_dirs=("sandbox-skills/",) if openshell_skill else ())

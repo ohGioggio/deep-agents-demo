@@ -541,7 +541,7 @@ src/deep_agents_demo/
 ├── app.py          # composition root: builds model, memory, documents, sandbox and agent
 ├── chat.py         # interactive chat loop, slash commands and streamed output
 ├── commands.py     # one-shot commands: index docs, clear sandbox, manage chats
-├── agent.py        # deep agent, system prompt and researcher subagent
+├── agent.py        # Feature, and build_agent: assembles features into a deep agent
 ├── catalog.py      # example tools: fictional asset catalog
 ├── workspace.py    # copies seed/ into demo_workspace/ on first run
 ├── seed/           # starter memory file and skills (SKILL.md files)
@@ -557,6 +557,18 @@ src/deep_agents_demo/
 Settings flow one way: `cli.py` reads them once into a frozen `Settings`, and
 `app.py` passes each component only the part it needs. No other module reads
 environment variables, so every dependency is visible in a function signature.
+
+**Extending the agent.** Each capability describes itself as a `Feature` (a
+prompt section, tools, middleware, read-only lookups for the `researcher`,
+skill folders), built in its own module: `memory_feature`, `documents_feature`,
+`catalog_feature`, `sandbox_feature`. `build_agent` only assembles features, so:
+
+- **A new capability** is a function returning a `Feature`, added to
+  `features()` in `app.py`.
+- **A new sandbox provider** is a function in `sandbox.py` registered in
+  `PROVIDERS` (and listed in `config.SANDBOX_PROVIDERS`; a test keeps them in sync).
+- **A new slash command** is a `ChatSession` method decorated with `@command`;
+  the lookup and `/help` are built from the decorators.
 
 ## Where data is stored
 

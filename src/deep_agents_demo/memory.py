@@ -6,6 +6,7 @@ import os
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
 
+from deep_agents_demo.agent import Feature
 from deep_agents_demo.embeddings import Mem0EmbeddingAdapter
 from deep_agents_demo.memory_policy import find_secrets, redact
 
@@ -197,3 +198,38 @@ class AutoRecallMiddleware(AgentMiddleware):
 
     async def awrap_model_call(self, request, handler):
         return await handler(self._with_memories(request))
+
+
+_RECALL_PROMPT = {
+    "tool": "Use recall to retrieve relevant user preferences before relying on them. ",
+    "auto": "Relevant memories are added automatically under 'Recalled memories'; use "
+            "them when they apply. There is no recall tool. ",
+    "both": "Relevant memories are added automatically under 'Recalled memories'; use "
+            "recall to search for anything else you need. ",
+}
+
+
+def memory_feature(memory, user_id, recall_mode="auto") -> Feature:
+    """Mem0 long-term memory for one user: tools, rules and automatic recall."""
+    ids_from = "list_memories" if recall_mode == "auto" else "list_memories or recall"
+    prompt = (_RECALL_PROMPT[recall_mode]
+              + "Use remember only when explicitly asked to save a fact. Never store secrets "
+              "(passwords, API keys, tokens, card numbers); remember refuses them, so tell the "
+              "user to keep them in a password manager instead. Use list_memories when asked "
+              f"what you remember, and forget with an id from {ids_from} when asked to forget "
+              "or correct something. Mem0 is the source of long-term user preferences; do "
+              "not duplicate them in AGENTS.md. ")
+    return Feature(
+        name="memory",
+        prompt=prompt,
+        tools=tuple(memory_tools(memory, user_id, recall_tool=recall_mode != "auto")),
+        middleware=(AutoRecallMiddleware(memory, user_id),) if recall_mode != "tool" else (),
+    )
+
+
+def file_memory_feature(skills_prefix="") -> Feature:
+    """Without Mem0: preferences live in AGENTS.md, loaded by Deep Agents' file memory."""
+    path = f"{skills_prefix}/memories/AGENTS.md"
+    return Feature(name="file-memory",
+                   prompt=f"Save explicitly requested preferences in {path}. ",
+                   memory_sources=(path,))

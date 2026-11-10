@@ -6,16 +6,6 @@ from deep_agents_demo.app import build_runtime, prepare_workspace
 from deep_agents_demo.config import Settings
 from deep_agents_demo.threads import Chats, format_table, format_transcript, new_name, thread_id, valid_name
 
-HELP = """Chat commands:
-  /threads        list your chats (* marks the current one)
-  /new [name]     start a new chat (a dated name if you give none)
-  /switch NAME    continue another chat
-  /history        show this chat's messages
-  /rename NAME    rename this chat
-  /delete NAME    delete a chat and its history
-  /help           show this help
-  exit            quit"""
-
 GREETING = ("Ask anything. Ideas: a question about your indexed documents, "
             "'Remember that I prefer short answers', or the example skill: "
             "'Plan a city scene under 100000 triangles'.\n"
@@ -60,8 +50,21 @@ def stream_turn(agent, prompt, config, reload_skills=False) -> None:
                 print("[plan]", json.dumps(state["todos"], ensure_ascii=False))
 
 
+def command(*names, usage, summary):
+    """Register a ChatSession method as a slash command: /name, any aliases, and its help line."""
+    def register(method):
+        method.command = (names, usage, summary)
+        return method
+    return register
+
+
 class ChatSession:
-    """Tracks the current chat and handles slash commands typed in the chat loop."""
+    """Tracks the current chat and handles slash commands typed in the chat loop.
+
+    Each command is one method decorated with ``@command``; the lookup table and
+    the /help text are built from those decorators, so adding a command is
+    adding a method.
+    """
 
     def __init__(self, chats: Chats, current: str, ask=input, say=print):
         self.chats, self.current, self.ask, self.say = chats, current, ask, say
@@ -80,57 +83,82 @@ class ChatSession:
         """Run a slash command. Returns False if ``line`` is not a command."""
         if not line.startswith("/"):
             return False
-        command, _, arg = line[1:].partition(" ")
-        command, arg = command.lower(), arg.strip()
-        if command == "help":
-            self.say(HELP)
-        elif command in {"threads", "chats", "list"}:
-            table = format_table(self.chats.list(), self.current)
-            if not self.chats.exists(self.current):
-                table += f"\n*  {self.current} (new: saved after your first message)"
-            self.say(table)
-        elif command == "new":
-            name = arg or new_name()
-            if not valid_name(name):
-                self.say(f"Invalid name {name!r}: use letters, digits, '.', '_' or '-'.")
-            elif self.chats.exists(name):
-                self.say(f"A chat named {name!r} already exists; use /switch {name}.")
-            else:
-                self._enter(name, f"New chat {name!r}. It is saved once you send a message.")
-        elif command == "switch":
-            if not arg:
-                self.say("Usage: /switch NAME (see /threads)")
-            elif not self.chats.exists(arg):
-                self.say(f"No chat named {arg!r}. See /threads, or start one with /new {arg}.")
-            else:
-                self._enter(arg, f"Switched to {arg!r} ({self.chats.info(arg).turns} turns).")
-        elif command == "history":
-            if self.chats.exists(self.current):
-                self.say(format_transcript(self.chats.transcript(self.current)))
-            else:
-                self.say("(empty chat)")
-        elif command == "rename":
-            try:
-                self.chats.rename(self.current, arg)
-            except ValueError as error:
-                self.say(str(error))
-            else:
-                self.current = arg
-                self.say(f"Renamed to {arg!r}.")
-        elif command == "delete":
-            if not arg or not self.chats.exists(arg):
-                self.say(f"No chat named {arg!r}. See /threads.")
-            elif confirm(f"Delete chat {arg!r} ({self.chats.info(arg).turns} turns)?", self.ask):
-                self.chats.delete(arg)
-                current = arg == self.current
-                self.say(f"Deleted {arg!r}." + (" You are still in it, now empty." if current else ""))
-                if current:
-                    self.reload_skills = True
-            else:
-                self.say("Kept.")
+        name, _, arg = line[1:].partition(" ")
+        method = COMMANDS.get(name.lower())
+        if method is None:
+            self.say(f"Unknown command /{name.lower()}. Type /help.")
         else:
-            self.say(f"Unknown command /{command}. Type /help.")
+            method(self, arg.strip())
         return True
+
+    @command("help", usage="/help", summary="show this help")
+    def help(self, arg):
+        self.say(HELP)
+
+    @command("threads", "chats", "list", usage="/threads", summary="list your chats (* marks the current one)")
+    def threads(self, arg):
+        table = format_table(self.chats.list(), self.current)
+        if not self.chats.exists(self.current):
+            table += f"\n*  {self.current} (new: saved after your first message)"
+        self.say(table)
+
+    @command("new", usage="/new [name]", summary="start a new chat (a dated name if you give none)")
+    def new(self, arg):
+        name = arg or new_name()
+        if not valid_name(name):
+            self.say(f"Invalid name {name!r}: use letters, digits, '.', '_' or '-'.")
+        elif self.chats.exists(name):
+            self.say(f"A chat named {name!r} already exists; use /switch {name}.")
+        else:
+            self._enter(name, f"New chat {name!r}. It is saved once you send a message.")
+
+    @command("switch", usage="/switch NAME", summary="continue another chat")
+    def switch(self, arg):
+        if not arg:
+            self.say("Usage: /switch NAME (see /threads)")
+        elif not self.chats.exists(arg):
+            self.say(f"No chat named {arg!r}. See /threads, or start one with /new {arg}.")
+        else:
+            self._enter(arg, f"Switched to {arg!r} ({self.chats.info(arg).turns} turns).")
+
+    @command("history", usage="/history", summary="show this chat's messages")
+    def history(self, arg):
+        if self.chats.exists(self.current):
+            self.say(format_transcript(self.chats.transcript(self.current)))
+        else:
+            self.say("(empty chat)")
+
+    @command("rename", usage="/rename NAME", summary="rename this chat")
+    def rename(self, arg):
+        try:
+            self.chats.rename(self.current, arg)
+        except ValueError as error:
+            self.say(str(error))
+        else:
+            self.current = arg
+            self.say(f"Renamed to {arg!r}.")
+
+    @command("delete", usage="/delete NAME", summary="delete a chat and its history")
+    def delete(self, arg):
+        if not arg or not self.chats.exists(arg):
+            self.say(f"No chat named {arg!r}. See /threads.")
+        elif confirm(f"Delete chat {arg!r} ({self.chats.info(arg).turns} turns)?", self.ask):
+            self.chats.delete(arg)
+            current = arg == self.current
+            self.say(f"Deleted {arg!r}." + (" You are still in it, now empty." if current else ""))
+            if current:
+                self.reload_skills = True
+        else:
+            self.say("Kept.")
+
+
+# Built from the @command decorators: name or alias -> method, and the /help text.
+_REGISTERED = [m for m in vars(ChatSession).values() if hasattr(m, "command")]
+COMMANDS = {name: m for m in _REGISTERED for name in m.command[0]}
+HELP = "Chat commands:\n" + "\n".join(
+    f"  {usage:<15} {summary}" for _names, usage, summary in
+    sorted((m.command for m in _REGISTERED), key=lambda c: c[1] == "/help")
+) + f"\n  {'exit':<15} quit"
 
 
 def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = None) -> None:

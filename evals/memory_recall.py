@@ -35,7 +35,8 @@ from deepagents.backends import FilesystemBackend  # noqa: E402
 from deep_agents_demo import app  # noqa: E402
 from deep_agents_demo.agent import build_agent  # noqa: E402
 from deep_agents_demo.config import RECALL_MODES, Settings  # noqa: E402
-from deep_agents_demo.memory import AutoRecallMiddleware, close_memory, make_memory, memory_tools  # noqa: E402
+from deep_agents_demo.catalog import catalog_feature  # noqa: E402
+from deep_agents_demo.memory import close_memory, make_memory, memory_feature  # noqa: E402
 from deep_agents_demo.workspace import seed_files  # noqa: E402
 
 USER = "eval-user"
@@ -107,11 +108,9 @@ def run_mode(mode, settings, model, run_index):
             for fact in SEED:
                 memory.add([{"role": "user", "content": fact}], user_id=USER, infer=False)
             seed_files(tmp / "workspace")
-            middleware = [AutoRecallMiddleware(memory, USER)] if mode != "tool" else []
             agent = build_agent(model, InMemorySaver(),
                                 FilesystemBackend(root_dir=str(tmp / "workspace"), virtual_mode=True),
-                                memory_tools(memory, USER, recall_tool=mode != "auto"),
-                                use_mem0=True, recall_mode=mode, extra_middleware=middleware)
+                                [catalog_feature(), memory_feature(memory, USER, mode)])
             rows = []
             for name, kind, prompt, keywords in SCENARIOS:
                 row = run_turn(agent, prompt + ANSWER_STYLE, f"{mode}-{run_index}-{name}")

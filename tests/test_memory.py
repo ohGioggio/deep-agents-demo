@@ -11,8 +11,9 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deep_agents_demo.agent import build_agent, system_prompt
-from deep_agents_demo.memory import AutoRecallMiddleware, memory_tools
+from deep_agents_demo.agent import build_agent
+from deep_agents_demo.memory import (AutoRecallMiddleware, file_memory_feature, memory_feature,
+                                     memory_tools)
 from deep_agents_demo.memory_policy import find_secrets, redact
 
 KEY = "sk-proj-abcDEF1234567890ghijKLMNOP"
@@ -131,9 +132,25 @@ class LifecycleTests(unittest.TestCase):
                          ["forget", "list_memories", "remember"])
 
     def test_prompt_matches_recall_mode(self):
-        self.assertIn("Use recall", system_prompt(use_mem0=True, recall_mode="tool"))
-        self.assertIn("There is no recall tool", system_prompt(use_mem0=True, recall_mode="auto"))
-        self.assertIn("Never store secrets", system_prompt(use_mem0=True, recall_mode="both"))
+        prompt = {mode: memory_feature(self.mem, "alice", mode).prompt for mode in ("tool", "auto", "both")}
+        self.assertIn("Use recall", prompt["tool"])
+        self.assertIn("There is no recall tool", prompt["auto"])
+        self.assertIn("forget with an id from list_memories when", prompt["auto"])
+        self.assertIn("Never store secrets", prompt["both"])
+
+    def test_feature_matches_recall_mode(self):
+        auto = memory_feature(self.mem, "alice", "auto")
+        self.assertEqual([t.__name__ for t in auto.tools], ["remember", "list_memories", "forget"])
+        self.assertIsInstance(auto.middleware[0], AutoRecallMiddleware)
+        tool = memory_feature(self.mem, "alice", "tool")
+        self.assertIn("recall", [t.__name__ for t in tool.tools])
+        self.assertEqual(tool.middleware, ())
+        self.assertEqual(len(memory_feature(self.mem, "alice", "both").middleware), 1)
+
+    def test_file_memory_feature(self):
+        feature = file_memory_feature("/instructions")
+        self.assertEqual(feature.memory_sources, ("/instructions/memories/AGENTS.md",))
+        self.assertIn("/instructions/memories/AGENTS.md", feature.prompt)
 
 
 class RecordingModel(FakeMessagesListChatModel):
@@ -156,9 +173,7 @@ class AutoRecallTests(unittest.TestCase):
             model = RecordingModel(responses=[AIMessage(content="ok")] * 4, systems=[])
             agent = build_agent(model, InMemorySaver(),
                                 FilesystemBackend(root_dir=str(root), virtual_mode=True),
-                                memory_tools(mem, "alice", recall_tool=False), use_mem0=True,
-                                recall_mode="auto",
-                                extra_middleware=[AutoRecallMiddleware(mem, "alice")])
+                                [memory_feature(mem, "alice", "auto")])
             config = {"configurable": {"thread_id": "t"}}
             agent.invoke({"messages": [{"role": "user", "content": prompt}]}, config)
             history = agent.get_state(config).values["messages"]

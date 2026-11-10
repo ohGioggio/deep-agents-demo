@@ -33,8 +33,9 @@ def clear_openshell_sandbox(settings: Settings) -> None:
     if settings.sandbox.provider != "openshell":
         raise UsageError("--clear-sandbox needs SANDBOX_PROVIDER=openshell")
     with ExitStack() as stack:
-        backend, _prefix, workdir = sandbox_backend(settings, stack)
-        work, tmp = clear_sandbox(backend, workdir)
+        setup = sandbox_backend(settings, stack)
+        workdir = setup.workdir
+        work, tmp = clear_sandbox(setup.backend, workdir)
     print(f"Cleared {work} entries from {workdir} and {tmp} from /tmp. "
           "The sandbox, image and policy are unchanged.")
     print("Conversation history is kept; use a new --thread for a fresh start.")

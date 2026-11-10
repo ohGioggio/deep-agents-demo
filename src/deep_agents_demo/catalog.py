@@ -1,5 +1,7 @@
-"""Fictional 3D asset catalog and the tools that query it."""
+"""Example tools: a fictional 3D asset catalog and the tools that query it."""
 import json
+
+from deep_agents_demo.agent import Feature
 
 # Deliberately fictional data, so this example needs only a model API key.
 CATALOG = [
@@ -24,3 +26,8 @@ def triangle_budget(asset_ids: list[str], copies: list[int]) -> str:
         return "Error: unknown asset ID; search the catalog first."
     total = sum(by_id[i]["triangles"] * n for i, n in zip(asset_ids, copies))
     return json.dumps({"triangles": total})
+
+
+def catalog_feature() -> Feature:
+    """The example catalog: both tools for the agent, the search for the researcher."""
+    return Feature(name="catalog", tools=(search_assets, triangle_budget), lookups=(search_assets,))
