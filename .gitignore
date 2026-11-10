@@ -6,3 +6,7 @@ __pycache__/
 demo_workspace/
 demo_checkpoints.sqlite*
 data/
+
+# Your own documents for RAG stay local; only the example is part of the repo.
+docs/*
+!docs/example_requirements.md
