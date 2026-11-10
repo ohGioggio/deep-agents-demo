@@ -1,24 +1,31 @@
-"""Filesystem backend selection: local files or a remote Daytona sandbox."""
+"""Backend selection: local files only, or a Daytona / OpenShell sandbox."""
 from deep_agents_demo.config import setting
 
+PROVIDERS = ("none", "daytona", "openshell")
 
-def make_backend(workspace, data):
+
+def make_backend(workspace, data, stack):
+    """Return ``(backend, skills_prefix, workdir)``.
+
+    With a sandbox, normal paths are remote and only ``/instructions/`` maps to
+    the local skills. ``stack`` (an ExitStack) receives any cleanup callbacks.
+    """
     from deepagents.backends import CompositeBackend, FilesystemBackend
     provider = setting("SANDBOX_PROVIDER", "none")
     local = FilesystemBackend(root_dir=str(workspace), virtual_mode=True)
     if provider == "none":
         return local, "", None
-    if provider == "local":
-        from deepagents.backends import LocalShellBackend
+    if provider == "daytona":
+        remote, workdir = _daytona(data)
+    elif provider == "openshell":
+        remote, workdir = _openshell(stack)
+    else:
+        raise ValueError(f"SANDBOX_PROVIDER must be one of: {', '.join(PROVIDERS)}")
+    backend = CompositeBackend(default=remote, routes={"/instructions/": local})
+    return backend, "/instructions", workdir
 
-        backend = LocalShellBackend(
-            root_dir=str(workspace),
-            virtual_mode=True,
-            inherit_env=True,
-        )
-        return backend, "", None
-    if provider != "daytona":
-        raise ValueError("SANDBOX_PROVIDER must be none or daytona")
+
+def _daytona(data):
     if not setting("DAYTONA_API_KEY"):
         raise ValueError("Set DAYTONA_API_KEY to enable sandbox execution")
     from daytona import Daytona
@@ -30,8 +37,16 @@ def make_backend(workspace, data):
         sandbox_id = id_file.read_text().strip()
     sandbox = client.get(sandbox_id) if sandbox_id else client.create()
     id_file.write_text(sandbox.id)
-    remote = DaytonaSandbox(sandbox=sandbox, timeout=120)
-    # Local skills remain available, but all normal coding paths are remote.
-    backend = CompositeBackend(default=remote, routes={"/instructions/": local})
     print(f"Daytona sandbox: {sandbox.id} (retained; manage/delete it in Daytona)")
-    return backend, "/instructions", sandbox
+    return DaytonaSandbox(sandbox=sandbox, timeout=120), "/home/daytona"
+
+
+def _openshell(stack):
+    from deep_agents_demo.openshell_backend import OpenShellBackend, connect
+    name = setting("OPENSHELL_SANDBOX_NAME", "deep-agents-demo")
+    workspace = setting("OPENSHELL_WORKSPACE", "default")
+    workdir = setting("OPENSHELL_WORKDIR", "/sandbox")
+    client, session = connect(name, workspace)
+    stack.callback(client.close)
+    print(f"OpenShell sandbox: {name} (workspace {workspace}; retained, delete it with the CLI)")
+    return OpenShellBackend(session, workdir=workdir), workdir

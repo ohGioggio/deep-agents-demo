@@ -10,10 +10,11 @@
   <a href="https://github.com/langchain-ai/deepagents"><img src="https://img.shields.io/badge/Deep%20Agents-0.7.34-1c3c3c?style=flat&logo=langchain&logoColor=white" alt="Deep Agents 0.7.34"/></a>
   <a href="https://github.com/mem0ai/mem0"><img src="https://img.shields.io/badge/Memory-Mem0-4f46e5?style=flat" alt="Mem0"/></a>
   <a href="https://qdrant.tech/"><img src="https://img.shields.io/badge/Vectors-Qdrant-dc244c?style=flat" alt="Qdrant"/></a>
+  <a href="https://github.com/NVIDIA/OpenShell"><img src="https://img.shields.io/badge/Sandbox-OpenShell-76b900?style=flat&logo=nvidia&logoColor=white" alt="OpenShell"/></a>
   <a href="https://www.daytona.io/"><img src="https://img.shields.io/badge/Sandbox-Daytona-0b7285?style=flat" alt="Daytona"/></a>
 </p>
 
-<p align="center"><b>Planning, skills, subagents, memory, RAG and a sandbox, in about 500 lines of Python.</b><br/>
+<p align="center"><b>Planning, skills, subagents, memory, RAG and a sandbox, in about 600 lines of Python.</b><br/>
 A small, readable reference for building on <a href="https://github.com/langchain-ai/deepagents">LangChain Deep Agents</a>.</p>
 
 Deep Agents Demo is a command-line agent that **plans 3D city scenes** from a
@@ -23,8 +24,8 @@ a proposal**, with every step streamed to your terminal.
 
 - **Every harness feature in one place.** Planning, skills, subagent delegation,
   streaming, checkpoints and context management, wired together and visible.
-- **Integrations you can switch off.** Mem0 memory, Qdrant RAG and a Daytona
-  sandbox are each one setting away from disabled.
+- **Integrations you can switch off.** Mem0 memory, Qdrant RAG and a sandbox
+  (local OpenShell or remote Daytona) are each one setting away from disabled.
 - **Any OpenAI-compatible model.** Point it at OpenAI, a local server or NVIDIA
   NIM. Embeddings can use a different provider from chat.
 
@@ -47,6 +48,8 @@ deep-agents-demo/
 ├── src/deep_agents_demo/   # the agent, tools and integrations
 ├── tests/                  # offline unit tests
 ├── docs/                   # documents for RAG
+├── sandbox/                # OpenShell sandbox image (Dockerfile)
+├── policy.yaml             # OpenShell sandbox policy
 ├── data/                   # memory and document vectors (created on first run)
 └── demo_workspace/         # agent files and the seeded skill (created on first run)
 ```
@@ -87,7 +90,7 @@ preference is still there.
 | **Context management** | Built-in summarization and large-output offloading |
 | **Long-term memory** | Per-user Mem0 memories that survive across threads |
 | **RAG** | Cited search over your own `.md` and `.txt` files |
-| **Sandbox** | File editing and shell commands in a remote Daytona sandbox |
+| **Sandbox** | File editing and shell commands in a policy-governed OpenShell sandbox or in Daytona |
 
 > [!TIP]
 > Set `MEMORY_ENABLED=false` and `RAG_ENABLED=false` to see the bare harness with
@@ -103,7 +106,8 @@ preference is still there.
 | [uv](https://docs.astral.sh/uv/) | Everything | Manages the environment and lockfile |
 | Chat model with tool calling | Everything | Any OpenAI-compatible endpoint |
 | Embedding model | Memory and RAG | OpenAI or NVIDIA NIM |
-| Daytona API key | Sandbox only | Optional |
+| OpenShell CLI + Docker | Local sandbox only | Linux, macOS; Windows via WSL 2 + Docker Desktop (experimental) |
+| Daytona API key | Remote sandbox only | Optional |
 
 **Install uv (macOS / Linux):**
 
@@ -148,7 +152,10 @@ your shell take precedence.
 | `EMBEDDING_BASE_URL` | OpenAI | Embedding endpoint, independent of the chat endpoint |
 | `EMBEDDING_DIMENSIONS` | `1536` | Must equal the model's real output width |
 | `RAG_ENABLED` | `true` | Enable the `search_docs` tool |
-| `SANDBOX_PROVIDER` | `none` | `none` (local files, no shell) or `daytona` |
+| `SANDBOX_PROVIDER` | `none` | `none` (local files, no shell), `openshell` or `daytona` |
+| `OPENSHELL_SANDBOX_NAME` | `deep-agents-demo` | Existing OpenShell sandbox to attach to |
+| `OPENSHELL_WORKSPACE` | `default` | OpenShell workspace that owns the sandbox |
+| `OPENSHELL_WORKDIR` | `/sandbox` | Working directory inside the sandbox |
 | `DAYTONA_API_KEY` | | Daytona credentials |
 | `DAYTONA_SANDBOX_ID` | | Reuse a specific running sandbox |
 
@@ -230,31 +237,133 @@ Say `Recall my preferences and plan a city under 100000 triangles.`
 
 ## Running code in a sandbox
 
+With a sandbox the agent gets file tools and a shell, but on a separate machine
+or container: normal paths are inside the sandbox, and only `/instructions/`
+maps to the local skills. Commands time out after 120 seconds. Pick one:
+
+| Provider | Runs on | Isolation |
+| --- | --- | --- |
+| `openshell` | Your machine (Docker) | Kernel-enforced policy in [`policy.yaml`](policy.yaml) |
+| `daytona` | Daytona cloud | Daytona's sandbox and network settings |
+
+### OpenShell (local)
+
+[NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) runs the agent's
+commands in a local sandbox and enforces [`policy.yaml`](policy.yaml) on every
+file access, process and network connection. The restrictions apply to the
+environment, not to the prompt, so a prompt-injected command still can't reach
+the network beyond what the policy allows.
+
+The policy in this repo, tested against a live sandbox:
+
+- **Denies all network access** except package installs from PyPI and
+  `git clone` / `fetch` from GitHub. Uploads to PyPI and pushes to GitHub get a
+  403 from the OpenShell proxy.
+- **Binds each rule to a program.** Only Python and uv can reach PyPI, and only
+  Git's HTTPS helper can reach GitHub.
+- **Enforces every rule.** Rules are set to `enforce`; OpenShell's default,
+  `audit`, would only log violations.
+- **Keeps your secrets out.** Commands run as a non-root user and see none of
+  your host environment, so API keys in `.env` are not visible inside.
+
+**1. Install the OpenShell CLI and start its gateway** (Linux or macOS; on
+Windows, see [below](#openshell-on-windows) first). The installer checks the
+release checksums, installs the CLI and starts the gateway on
+`https://127.0.0.1:17670`:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh
+openshell status
+```
+
+**2. Build the sandbox image.** NVIDIA's default image has no Python or Git, and
+Deep Agents runs its file tools as `python3` scripts. The sandbox can't install
+them later (it isn't root, and the policy blocks package mirrors), so
+[`sandbox/Dockerfile`](sandbox/Dockerfile) bakes in Python 3.12, Git and uv:
+
+```bash
+docker build -t deep-agents-demo-sandbox:0.1 sandbox/
+```
+
+**3. Create the sandbox** from that image, with the policy:
+
+```bash
+openshell sandbox create --name deep-agents-demo --from deep-agents-demo-sandbox:0.1 \
+  --policy policy.yaml --detach
+```
+
+**4. Point the demo at it** in `.env`, then run as usual:
+
+```dotenv
+SANDBOX_PROVIDER=openshell
+OPENSHELL_SANDBOX_NAME=deep-agents-demo
+```
+
+The demo attaches to the existing sandbox and never creates one, so it can't
+run in a sandbox that lacks the policy.
+
+- **Change network rules live** with
+  `openshell policy set deep-agents-demo --policy policy.yaml --wait`.
+  Filesystem, Landlock and process settings are fixed at creation: recreate the
+  sandbox to change them.
+- **Watch denials** with `openshell logs deep-agents-demo --since 5m --source sandbox`.
+- **Clean up** with `openshell sandbox delete deep-agents-demo`.
+
+> [!NOTE]
+> Rules bind to real binary paths, not symlinks. If you change the image or
+> install another Python or uv, update the paths in `policy.yaml`.
+
+#### OpenShell on Windows
+
+OpenShell lists Windows (WSL 2 + Docker Desktop) as experimental. This setup
+works, with the demo itself running on Windows:
+
+1. **Install Ubuntu** in WSL 2: `wsl --install -d Ubuntu-24.04`.
+2. **Install Docker Desktop.** In Settings, turn on
+   **Resources → WSL integration → Ubuntu-24.04** and
+   **Resources → Network → Enable host networking**. OpenShell's supervisor
+   container uses host networking to reach the gateway on `127.0.0.1`; without
+   this setting, "host" is Docker Desktop's VM and sandboxes fail with
+   "Startup configuration fetch failed".
+3. **Restart Ubuntu** with `wsl --terminate Ubuntu-24.04`, so its services pick
+   up the `docker` group that Docker Desktop added. Otherwise the gateway fails
+   with "no compute driver configured".
+4. **Inside Ubuntu,** run steps 1 to 3 above. The repo can stay on Windows:
+   `cd /mnt/c/...` to it before building the image.
+5. **On Windows,** let the demo read the gateway config from Ubuntu by adding
+   this to `.env` (with your Ubuntu user name):
+
+   ```dotenv
+   XDG_CONFIG_HOME=\\wsl.localhost\Ubuntu-24.04\home\<user>\.config
+   ```
+
+   Leave the value unquoted: quoting it makes `.env` parsing drop one of the
+   two leading backslashes.
+
+### Daytona (remote)
+
 ```dotenv
 SANDBOX_PROVIDER=daytona
 DAYTONA_API_KEY=your-key
 ```
 
-The agent gets file tools and shell execution in one remote Daytona sandbox. It
-uses `DAYTONA_SANDBOX_ID` if set, otherwise the ID saved in
+The demo uses `DAYTONA_SANDBOX_ID` if set, otherwise the ID saved in
 `data/daytona_sandbox_id.txt`, otherwise it creates a sandbox and saves its ID.
-Commands time out after 120 seconds.
-
-Try:
-
-- `Create /home/daytona/hello.py and execute it.`
-- `Clone <repo URL> into /home/daytona/project, inspect it and run the tests.`
-- `Retrieve the requirements with search_docs and implement them in the repository.`
+The sandbox image needs Git, uv or whatever the task requires; private Git
+access and network rules are configured in Daytona.
 
 > [!WARNING]
-> Sandboxes are kept after the program exits. Stop and delete them in Daytona to
-> avoid charges, and export anything you need first.
+> Daytona sandboxes are kept after the program exits. Stop and delete them in
+> Daytona to avoid charges, and export anything you need first.
 
-- **Remote by default.** Only `/instructions/` maps to the local skills.
-- **Bring your runtimes.** The sandbox image needs Git, uv or whatever the task
-  requires. Private Git access and network rules are configured in Daytona.
-- **Docs stay local.** `search_docs` queries the index on your machine; documents
-  are not uploaded.
+### Try it
+
+- `Create hello.py in the working directory and execute it.`
+- `Clone <repo URL>, inspect it and run the tests.`
+- `Retrieve the requirements with search_docs and implement them in the repository.`
+
+Documents stay local: `search_docs` queries the index on your machine and
+nothing in `docs/` is uploaded.
 
 ## NVIDIA NIM embeddings
 
@@ -286,7 +395,8 @@ src/deep_agents_demo/
 ├── memory.py       # Mem0 long-term memory and remember/recall tools
 ├── rag.py          # Qdrant document index and the search_docs tool
 ├── embeddings.py   # OpenAI / NVIDIA-compatible embedding client
-└── sandbox.py      # local or Daytona filesystem backend
+├── sandbox.py      # backend selection: local files, OpenShell or Daytona
+└── openshell_backend.py  # OpenShell sandbox backend for Deep Agents
 ```
 
 ## Where data is stored
@@ -308,9 +418,12 @@ All of these, and `.env`, are excluded by `.gitignore`.
 - **Local storage.** Checkpoints, memories and vectors stay on your machine.
 - **Remote inference.** Chat and embedding requests go to the providers you
   configure. Use a local endpoint to keep them on your machine.
-- **No telemetry.** Mem0 telemetry is disabled by default.
+- **Telemetry.** Mem0 telemetry is disabled by default. The OpenShell gateway
+  sends anonymous usage counts unless you set `OPENSHELL_TELEMETRY_ENABLED=false`
+  on the gateway.
 - **Untrusted content.** The agent is told to treat documents and recalled
-  memories as data, not instructions.
+  memories as data, not instructions. That is only an instruction; with
+  OpenShell, `policy.yaml` is what actually limits what a misled agent can do.
 
 ## Troubleshooting
 
@@ -327,6 +440,14 @@ All of these, and `.env`, are excluded by `.gitignore`.
   the Mem0 index. Never mix embeddings from different models.
 - **URLs not loading from `.env`.** Lines must not end with a backslash or contain
   escaped URLs such as `https\://`.
+- **"OpenShell sandbox ... not found".** Create it with the command in the
+  message, or set `OPENSHELL_SANDBOX_NAME` / `OPENSHELL_WORKSPACE` to match it.
+- **"no active gateway" or connection errors.** Run `openshell status` and make
+  sure Docker is running On Windows, check `XDG_CONFIG_HOME` in `.env`.
+- **OpenShell file tools fail with "python3: command not found".** The sandbox
+  was created from the default image; recreate it with `--from` (step 3).
+- **A command can't download something.** The policy denied it. Check
+  `openshell logs`, then add a rule to `policy.yaml` and apply it with `policy set`.
 - **Daytona sandbox won't attach.** Start a stopped sandbox in Daytona before
   reusing it.
 
@@ -339,7 +460,9 @@ uv run python -m unittest discover -s tests -v
 The tests run offline. They use a real local Qdrant with fake embeddings to
 cover indexing, retrieval, reindexing and persistence, check per-user memory
 scoping and the catalog tools, and verify NVIDIA request bodies against a mocked
-HTTP endpoint. Live model calls and Daytona execution are not covered.
+HTTP endpoint. The OpenShell backend is tested against a fake session, and on
+Linux its file tools also run end to end through a real bash. Live model calls
+and real OpenShell or Daytona sandboxes are not covered.
 
 ## Contributing
 

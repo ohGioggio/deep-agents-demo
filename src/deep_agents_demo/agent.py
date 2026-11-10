@@ -7,7 +7,7 @@ from deep_agents_demo.catalog import search_assets, triangle_budget
 from deep_agents_demo.config import WORKSPACE
 
 
-def system_prompt(prefix="", use_mem0=False):
+def system_prompt(prefix="", use_mem0=False, workdir=None):
     memory = (
         "Use recall to retrieve relevant user preferences. Use remember only "
         "when explicitly asked to save a fact. Mem0 is the source of long-term "
@@ -16,8 +16,8 @@ def system_prompt(prefix="", use_mem0=False):
         f"Save explicitly requested preferences in {prefix}/memories/AGENTS.md. "
     )
     sandbox = (
-        "You are using a remote sandbox. Use /home/daytona for code and output. "
-        "Save scene plans to /home/daytona/scene_plan.md, overriding skill paths. "
+        f"You are using a sandbox. Use {workdir} for code and output. "
+        f"Save scene plans to {workdir}/scene_plan.md, overriding skill paths. "
         "Local /instructions paths contain skills only. "
         if prefix else ""
     )
@@ -34,11 +34,12 @@ def system_prompt(prefix="", use_mem0=False):
     )
 
 
-def build_agent(model, checkpointer, backend=None, extra_tools=(), prefix="", use_mem0=False):
+def build_agent(model, checkpointer, backend=None, extra_tools=(), prefix="", use_mem0=False,
+                workdir=None):
     return create_deep_agent(
         model=model,
         tools=[triangle_budget, *extra_tools],
-        system_prompt=system_prompt(prefix, use_mem0),
+        system_prompt=system_prompt(prefix, use_mem0, workdir),
         # Virtual paths /... map into this dedicated real directory.
         backend=backend or FilesystemBackend(root_dir=str(WORKSPACE), virtual_mode=True),
         memory=[] if use_mem0 else [prefix + "/memories/AGENTS.md"],

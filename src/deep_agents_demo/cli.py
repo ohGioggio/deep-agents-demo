@@ -104,8 +104,8 @@ def main() -> None:
             index = DocumentIndex(DATA)
             stack.callback(index.close)
             extras.append(index.tool())
-        backend, prefix, _sandbox = make_backend(WORKSPACE, DATA)
-        agent = build_agent(model, saver, backend, extras, prefix, use_mem0)
+        backend, prefix, workdir = make_backend(WORKSPACE, DATA, stack)
+        agent = build_agent(model, saver, backend, extras, prefix, use_mem0, workdir)
         while True:
             try:
                 prompt = args.prompt or input("\nYou: ").strip()

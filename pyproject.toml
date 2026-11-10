@@ -15,7 +15,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3,<4",
     "mem0ai>=2.2.1",
     "openai>=3.46.0",
-    "playwright>=1.64.1",
+    "openshell>=0.1.7",
     "python-dotenv>=1,<2",
     "qdrant-client>=1.20.0",
 ]

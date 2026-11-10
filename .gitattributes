@@ -1,0 +1,4 @@
+# Files used inside Linux containers keep LF line endings on every platform.
+sandbox/** text eol=lf
+policy.yaml text eol=lf
+*.sh text eol=lf
