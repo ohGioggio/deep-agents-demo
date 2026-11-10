@@ -5,29 +5,43 @@ from deep_agents_demo.config import setting
 
 PROVIDERS = ("none", "daytona", "openshell")
 
-# Empties the working directory and removes the sandbox user's own files in /tmp.
+# Empties the working directory and removes the sandbox user's own top-level
+# entries in the temp directory. If the working directory lives inside the temp
+# directory, the entry that contains it is kept.
 # Prints "<workdir entries> <tmp entries>" removed (top level only).
 _CLEAR_SCRIPT = """\
 set -u
 W={workdir}
+T={tmpdir}
 [ -d "$W" ] || {{ echo "missing working directory: $W" >&2; exit 3; }}
+KEEP=
+case "$W/" in "$T"/?*) rel=${{W#"$T"/}}; KEEP="$T/${{rel%%/*}}" ;; esac
 work=$(find "$W" -mindepth 1 -maxdepth 1 | wc -l)
-tmp=$(find /tmp -mindepth 1 -maxdepth 1 -user "$(id -u)" | wc -l)
 find "$W" -mindepth 1 -delete
-find /tmp -mindepth 1 -user "$(id -u)" -delete 2>/dev/null || true
+tmp=0
+if [ -d "$T" ]; then
+  tmp=$(find "$T" -mindepth 1 -maxdepth 1 -user "$(id -u)" ! -path "$KEEP" | wc -l)
+  find "$T" -mindepth 1 -maxdepth 1 -user "$(id -u)" ! -path "$KEEP" -exec rm -rf -- {{}} + 2>/dev/null || true
+fi
 echo "$work $tmp"
 """
 
 
-def clear_sandbox(backend, workdir):
-    """Delete everything in the sandbox working directory and the user's /tmp files.
+def _safe_dir(path, what):
+    if not path or not path.startswith("/") or path.rstrip("/") == "":
+        raise ValueError(f"Refusing to clear unsafe {what}: {path!r}")
+    return path.rstrip("/")
+
+
+def clear_sandbox(backend, workdir, tmpdir="/tmp"):
+    """Delete everything in the sandbox working directory and the user's temp files.
 
     Returns ``(workdir_entries, tmp_entries)`` removed. The sandbox, its image and
     its policy are untouched; only files the agent created are deleted.
     """
-    if not workdir or not workdir.startswith("/") or workdir.rstrip("/") == "":
-        raise ValueError(f"Refusing to clear unsafe working directory: {workdir!r}")
-    result = backend.execute(_CLEAR_SCRIPT.format(workdir=shlex.quote(workdir)), timeout=120)
+    workdir, tmpdir = _safe_dir(workdir, "working directory"), _safe_dir(tmpdir, "temp directory")
+    script = _CLEAR_SCRIPT.format(workdir=shlex.quote(workdir), tmpdir=shlex.quote(tmpdir))
+    result = backend.execute(script, timeout=120)
     if result.exit_code != 0:
         raise RuntimeError(f"Clearing the sandbox failed: {result.output.strip()}")
     work, tmp = result.output.split()[-2:]

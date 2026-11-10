@@ -132,19 +132,41 @@ class ClearSandboxTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "missing working directory"):
             clear_sandbox(backend, "/sandbox")
 
+    def test_refuses_unsafe_tmpdir(self):
+        with self.assertRaises(ValueError):
+            clear_sandbox(Mock(), "/sandbox", tmpdir="/")
+
+    # These tests run the real script, so they point it at a private fake /tmp:
+    # never let a test clear the host's real temp directory.
     @unittest.skipUnless(sys.platform == "linux" and shutil.which("bash"), "needs Linux bash")
-    def test_empties_workdir_including_hidden_files(self):
+    def test_empties_workdir_and_user_tmp_entries(self):
         with tempfile.TemporaryDirectory() as root:
-            workdir = Path(root) / "sandbox"
+            workdir, tmp = Path(root) / "sandbox", Path(root) / "tmp"
             (workdir / ".cache/uv").mkdir(parents=True)
             (workdir / "venv/bin").mkdir(parents=True)
             (workdir / "plot.png").write_bytes(b"png")
             (workdir / ".cache/uv/wheel").write_bytes(b"x")
+            (tmp / "clone/.git").mkdir(parents=True)
+            (tmp / "uv.lock").write_bytes(b"")
             backend = OpenShellBackend(LocalBashSession(), workdir=str(workdir))
-            work, _tmp = clear_sandbox(backend, str(workdir))
-            self.assertEqual(work, 3)
+            self.assertEqual(clear_sandbox(backend, str(workdir), tmpdir=str(tmp)), (3, 2))
             self.assertTrue(workdir.is_dir())
             self.assertEqual(list(workdir.iterdir()), [])
+            self.assertTrue(tmp.is_dir())
+            self.assertEqual(list(tmp.iterdir()), [])
+
+    @unittest.skipUnless(sys.platform == "linux" and shutil.which("bash"), "needs Linux bash")
+    def test_keeps_workdir_that_lives_inside_tmp(self):
+        with tempfile.TemporaryDirectory() as root:
+            tmp = Path(root) / "tmp"
+            workdir = tmp / "agent/work"
+            (workdir / "out").mkdir(parents=True)
+            (tmp / "scratch.txt").write_bytes(b"x")
+            backend = OpenShellBackend(LocalBashSession(), workdir=str(workdir))
+            self.assertEqual(clear_sandbox(backend, str(workdir), tmpdir=str(tmp)), (1, 1))
+            self.assertTrue(workdir.is_dir())
+            self.assertEqual(list(workdir.iterdir()), [])
+            self.assertEqual(sorted(p.name for p in tmp.iterdir()), ["agent"])
 
 
 class ConnectTests(unittest.TestCase):
