@@ -80,7 +80,8 @@ class AgentRegistry:
         self._overrides = dict(overrides or {})  # name -> source it replaced
 
     @classmethod
-    def load(cls, folders, known_tools, installed=(), own=()) -> "AgentRegistry":
+    def load(cls, folders, known_tools, installed=(), own=(),
+             replaceable=BUILT_IN_ELSEWHERE) -> "AgentRegistry":
         """Built-ins, then ``folders`` in order, then ``installed`` marketplace agents, then
         the user's ``own`` agents from the database: a later source wins on a name clash."""
         agents, warnings, overrides = dict(BUILTIN_AGENTS), [], {}
@@ -94,7 +95,7 @@ class AgentRegistry:
                     overrides[name] = replaced
                     if replaced != "built-in":
                         warnings.append(f"{agent.source}: {name!r} overrides {replaced}")
-                elif name in BUILT_IN_ELSEWHERE:
+                elif name in replaceable:
                     overrides[name] = "built-in"
                 agents[name] = agent
         return cls(agents, warnings, overrides)

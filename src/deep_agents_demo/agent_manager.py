@@ -6,12 +6,13 @@ each version is one file, ``agent.md``, in Claude Code's agent format. Nothing i
 written to folders; after an approved change ``changed`` is set and the runtime
 rebuilds the agent, so the change is available from the user's next message.
 """
+import itertools
 import json
 import threading
 from pathlib import Path
 
 from deep_agents_demo.agent import Feature
-from deep_agents_demo.agent_files import (_names, normalise_agent_text, parse_agent_md, render_agent_md,
+from deep_agents_demo.agent_files import (CLAUDE_TOOLS, READ_ONLY, _names, normalise_agent_text, parse_agent_md, render_agent_md,
                                           split_agent_md, translate_tools)
 from deep_agents_demo.memory_policy import find_secrets, split_findings
 from deep_agents_demo.skill_manager import MARKETPLACE, USER, SkillChange, SkillManager
@@ -32,9 +33,21 @@ class AgentChange(SkillChange):
     main_file = AGENT_FILE
 
     def tools_used(self) -> list[str]:
+        """Tools as the agent will get them: translated, read-only mode, denylist."""
         files = self.after if self.after is not None else self.before or {}
-        front = split_agent_md(files.get(AGENT_FILE, ""))[0]
-        return _names(front["tools"]) if front.get("tools") else ["all"]
+        if not files.get(AGENT_FILE):
+            return []
+        front = split_agent_md(files[AGENT_FILE])[0]
+        if front.get("permissionMode") == "plan":
+            return [f"read-only ({', '.join(READ_ONLY)})"]
+
+        def ours(value):
+            return list(dict.fromkeys(t for n in _names(value) for t in CLAUDE_TOOLS.get(n, (n,))))
+        names = ours(front.get("tools")) or ["all"]
+        denied = ours(front.get("disallowedTools"))
+        if denied:
+            names[-1] += f" (except {', '.join(denied)})"
+        return names
 
 
 class AgentManager(SkillManager):
@@ -88,6 +101,13 @@ class AgentManager(SkillManager):
         _resolved, notes = translate_tools(list(tools), self.known_tools)
         return [f"{note} (available: {', '.join(sorted(self.known_tools))})" for note in notes]
 
+    @staticmethod
+    def _skill_errors(skills):
+        if skills is None or (isinstance(skills, (list, tuple))
+                              and all(isinstance(s, str) for s in skills)):
+            return []
+        return ["skills must be a list of skill names"]
+
     def _front(self, front: dict, tools, model, skills) -> dict:
         front = dict(front)
         if tools is not None:
@@ -112,7 +132,7 @@ class AgentManager(SkillManager):
         front = self._front({"name": name, "description": " ".join(str(description).split())},
                             tools, model, skills)
         return self._change("create", name, {AGENT_FILE: render_agent_md(front, prompt)},
-                            self._tool_errors(tools), scope=scope)
+                            self._tool_errors(tools) + self._skill_errors(skills), scope=scope)
 
     def plan_update(self, name, description=None, prompt=None, tools=None, model=None, skills=None,
                     scope=USER):
@@ -125,18 +145,23 @@ class AgentManager(SkillManager):
             front["description"] = " ".join(str(description).split())
         front = self._front(front, tools, model, skills)
         text = render_agent_md(front, prompt if prompt is not None else body)
-        return self._change("update", name, {AGENT_FILE: text}, self._tool_errors(tools), scope=scope)
+        return self._change("update", name, {AGENT_FILE: text},
+                            self._tool_errors(tools) + self._skill_errors(skills), scope=scope)
 
     def plan_import(self, path, scope=USER):
         path = Path(path)
         if path.is_dir():
-            files = sorted(str(p.relative_to(path)) for p in path.rglob("*.md")
-                           if p.name.lower() != "readme.md")
+            # Stop after 21: enough to show 20 and say there are more, even for a huge tree.
+            found = itertools.islice((p for p in path.rglob("*.md") if p.name.lower() != "readme.md"), 21)
+            files = [str(p.relative_to(path)) for p in found]
             shown = ", ".join(files[:20]) + (" ..." if len(files) > 20 else "")
             return self.change_type("import", str(path), self.owner, scope, errors=[
                 f"{path} is a folder ({shown or 'no agent files'}); import its agents one at a "
                 "time, so each gets its own approval"])
         try:
+            if path.stat().st_size > 4 * MAX_AGENT_SIZE:  # don't read a huge file to refuse it
+                return self.change_type("import", str(path), self.owner, scope,
+                                        errors=[f"the agent file exceeds {MAX_AGENT_SIZE} characters"])
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as error:
             return self.change_type("import", str(path), self.owner, scope,
@@ -147,6 +172,25 @@ class AgentManager(SkillManager):
         # Stored as this module reads it, so updates and summaries see the same file.
         return self._change("import", agent.name, {AGENT_FILE: normalise_agent_text(text)},
                             scope=scope)
+
+    # views --------------------------------------------------------------------------
+    def overview(self):
+        """The user's agents and installed ones, with versions (agents' wording)."""
+        mine = {a.name: a for a in self.store.list_current(USER, self.owner)}
+        rows = [{"name": name, "source": "yours", "version": agent.version}
+                for name, agent in sorted(mine.items())]
+        for name in self.store.installed(self.owner):
+            listed = self._live(name, MARKETPLACE)
+            rows.append({"name": name, "source": "marketplace (installed)",
+                         "version": listed.version if listed else None,
+                         "note": ("removed from the marketplace" if listed is None else
+                                  "overridden by your own agent with the same name" if name in mine
+                                  else "")})
+        return rows
+
+    def sync_folder(self):
+        """Agents live only in the database; nothing to write to folders."""
+        return None
 
     # the agent's tools ----------------------------------------------------------------
     def tools(self):
@@ -235,6 +279,12 @@ class AgentManager(SkillManager):
                   "to that agent with task (subagent_type is its name), not to another one. ")
         return Feature(name="agents", prompt=prompt, tools=tuple(self.tools()),
                        approvals=GATED_AGENT_TOOLS)
+
+    def plan_uninstall(self, name):
+        change = super().plan_uninstall(name)
+        if not change.errors and self._live(name, MARKETPLACE) is None:
+            change.before = {}  # gone from the marketplace: nothing to show but the uninstall
+        return change
 
     # what the registry loads ---------------------------------------------------------
     def definitions(self):

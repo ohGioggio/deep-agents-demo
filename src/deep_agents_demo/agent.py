@@ -109,9 +109,10 @@ def _spec(agent, *, model, model_for, tools, skill_sources, access, max_calls) -
     allowed = (frozenset(READ_ONLY) if agent.read_only
                else None if agent.tools is None else frozenset(agent.tools))
     # Deep Agents gives subagents no to-do list; ToolAccess still applies the allowlist.
-    middleware = [TodoListMiddleware(),
-                  ToolAccess(*access, allowed=allowed, denied=frozenset(agent.disallowed)),
+    middleware = [ToolAccess(*access, allowed=allowed, denied=frozenset(agent.disallowed)),
                   SubagentCallCap(min(max_calls, agent.max_turns or max_calls))]
+    if allowed is None or "write_todos" in allowed:  # its prompt would mention an unusable tool
+        middleware.insert(0, TodoListMiddleware())
     if agent.skills:
         middleware.append(PinSkills(agent.skills))
     spec = {"name": agent.name, "description": agent.description, "system_prompt": agent.prompt,
@@ -155,7 +156,8 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
     # agent's tools, permissions and approvals.
     access = (off, registry.skill_only(), registry.requirements())
     general_purpose = {**GENERAL_PURPOSE_SUBAGENT, "model": model, "skills": skill_sources,
-                       "middleware": [ToolAccess(*access), SubagentCallCap(max_calls)]}
+                       "middleware": [TodoListMiddleware(), ToolAccess(*access),
+                                      SubagentCallCap(max_calls)]}
     researcher = [{
         "name": "researcher",
         "description": ("Read-only research helper: looks things up with the available "

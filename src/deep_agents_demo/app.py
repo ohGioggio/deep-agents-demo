@@ -67,12 +67,18 @@ class Runtime:
     agents: object = None   # the AgentRegistry the agent was built from
     agent_manager: object = None  # the user's agents; set ``changed`` after an approved change
     rebuild: object = None  # () -> (agent, AgentRegistry), with the same settings
+    say: object = print
 
     def refresh(self) -> bool:
         """After an approved agent change, rebuild so it's available from the next message."""
         if self.agent_manager is None or not self.agent_manager.changed or self.rebuild is None:
             return False
-        self.agent, self.agents = self.rebuild()
+        try:
+            self.agent, self.agents = self.rebuild()
+        except Exception as error:  # keep chatting with the agents that worked
+            self.say(f"Couldn't rebuild the agents ({error}); the previous ones stay in use. "
+                     "It will be tried again after your next message.")
+            return False
         self.chats.agent = self.agent
         self.agent_manager.changed = False
         return True
@@ -139,8 +145,12 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
         # Folders (AGENT_DIRS, then the workspace's agents/), then installed, then the
         # user's own: a later source wins on a name clash.
         installed, own, notes = my_agents.definitions()
+        # The demo's researcher exists only when some feature has lookups.
+        replaceable = ("general-purpose", "researcher") if any(f.lookups for f in enabled) \
+            else ("general-purpose",)
         agents = AgentRegistry.load([*settings.agent_dirs, settings.paths.workspace / "agents"],
-                                    registry.names(), installed=installed, own=own)
+                                    registry.names(), installed=installed, own=own,
+                                    replaceable=replaceable)
         agents.warnings += notes
         my_agents.registry = agents
         return agents
@@ -163,7 +173,7 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
 
     return Runtime(agent=agent, chats=Chats(saver, agent, user), preview=preview,
                    uploads=Uploads(settings.paths.workspace, user, setup.skills_prefix),
-                   agents=agents, agent_manager=my_agents, rebuild=make_agent)
+                   agents=agents, agent_manager=my_agents, rebuild=make_agent, say=say)
 
 
 def history_runtime(settings: Settings, user: str, stack: ExitStack) -> Runtime:

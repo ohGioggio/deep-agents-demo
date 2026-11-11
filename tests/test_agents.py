@@ -177,6 +177,13 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(row["overrides"], "built-in")
         self.assertEqual(registry.get("reviewer").description, "Mine.")
 
+    def test_researcher_override_only_when_there_is_one(self):
+        write(self.a / "r.md", "---\nname: researcher\ndescription: Mine.\n---\nx")
+        with_one = AgentRegistry.load([self.a], KNOWN)
+        without = AgentRegistry.load([self.a], KNOWN, replaceable=("general-purpose",))
+        row = lambda reg: next(r for r in reg.overview() if r["name"] == "researcher")["overrides"]
+        self.assertEqual((row(with_one), row(without)), ("built-in", ""))
+
     def test_overview_rows(self):
         write(self.a / "c.md", CRITIC)
         rows = {r["name"]: r for r in AgentRegistry.load([self.a], KNOWN).overview()}
@@ -361,6 +368,16 @@ class SubagentTests(unittest.TestCase):
                 SEEN.clear()
                 self.run_turn(delegate(name), AIMessage(content="sub done"), agents=[agent_from(text)])
                 self.assertIn("write_todos", self.subagent_tools())
+
+    def test_todo_list_only_where_write_todos_is_allowed(self):
+        from langchain.agents.middleware import TodoListMiddleware
+        kwargs = self.kwargs([agent_from(CRITIC), agent_from(ALL_AGENT)])
+
+        def has_todos(name):
+            return any(isinstance(m, TodoListMiddleware) for m in self.spec(kwargs, name)["middleware"])
+        self.assertFalse(has_todos("critic"), "critic can't call write_todos")
+        self.assertTrue(has_todos("helper"))
+        self.assertTrue(has_todos("general-purpose"))
 
     def test_model_for_is_used_for_explicit_models(self):
         explicit = agent_from(ALL_AGENT.replace("description: Helps.", "description: Helps.\nmodel: nvidia/other"))

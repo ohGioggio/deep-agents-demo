@@ -118,7 +118,7 @@ class ManagerTests(Workspace):
                         encoding="utf-8")
         change = self.manager.plan_import(str(path))
         self.assertEqual(change.errors, [])
-        self.assertIn("Tools it uses: Read", change.summary())
+        self.assertIn("Tools it uses: read_file", change.summary())
         self.manager.apply(change)
         update = self.manager.plan_update("win", description="Still from Windows.")
         self.assertEqual(update.errors, [])
@@ -130,6 +130,44 @@ class ManagerTests(Workspace):
         _installed, own, notes = later.definitions()
         self.assertEqual(own, [])
         self.assertTrue(any("finder" in n for n in notes), notes)
+
+    def test_skills_and_tools_must_be_lists(self):
+        for kwargs in ({"skills": "scene-planning"}, {"tools": "read_file"}):
+            with self.subTest(**kwargs):
+                change = self.manager.plan_create("critic", "d", "p", **kwargs)
+                self.assertTrue(any("list" in e for e in change.errors), change.errors)
+
+    def test_summary_translates_tools_and_shows_read_only(self):
+        path = self.root / "a.md"
+        path.write_text("---\nname: a\ndescription: d\ntools: Read, Bash\ndisallowedTools: Bash\n---\nx",
+                        encoding="utf-8")
+        self.assertIn("Tools it uses: read_file, execute (except execute)", self.manager.plan_import(str(path)).summary())
+        path.write_text("---\nname: a\ndescription: d\npermissionMode: plan\n---\nx", encoding="utf-8")
+        self.assertIn("Tools it uses: read-only (ls, read_file, grep, glob, write_todos)",
+                      self.manager.plan_import(str(path)).summary())
+
+    def test_import_checks_size_before_reading(self):
+        path = self.root / "big.md"
+        path.write_text("---\nname: big\ndescription: d\n---\n" + "x" * 100_001, encoding="utf-8")
+        self.assertTrue(any("100000" in e for e in self.manager.plan_import(str(path)).errors))
+
+    def test_import_of_a_huge_folder_stops_counting(self):
+        folder = self.root / "many"
+        for i in range(30):
+            (folder / f"d{i}").mkdir(parents=True)
+            (folder / f"d{i}" / f"a{i}.md").write_text("x", encoding="utf-8")
+        error = self.manager.plan_import(str(folder)).errors[0]
+        self.assertIn("...", error)
+        self.assertEqual(error.count(".md"), 20)
+
+    def test_overview_speaks_of_agents(self):
+        self.create()
+        store_bob = AgentManager(self.store, "bob", KNOWN)
+        self.manager.apply(self.manager.plan_publish("critic"))
+        self.manager.apply(self.manager.plan_install("critic"))
+        note = next(r for r in self.manager.overview() if r["source"] == "marketplace (installed)")["note"]
+        self.assertEqual(note, "overridden by your own agent with the same name")
+        self.assertIsNone(store_bob.sync_folder())
 
     def test_apply_marks_changed_and_rejected_does_not(self):
         bad = self.manager.plan_create("critic", "d", "p", tools=["make_coffee"])
@@ -188,6 +226,11 @@ class MarketplaceTests(Workspace):
         self.bob.registry = AgentRegistry.load([], KNOWN, installed=installed, own=own)
         list_agents = {tool.__name__: tool for tool in self.bob.tools()}["list_agents"]
         self.assertIn("removed from the marketplace", list_agents())
+
+    def test_uninstalling_a_removed_agent_shows_no_tools_line(self):
+        self.bob.apply(self.bob.plan_install("critic"))
+        self.alice.apply(self.alice.plan_remove("critic", scope="marketplace"))
+        self.assertNotIn("Tools it uses", self.bob.plan_uninstall("critic").summary())
 
     def test_browse_filters_and_marks_installed(self):
         self.bob.apply(self.bob.plan_install("critic"))
@@ -292,6 +335,17 @@ class RuntimeTests(Workspace):
         self.turn(runtime)
         self.assertTrue(any(m and m[0].type == "system" and "You help with files." in str(m[0].content)
                             for m in SEEN), "the new agent ran")
+
+    def test_a_failed_rebuild_keeps_the_old_agent(self):
+        self.model = Model(responses=[CREATE_HELPER, AIMessage(content="ok")])
+        runtime, _ = self.runtime(self.model)
+        before = runtime.agent
+        runtime.rebuild = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        said = []
+        runtime.say = said.append
+        self.assertFalse(self.turn(runtime))
+        self.assertIs(runtime.agent, before)
+        self.assertTrue(any("boom" in s for s in said), said)
 
     def test_rejected_change_does_not_rebuild(self):
         self.model = Model(responses=[CREATE_HELPER, AIMessage(content="ok")])
