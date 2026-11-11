@@ -122,6 +122,11 @@ class Settings:
         max_calls = number("SUBAGENT_MAX_CALLS", 25)
         if max_calls < 1:
             raise ValueError("SUBAGENT_MAX_CALLS must be at least 1")
+        try:
+            agent_dirs = tuple(Path(part.strip()).expanduser()
+                               for part in get("AGENT_DIRS", "").split(os.pathsep) if part.strip())
+        except RuntimeError as error:  # e.g. ~someone for a user that doesn't exist
+            raise ValueError(f"AGENT_DIRS: {error}") from None
         return cls(
             chat=chat,
             embeddings=EmbeddingSettings(
@@ -151,8 +156,7 @@ class Settings:
             requests_per_minute=number("API_REQUESTS_PER_MINUTE", 0, float),
             disabled_tools=tuple(dict.fromkeys(
                 name for name in re.split(r"[\s,]+", get("DISABLED_TOOLS", "")) if name)),
-            agent_dirs=tuple(Path(part.strip()).expanduser()
-                             for part in get("AGENT_DIRS", "").split(os.pathsep) if part.strip()),
+            agent_dirs=agent_dirs,
             subagent_max_calls=max_calls,
         )
 

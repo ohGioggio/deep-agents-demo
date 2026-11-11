@@ -172,7 +172,8 @@ class ChatSession:
             note = f" (overrides {r['overrides']})" if r["overrides"] else ""
             lines.append(f"  {r['name']:<{width}}  tools: {r['tools']}; model: {r['model']}; "
                          f"source: {r['source']}{note}")
-        lines.append("  general-purpose and researcher are always there unless an agent replaces them.")
+        lines.append("  general-purpose (and researcher, when documents or the catalog are on) are "
+                     "built in unless an agent replaces them.")
         self.say("Subagents:\n" + "\n".join(lines))
 
     @command("help", usage="/help", summary="show this help")

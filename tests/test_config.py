@@ -60,6 +60,11 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SUBAGENT_MAX_CALLS"):
             Settings.from_env({**base, "SUBAGENT_MAX_CALLS": "0"})
 
+    def test_bad_home_in_agent_dirs_is_a_settings_error(self):
+        with patch("pathlib.Path.expanduser", side_effect=RuntimeError("Could not determine home directory.")):
+            with self.assertRaisesRegex(ValueError, "AGENT_DIRS"):
+                Settings.from_env({"OPENAI_API_KEY": "k", "AGENT_MODEL": "m", "AGENT_DIRS": "~nobody/x"})
+
     def test_settings_are_immutable(self):
         with self.assertRaises(Exception):
             Settings.from_env({}).rag_enabled = False

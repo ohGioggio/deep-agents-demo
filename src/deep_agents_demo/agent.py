@@ -108,7 +108,9 @@ def _spec(agent, *, model, model_for, tools, skill_sources, access, max_calls) -
     """
     allowed = (frozenset(READ_ONLY) if agent.read_only
                else None if agent.tools is None else frozenset(agent.tools))
-    middleware = [ToolAccess(*access, allowed=allowed, denied=frozenset(agent.disallowed)),
+    # Deep Agents gives subagents no to-do list; ToolAccess still applies the allowlist.
+    middleware = [TodoListMiddleware(),
+                  ToolAccess(*access, allowed=allowed, denied=frozenset(agent.disallowed)),
                   SubagentCallCap(min(max_calls, agent.max_turns or max_calls))]
     if agent.skills:
         middleware.append(PinSkills(agent.skills))

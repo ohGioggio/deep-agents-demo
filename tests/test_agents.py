@@ -49,6 +49,31 @@ class FormatTests(unittest.TestCase):
         agent, _ = parse_agent_md("---\nname: a\ndescription: d\n---\nx", "f", KNOWN)
         self.assertIsNone(agent.tools)
 
+    def test_max_turns_must_be_a_real_number(self):
+        agent, notes = parse_agent_md("---\nname: a\ndescription: d\nmaxTurns: true\n---\nx", "f", KNOWN)
+        self.assertIsNone(agent.max_turns)
+        self.assertTrue(any("maxTurns" in n for n in notes), notes)
+
+    def test_model_must_be_text(self):
+        agent, notes = parse_agent_md("---\nname: a\ndescription: d\nmodel: [x]\n---\nx", "f", KNOWN)
+        self.assertIsNone(agent.model)
+        self.assertTrue(any("model" in n for n in notes), notes)
+
+    def test_skills_must_be_names(self):
+        agent, notes = parse_agent_md("---\nname: a\ndescription: d\nskills: {a: b}\n---\nx", "f", KNOWN)
+        self.assertEqual(agent.skills, ())
+        self.assertTrue(any("skills" in n for n in notes), notes)
+        agent, _ = parse_agent_md("---\nname: a\ndescription: d\nskills: one two\n---\nx", "f", KNOWN)
+        self.assertEqual(agent.skills, ("one", "two"))
+
+    def test_name_with_trailing_newline_is_rejected(self):
+        agent, _ = parse_agent_md('---\nname: "critic\\n"\ndescription: d\n---\nx', "f", KNOWN)
+        self.assertIsNone(agent)
+
+    def test_frontmatter_tolerates_blank_first_line_and_trailing_spaces(self):
+        agent, notes = parse_agent_md("\n---  \nname: a\ndescription: d\n---  \nx", "f", KNOWN)
+        self.assertIsNotNone(agent, notes)
+
     def test_blank_tools_means_all_too(self):
         """Review finding: a blank 'tools:' line silently gave the agent no tools."""
         for line in ("tools:", "tools: ''", "tools: []"):
@@ -330,6 +355,13 @@ class SubagentTests(unittest.TestCase):
         first_sub_call = [m for kind, m in SEEN if kind == "messages"][1]
         self.assertTrue(any('<skill name="scene-planning"' in str(m.content) for m in first_sub_call))
 
+    def test_subagents_can_plan(self):
+        for text, name in ((ALL_AGENT, "helper"), (READ_ONLY_AGENT, "planner")):
+            with self.subTest(agent=name):
+                SEEN.clear()
+                self.run_turn(delegate(name), AIMessage(content="sub done"), agents=[agent_from(text)])
+                self.assertIn("write_todos", self.subagent_tools())
+
     def test_model_for_is_used_for_explicit_models(self):
         explicit = agent_from(ALL_AGENT.replace("description: Helps.", "description: Helps.\nmodel: nvidia/other"))
         inherit = agent_from(CRITIC)
@@ -352,6 +384,16 @@ class WiringTests(unittest.TestCase):
         text = "\n".join(said)
         for expected in ("critic", "reviewer", "moderator", "built-in", "read_file", "critic.md"):
             self.assertIn(expected, text)
+
+    def test_agents_footer_matches_reality(self):
+        from deep_agents_demo.chat import ChatSession
+        write(self.root / "agents" / "gp.md", "---\nname: general-purpose\ndescription: Mine.\n---\nx")
+        said = []
+        ChatSession(chats=None, current="c", say=said.append,
+                    agents=AgentRegistry.load([self.root / "agents"], KNOWN)).handle("/agents")
+        text = "\n".join(said)
+        self.assertNotIn("always there", text)
+        self.assertIn("(overrides built-in)", text)
 
     def test_agent_folder_is_read_only_to_the_agent(self):
         (self.root / "skills").mkdir()

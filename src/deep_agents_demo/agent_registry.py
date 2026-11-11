@@ -43,6 +43,10 @@ BUILTIN_AGENTS = {
 }
 
 
+# Built by build_agent itself, but replaceable by name like the ones above.
+BUILT_IN_ELSEWHERE = ("general-purpose", "researcher")
+
+
 def load_folder(folder: Path, known_tools) -> tuple[dict, list[str]]:
     """Agents defined by the .md files under ``folder`` (README.md files are notes)."""
     if not folder.is_dir():
@@ -87,6 +91,8 @@ class AgentRegistry:
                     overrides[name] = replaced
                     if replaced != "built-in":
                         warnings.append(f"{agent.source}: {name!r} overrides {replaced}")
+                elif name in BUILT_IN_ELSEWHERE:
+                    overrides[name] = "built-in"
                 agents[name] = agent
         return cls(agents, warnings, overrides)
 

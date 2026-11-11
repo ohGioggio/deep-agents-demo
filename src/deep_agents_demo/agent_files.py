@@ -33,7 +33,7 @@ SPAWN_TOOLS = ("Agent", "Task")              # starting subagents: no nesting he
 CLAUDE_MODELS = ("sonnet", "opus", "haiku", "fable")
 USED_FIELDS = ("name", "description", "tools", "disallowedTools", "model", "permissionMode",
                "maxTurns", "skills", "color")
-_FRONTMATTER = re.compile(r"\A---\n(.*?)\n---[ \t]*(?:\n|\Z)(.*)\Z", re.DOTALL)
+_FRONTMATTER = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)(.*)\Z", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,7 @@ def resolve_model(value) -> tuple[str | None, str | None]:
 
 def parse_agent_md(text: str, source: str, known_tools) -> tuple[AgentDefinition | None, list[str]]:
     """The agent a file defines (None if it can't be loaded) and notes for the user."""
-    text = text.lstrip("﻿").replace("\r\n", "\n")
+    text = text.lstrip("\ufeff").replace("\r\n", "\n").lstrip("\n")
     match = _FRONTMATTER.match(text)
     if not match:
         return None, [f"{source}: skipped: no YAML frontmatter between --- lines"]
@@ -102,7 +102,7 @@ def parse_agent_md(text: str, source: str, known_tools) -> tuple[AgentDefinition
     if not isinstance(front, dict):
         return None, [f"{source}: skipped: the frontmatter is not a mapping"]
     name, description = front.get("name"), front.get("description")
-    if not isinstance(name, str) or not NAME_PATTERN.match(name):
+    if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name):
         return None, [f"{source}: skipped: name {name!r} must be letters, digits, '-' or '_' "
                       "(up to 64)"]
     if not isinstance(description, str) or not description.strip():
@@ -121,22 +121,34 @@ def parse_agent_md(text: str, source: str, known_tools) -> tuple[AgentDefinition
             return None, [f"{source}: skipped: none of {name!r}'s tools exist here", *notes]
     disallowed, deny_notes = translate_tools(_names(front.get("disallowedTools")), known_tools)
     notes += [n for n in deny_notes if "dropped" not in n]
-    model, model_note = resolve_model(front.get("model"))
+    raw_model = front.get("model")
+    if raw_model is not None and not isinstance(raw_model, str):
+        notes.append(f"model {raw_model!r} ignored: it must be text; using the configured model")
+        raw_model = None
+    model, model_note = resolve_model(raw_model)
     notes += [model_note] if model_note else []
     mode = str(front.get("permissionMode") or "default")
     if mode not in ("default", "manual", "plan"):
         notes.append(f"permissionMode {mode!r} ignored: approvals always apply here")
     max_turns = front.get("maxTurns")
-    if max_turns is not None and not (isinstance(max_turns, int) and max_turns >= 1):
+    if max_turns is not None and (isinstance(max_turns, bool) or not isinstance(max_turns, int)
+                                  or max_turns < 1):
         notes.append(f"maxTurns {max_turns!r} ignored: it must be a whole number of 1 or more")
         max_turns = None
+    raw_skills = front.get("skills")
+    if raw_skills is None or isinstance(raw_skills, str) or (
+            isinstance(raw_skills, list) and all(isinstance(item, str) for item in raw_skills)):
+        skills = tuple(_names(raw_skills))
+    else:
+        notes.append("skills ignored: list skill names, as text or a list")
+        skills = ()
     unused = [key for key in front if key not in USED_FIELDS]
     if unused:
         notes.append(f"fields with no equivalent here, ignored: {', '.join(map(str, unused))}")
 
     agent = AgentDefinition(
         name=name, description=" ".join(description.split()), prompt=match.group(2).strip(),
-        tools=tools, disallowed=disallowed, model=model, skills=tuple(_names(front.get("skills"))),
+        tools=tools, disallowed=disallowed, model=model, skills=skills,
         max_turns=max_turns, read_only=mode == "plan",
         color=str(front["color"]) if front.get("color") else None, source=source, frontmatter=front)
     return agent, [f"{source}: {note}" for note in notes]
