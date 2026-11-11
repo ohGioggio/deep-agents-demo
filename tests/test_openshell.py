@@ -11,9 +11,10 @@ from unittest.mock import Mock, patch
 import grpc
 from openshell import ExecResult
 
-from deep_agents_demo import openshell_backend
-from deep_agents_demo.openshell_backend import OpenShellBackend
-from deep_agents_demo.sandbox import LazySandbox, clear_sandbox, make_backend, sandbox_feature
+from deep_agents_demo.features.sandbox import openshell as openshell_backend
+from deep_agents_demo.features.sandbox.openshell import OpenShellBackend
+from deep_agents_demo.features.sandbox.providers import LazySandbox, clear_sandbox, make_backend
+from deep_agents_demo.features.sandbox.feature import sandbox_feature
 
 POLICY = Path(__file__).resolve().parents[1] / "policy.yaml"
 
@@ -240,7 +241,7 @@ class ProviderSelectionTests(unittest.TestCase):
         from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
         from langchain_core.messages import AIMessage
         from langgraph.checkpoint.memory import InMemorySaver
-        from deep_agents_demo.agent import build_agent
+        from deep_agents_demo.core.assembly import build_agent
 
         class Model(FakeMessagesListChatModel):
             tool_names: list = []

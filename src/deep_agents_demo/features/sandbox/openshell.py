@@ -12,7 +12,11 @@ import base64
 import shlex
 
 import grpc
-from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse
+from deepagents.backends.protocol import (
+    ExecuteResponse,
+    FileDownloadResponse,
+    FileUploadResponse,
+)
 from deepagents.backends.sandbox import BaseSandbox
 
 IS_DIRECTORY_EXIT = 3

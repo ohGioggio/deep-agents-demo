@@ -2,7 +2,7 @@
 import json
 import unittest
 
-from deep_agents_demo.catalog import search_assets, triangle_budget
+from deep_agents_demo.features.catalog.feature import search_assets, triangle_budget
 
 
 class CatalogTests(unittest.TestCase):

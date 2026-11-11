@@ -20,15 +20,15 @@ LAYERS = {"config": 0, "models": 0, "persistence": 1, "providers": 1, "core": 2,
 # removes it; the last move empties the set. A legacy module isn't checked as an
 # importer, and a moved module may still import it until it moves.
 LEGACY = {
-    "agent", "app", "approvals",
-    "catalog", "chat", "cli", "commands", "guardrails", "images", "memory",
-    "openshell_backend", "orchestration", "rag", "rooms", "sandbox",
+    "app", "approvals",
+    "chat", "cli", "commands", 
+    
     "workspace",
 }
 
 # Moved modules (dotted, under the package) that still print, read input or use
 # signal; emptied once the UI seam is in place.
-IO_PENDING: set[str] = set()
+IO_PENDING: set[str] = {"features.orchestration.runner", "features.orchestration.plans"}
 
 ENTRY = {"__init__", "__main__"}
 

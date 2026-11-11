@@ -90,7 +90,7 @@ class QuietTests(unittest.TestCase):
 
         from deepagents.backends import FilesystemBackend
 
-        from deep_agents_demo.agent import build_agent
+        from deep_agents_demo.core.assembly import build_agent
         model = Model(responses=[call("ls", {"path": "/"}, "l"), AIMessage(content="The answer.")])
         agent = build_agent(model, InMemorySaver(), FilesystemBackend(root_dir=tempfile.mkdtemp(),
                                                                       virtual_mode=True))

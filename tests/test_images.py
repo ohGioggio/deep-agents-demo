@@ -11,10 +11,19 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from PIL import Image
 
-from deep_agents_demo.agent import build_agent
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.chat import ChatSession, printable
-from deep_agents_demo.images import (MAX_SIDE, ImageError, ImageWindow, Uploads, image_paths,
-                                     images_feature, load_image, message_content, sniff)
+from deep_agents_demo.features.images.uploads import (
+    MAX_SIDE,
+    ImageError,
+    Uploads,
+    image_paths,
+    load_image,
+    message_content,
+    sniff,
+)
+from deep_agents_demo.features.images.window import ImageWindow
+from deep_agents_demo.features.images.feature import images_feature
 
 SEEN = []  # the messages of every model call
 
@@ -68,7 +77,7 @@ class LoadTests(Workspace):
 
     def test_too_large_files_are_refused(self):
         big = picture(self.root / "big.png")
-        with patch("deep_agents_demo.images.MAX_BYTES", 10), self.assertRaises(ImageError) as caught:
+        with patch("deep_agents_demo.features.images.uploads.MAX_BYTES", 10), self.assertRaises(ImageError) as caught:
             load_image(big)
         self.assertIn("larger than", str(caught.exception))
 

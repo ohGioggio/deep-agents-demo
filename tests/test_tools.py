@@ -12,9 +12,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from test_guardrails import FakeSandbox
 from test_memory import FakeMemory
 
-from deep_agents_demo.agent import build_agent
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.approvals import Approver
-from deep_agents_demo.catalog import catalog_feature
+from deep_agents_demo.features.catalog.feature import catalog_feature
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.config import Settings
 from deep_agents_demo.core.feature import Feature
@@ -22,8 +22,9 @@ from deep_agents_demo.core.middleware import ToolAccess
 from deep_agents_demo.core.tools import CORE, ToolRegistry, shell_block, tool_name
 from deep_agents_demo.features.skills.format import split_skill_md, warnings
 from deep_agents_demo.features.skills.manager import SkillManager
-from deep_agents_demo.guardrails import Guardrails
-from deep_agents_demo.memory import MemoryService, memory_feature
+from deep_agents_demo.features.guardrails.feature import Guardrails
+from deep_agents_demo.features.memory.service import MemoryService
+from deep_agents_demo.features.memory.feature import memory_feature
 from deep_agents_demo.persistence.versioned_store import VersionedStore
 from deep_agents_demo.workspace import SEED_DIR
 
@@ -185,7 +186,7 @@ class AccessTests(unittest.TestCase):
 
     def run_openshell(self, *responses, openshell=True):
         """A turn on a fake sandbox with the OpenShell sandbox feature (and its skill)."""
-        from deep_agents_demo.sandbox import sandbox_feature
+        from deep_agents_demo.features.sandbox.feature import sandbox_feature
         shutil.copytree(SEED_DIR / "sandbox-skills", self.root / "sandbox-skills", dirs_exist_ok=True)
         sandbox = FakeSandbox()
         backend = CompositeBackend(default=sandbox, routes={

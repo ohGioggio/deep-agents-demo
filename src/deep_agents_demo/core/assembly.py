@@ -30,7 +30,6 @@ from deep_agents_demo.core.middleware import (
     ToolAccess,
 )
 from deep_agents_demo.core.tools import ToolRegistry, shell_block, tool_name
-from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
 from deep_agents_demo.models.agents import READ_ONLY
 
 IDENTITY = (
@@ -211,13 +210,14 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
 
 
 def worker_factory(model, checkpointer, backend, features=(), *, skills_prefix="", disabled_tools=(),
-                   agents=(), model_for=None, max_calls=25):
+                   agents=(), model_for=None, max_calls=25, builtins=()):
     """``make(name, extra_middleware=())``: one agent as a standalone graph, for runners
     on the chat loop's thread (plan workers and reviewers). It gets exactly what the
     same agent gets as a subagent: its tools and limits, DISABLED_TOOLS, skill gates,
     the call cap, the deny rules and the main agent's approvals. Returns None for an
-    unknown name. Built-in agents (reviewer, moderator) are included."""
-    by_name = {**BUILTIN_AGENTS, **{agent.name: agent for agent in agents}}
+    unknown name. ``builtins`` (the composition root passes the reviewer and the
+    moderator) come first; ``agents`` with the same name replace them."""
+    by_name = {**{agent.name: agent for agent in builtins}, **{agent.name: agent for agent in agents}}
     a = _assemble(model, features, skills_prefix=skills_prefix, disabled_tools=disabled_tools,
                   agents=list(by_name.values()), model_for=model_for, max_calls=max_calls)
     specs = {spec["name"]: spec for spec in a.subagents}

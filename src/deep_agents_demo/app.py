@@ -12,30 +12,32 @@ from deepagents.backends import FilesystemBackend
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from deep_agents_demo.agent import build_agent, worker_factory
-from deep_agents_demo.catalog import catalog_feature
 from deep_agents_demo.config import Settings
+from deep_agents_demo.core.assembly import build_agent, worker_factory
 from deep_agents_demo.core.tools import ToolRegistry
+from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
 from deep_agents_demo.features.agents.manager import AgentManager
 from deep_agents_demo.features.agents.registry import AgentRegistry
-from deep_agents_demo.features.skills.manager import SkillManager
-from deep_agents_demo.guardrails import Guardrails
-from deep_agents_demo.images import Uploads, images_feature
-from deep_agents_demo.memory import (
+from deep_agents_demo.features.catalog.feature import catalog_feature
+from deep_agents_demo.features.documents.feature import documents_feature
+from deep_agents_demo.features.documents.index import DocumentIndex
+from deep_agents_demo.features.guardrails.feature import Guardrails
+from deep_agents_demo.features.images.feature import images_feature
+from deep_agents_demo.features.images.uploads import Uploads
+from deep_agents_demo.features.memory.feature import file_memory_feature, memory_feature
+from deep_agents_demo.features.memory.service import (
     MemoryService,
     close_memory,
-    file_memory_feature,
     make_memory,
-    memory_feature,
 )
-from deep_agents_demo.orchestration import orchestration_feature
+from deep_agents_demo.features.orchestration.feature import orchestration_feature
+from deep_agents_demo.features.sandbox.providers import BackendSetup, make_backend
+from deep_agents_demo.features.skills.manager import SkillManager
 from deep_agents_demo.persistence.chats import Chats
 from deep_agents_demo.persistence.versioned_store import AGENT_TABLES, VersionedStore
 from deep_agents_demo.providers.chat import chat_model
 from deep_agents_demo.providers.embeddings import CompatibleEmbeddings
 from deep_agents_demo.providers.rate_limit import rate_limiter
-from deep_agents_demo.rag import DocumentIndex, documents_feature
-from deep_agents_demo.sandbox import BackendSetup, make_backend
 from deep_agents_demo.workspace import seed_files
 
 
@@ -167,7 +169,8 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
         agent = build_agent(chat_model(settings), saver, setup.backend, enabled,
                             max_parallel=settings.subagent_max_parallel, **shared)
         # Plan workers and reviewers: the same agents and limits, run by the chat loop.
-        make = worker_factory(chat_model(settings), saver, setup.backend, enabled, **shared)
+        make = worker_factory(chat_model(settings), saver, setup.backend, enabled,
+                              builtins=tuple(BUILTIN_AGENTS.values()), **shared)
         return agent, agents, make
 
     agent, agents, make = make_agent()

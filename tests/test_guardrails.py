@@ -12,12 +12,14 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from test_memory import FakeMemory
 
-from deep_agents_demo.agent import build_agent
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.approvals import NO_HUMAN, Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.core.feature import Feature, approval_configs
-from deep_agents_demo.guardrails import Guardrails, risky_command
-from deep_agents_demo.memory import MemoryService, memory_feature
+from deep_agents_demo.features.guardrails.feature import Guardrails
+from deep_agents_demo.features.guardrails.patterns import risky_command
+from deep_agents_demo.features.memory.service import MemoryService
+from deep_agents_demo.features.memory.feature import memory_feature
 
 RISKY = {
     "rm -rf build/": "recursively",

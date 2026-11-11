@@ -9,7 +9,8 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 
-from deep_agents_demo.core.feature import Feature
+from deep_agents_demo.features.sandbox.feature import sandbox_feature
+from deep_agents_demo.providers.registry import ProviderRegistry
 
 # Empties the working directory and removes the sandbox user's own top-level
 # entries in the temp directory. If the working directory lives inside the temp
@@ -52,6 +53,7 @@ def clear_sandbox(backend, workdir, tmpdir="/tmp"):
         raise RuntimeError(f"Clearing the sandbox failed: {result.output.strip()}")
     work, tmp = result.output.split()[-2:]
     return int(work), int(tmp)
+
 
 
 class LazySandbox(BaseSandbox):
@@ -117,6 +119,13 @@ class Remote:
     openshell_skill: bool = False  # offer the OpenShell sandbox skill
 
 
+# Remote sandbox providers by SANDBOX_PROVIDER value ("none" means local files).
+# To add one, write a function like these two, decorated with @SANDBOXES.register;
+# config.SANDBOX_PROVIDERS must list the same names (a test keeps them in step).
+SANDBOXES = ProviderRegistry("sandbox provider")
+
+
+@SANDBOXES.register("daytona")
 def _daytona(settings, data, stack, say) -> Remote:
     def connect():
         # The Daytona client reads DAYTONA_API_KEY from the environment itself.
@@ -134,10 +143,11 @@ def _daytona(settings, data, stack, say) -> Remote:
     return Remote(LazySandbox(connect, "Daytona sandbox", say), "/home/daytona")
 
 
+@SANDBOXES.register("openshell")
 def _openshell(settings, data, stack, say) -> Remote:
     def connect():
-        from deep_agents_demo.openshell_backend import OpenShellBackend
-        from deep_agents_demo.openshell_backend import connect as open_session
+        from deep_agents_demo.features.sandbox.openshell import OpenShellBackend
+        from deep_agents_demo.features.sandbox.openshell import connect as open_session
         client, session = open_session(settings.openshell_name, settings.openshell_workspace)
         stack.callback(client.close)
         return OpenShellBackend(session, workdir=settings.openshell_workdir)
@@ -155,11 +165,6 @@ class BackendSetup:
     workdir: str | None = None       # the sandbox working directory
 
 
-# Remote sandbox providers by SANDBOX_PROVIDER value ("none" means local files).
-# To add one, write a function like the two above and register it here; the
-# settings check in config.SANDBOX_PROVIDERS must list the same names (a test
-# keeps them in sync).
-PROVIDERS = {"daytona": _daytona, "openshell": _openshell}
 
 
 def make_backend(settings, workspace, data, stack, say=print):
@@ -176,7 +181,7 @@ def make_backend(settings, workspace, data, stack, say=print):
     if settings.provider == "none":
         return BackendSetup(local)
     try:
-        provider = PROVIDERS[settings.provider]
+        provider = SANDBOXES.get(settings.provider)
     except KeyError:
         raise ValueError(f"Unknown sandbox provider {settings.provider!r}") from None
     remote = provider(settings, data, stack, say)
@@ -185,20 +190,3 @@ def make_backend(settings, workspace, data, stack, say=print):
                         sandbox_feature(remote.workdir, remote.openshell_skill), remote.workdir)
 
 
-def sandbox_feature(workdir, openshell_skill=False) -> Feature:
-    """Rules for working in a sandbox; with OpenShell, also its skill folder."""
-    prompt = (f"You are using a sandbox. Keep code and output under {workdir}; when a skill or "
-              f"the user names a path starting with /, put it under {workdir} instead. "
-              "Local /instructions paths contain skills and the images the user attached "
-              "(uploads/); create your own files under the workdir. ")
-    if openshell_skill:
-        # The sandbox skill describes the OpenShell image; offering it without that
-        # sandbox misleads the agent (it told users to pip install inside /sandbox).
-        prompt += ("Before your first shell command (execute), read the sandbox skill and "
-                   "follow it for installing packages and handling blocked network access; "
-                   "other tools don't need it. ")
-    # Asking was not enough: the agent skipped the skill and tried pip, apt and
-    # get-pip before finding uv. So execute is refused until the skill is read.
-    return Feature(name="sandbox", prompt=prompt,
-                   skill_dirs=("sandbox-skills/",) if openshell_skill else (),
-                   needs_skill=(("execute", "sandbox"),) if openshell_skill else ())

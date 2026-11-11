@@ -9,7 +9,7 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from deep_agents_demo.agent import build_agent
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.chat import ChatSession, turn_input
 from deep_agents_demo.persistence.chats import Chats, new_name, thread_id, valid_name
 from deep_agents_demo.ui.cli.render import format_table

@@ -9,12 +9,16 @@ steps); the transcript is saved to ``demo_workspace/rooms/<user>/``.
 Like plans, rooms run on the chat loop's thread (``Runner``), so approvals work and
 Ctrl+C pauses between turns, here to let the user speak.
 """
+import json
 import re
 import time
 import uuid
 from pathlib import Path
 
-from deep_agents_demo.orchestration import Budget, Runner, _RunFailed, _WrapUp
+from langgraph.types import interrupt
+
+from deep_agents_demo.features.orchestration.limits import Budget, _WrapUp
+from deep_agents_demo.features.orchestration.runner import Runner, _RunFailed
 
 TRANSCRIPT_LIMIT = 6000   # characters of the discussion each turn sees (the latest ones)
 _MARKS = "*#>_` \t"
@@ -242,3 +246,23 @@ class RoomRunner(Runner):
             self.lines.append(f"**You:** {answer}")
             self.user_said = answer
         return "go"
+
+
+ROOM_PROMPT = (
+    "start_room(question, participants) runs a moderated discussion between the named agents "
+    "(at least two) and returns its summary; use it only when the user asks for a discussion "
+    "or a room. ")
+
+
+def start_room(question: str, participants: list[str]) -> str:
+    """Run a moderated discussion: the named agents take turns on the question, a
+    moderator decides who speaks and ends it with a summary. participants: at least two
+    agent names (not "moderator"). Only when the user asks for a discussion."""
+    names = [str(p).strip() for p in participants] if isinstance(participants, list) else []
+    if (not str(question or "").strip() or len(set(names)) < 2 or len(set(names)) != len(names)
+            or "moderator" in names or not all(names)):
+        return json.dumps({"error": "participants must be at least two different agent names, "
+                                    "not 'moderator', and the question can't be empty"})
+    outcome = interrupt({"type": "start_room", "question": str(question).strip(),
+                         "participants": names})
+    return json.dumps(outcome)

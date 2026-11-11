@@ -33,10 +33,11 @@ sys.path.insert(0, str(ROOT / "src"))
 from deepagents.backends import FilesystemBackend  # noqa: E402
 
 from deep_agents_demo import app  # noqa: E402
-from deep_agents_demo.agent import build_agent  # noqa: E402
+from deep_agents_demo.core.assembly import build_agent  # noqa: E402
 from deep_agents_demo.config import RECALL_MODES, Settings  # noqa: E402
-from deep_agents_demo.catalog import catalog_feature  # noqa: E402
-from deep_agents_demo.memory import MemoryService, close_memory, make_memory, memory_feature  # noqa: E402
+from deep_agents_demo.features.catalog.feature import catalog_feature  # noqa: E402
+from deep_agents_demo.features.memory.service import MemoryService, close_memory, make_memory
+from deep_agents_demo.features.memory.feature import memory_feature  # noqa: E402
 from deep_agents_demo.workspace import seed_files  # noqa: E402
 
 USER = "eval-user"

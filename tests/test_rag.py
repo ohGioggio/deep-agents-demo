@@ -7,7 +7,7 @@ from pathlib import Path
 
 from langchain_core.embeddings import Embeddings
 
-from deep_agents_demo.rag import DocumentIndex
+from deep_agents_demo.features.documents.index import DocumentIndex
 
 
 class FakeEmbeddings(Embeddings):

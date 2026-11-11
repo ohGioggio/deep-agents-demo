@@ -7,12 +7,12 @@ from langgraph.types import Command
 from deep_agents_demo.app import build_runtime, prepare_workspace
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.config import Settings
-from deep_agents_demo.images import (
+from deep_agents_demo.features.images.uploads import (
     ImageError,
     image_paths,
     message_content,
-    without_images,
 )
+from deep_agents_demo.features.images.window import without_images
 from deep_agents_demo.persistence.chats import Chats, new_name, thread_id, valid_name
 from deep_agents_demo.persistence.files import safe_folder_name
 from deep_agents_demo.ui.cli.render import format_table, format_transcript
@@ -129,8 +129,8 @@ def runners_for(runtime, settings, thread: str, approver, interactive: bool, qui
     """What answers non-approval pauses in a turn: the plan runner (run_plan) and the
     room runner (start_room), both on this thread so approvals and Ctrl+C work."""
 
-    from deep_agents_demo.orchestration import PlanRunner
-    from deep_agents_demo.rooms import RoomRunner
+    from deep_agents_demo.features.orchestration.plans import PlanRunner
+    from deep_agents_demo.features.orchestration.rooms import RoomRunner
     if runtime.make_worker is None:
         return {}
     say = (lambda *_args, **_kwargs: None) if quiet else print
@@ -243,7 +243,7 @@ class ChatSession:
 
     @command("room", usage="/room A B -- QUESTION", summary="let agents discuss a question, moderated")
     def room_command(self, arg):
-        from deep_agents_demo.rooms import parse_room_command
+        from deep_agents_demo.features.orchestration.rooms import parse_room_command
         parsed = parse_room_command(arg)
         if isinstance(parsed, str):
             self.say(parsed)
@@ -348,7 +348,7 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
             """/room: run it, then tell the agent the outcome as an ordinary turn."""
             runners = runners_for(runtime, settings, thread_id(runtime.chats.user, session.current),
                                   approver, interactive=prompt is None, quiet=quiet)
-            from deep_agents_demo.rooms import room_followup
+            from deep_agents_demo.features.orchestration.rooms import room_followup
             outcome = runners["start_room"]({"type": "start_room", "question": question,
                                              "participants": names})
             if "summary" not in outcome:  # refused before it started, e.g. an unknown agent

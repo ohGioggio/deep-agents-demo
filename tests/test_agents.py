@@ -10,8 +10,8 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deep_agents_demo import agent as agent_module
-from deep_agents_demo.agent import build_agent
+from deep_agents_demo.core import assembly as agent_module
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.core.middleware import SubagentCallCap
@@ -23,7 +23,7 @@ from deep_agents_demo.features.agents.files import (
     translate_tools,
 )
 from deep_agents_demo.features.agents.registry import AgentRegistry
-from deep_agents_demo.guardrails import Guardrails
+from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.workspace import SEED_DIR
 
 KNOWN = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute",

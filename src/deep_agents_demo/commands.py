@@ -14,7 +14,7 @@ from deep_agents_demo.app import (
 )
 from deep_agents_demo.chat import confirm
 from deep_agents_demo.config import Settings
-from deep_agents_demo.sandbox import clear_sandbox
+from deep_agents_demo.features.sandbox.providers import clear_sandbox
 from deep_agents_demo.ui.cli.render import format_table, format_transcript
 
 

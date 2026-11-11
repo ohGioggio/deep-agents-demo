@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_agents_demo.agent import system_prompt
+from deep_agents_demo.core.assembly import system_prompt
 from deep_agents_demo.workspace import SEED_DIR, seed_files
 
 OLD_MEMORY = b"# User preferences\nUse metres. Prefer realistic assets.\n"
@@ -92,19 +92,19 @@ class FeatureAssemblyTests(unittest.TestCase):
     def build(self, features, **kwargs):
         from unittest.mock import patch
 
-        import deep_agents_demo.agent as agent_module
+        import deep_agents_demo.core.assembly as agent_module
         with patch.object(agent_module, "create_deep_agent") as create:
             agent_module.build_agent(None, None, object(), features, **kwargs)
         return create.call_args.kwargs
 
     def test_sandbox_skills_offered_only_with_openshell(self):
-        from deep_agents_demo.sandbox import sandbox_feature
+        from deep_agents_demo.features.sandbox.feature import sandbox_feature
         for openshell, expected in ((False, ["/i/skills/"]), (True, ["/i/skills/", "/i/sandbox-skills/"])):
             kwargs = self.build([sandbox_feature("/sandbox", openshell)], skills_prefix="/i")
             self.assertEqual(kwargs["skills"], expected)
 
     def test_tools_middleware_and_researcher_come_from_features(self):
-        from deep_agents_demo.catalog import catalog_feature
+        from deep_agents_demo.features.catalog.feature import catalog_feature
         from deep_agents_demo.core.feature import Feature
         search_docs, remember, marker = _tool("search_docs"), _tool("remember"), object()
         kwargs = self.build([catalog_feature(),
@@ -125,14 +125,14 @@ class FeatureAssemblyTests(unittest.TestCase):
         self.assertNotIn("researcher", kwargs["system_prompt"])
 
     def test_file_memory_feature_turns_on_file_memory(self):
-        from deep_agents_demo.memory import file_memory_feature
+        from deep_agents_demo.features.memory.feature import file_memory_feature
         kwargs = self.build([file_memory_feature("/i")], skills_prefix="/i")
         self.assertEqual(kwargs["memory"], ["/i/memories/AGENTS.md"])
 
 
 class PromptTests(unittest.TestCase):
     def test_sections_come_in_feature_order_between_identity_and_closing(self):
-        from deep_agents_demo.agent import CLOSING, IDENTITY
+        from deep_agents_demo.core.assembly import CLOSING, IDENTITY
         from deep_agents_demo.core.feature import Feature
         prompt = system_prompt([Feature("a", prompt="FIRST. "), Feature("b", prompt="SECOND. ")])
         self.assertTrue(prompt.startswith(IDENTITY))
@@ -140,14 +140,14 @@ class PromptTests(unittest.TestCase):
         self.assertLess(prompt.index("FIRST."), prompt.index("SECOND."))
 
     def test_indexed_documents_are_named_and_searched_first(self):
-        from deep_agents_demo.rag import documents_prompt
+        from deep_agents_demo.features.documents.feature import documents_prompt
         prompt = documents_prompt(["street-works-brief.md"])
         self.assertIn("indexed documents are: street-works-brief.md", prompt)
         self.assertIn("call search_docs first", prompt)
         self.assertIn("Use search_docs for questions about the user's documents", documents_prompt([]))
 
     def test_prompt_is_general_purpose(self):
-        from deep_agents_demo.catalog import catalog_feature
+        from deep_agents_demo.features.catalog.feature import catalog_feature
         prompt = system_prompt([catalog_feature()])
         self.assertIn("general-purpose assistant", prompt)
         for scene_specific in ("3D", "scene", "catalog research", "asset-researcher"):
@@ -157,7 +157,7 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("search_docs", system_prompt([]))
 
     def test_sandbox_skill_hint_only_for_openshell(self):
-        from deep_agents_demo.sandbox import sandbox_feature
+        from deep_agents_demo.features.sandbox.feature import sandbox_feature
         self.assertIn("sandbox skill", sandbox_feature("/sandbox", openshell_skill=True).prompt)
         self.assertNotIn("sandbox skill", sandbox_feature("/home/daytona").prompt)
         self.assertIn("/home/daytona", sandbox_feature("/home/daytona").prompt)

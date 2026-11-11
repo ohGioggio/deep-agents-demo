@@ -9,7 +9,7 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deep_agents_demo.agent import build_agent
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.approvals import NO_HUMAN, Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.features.skills.format import (
@@ -375,7 +375,7 @@ class EndToEndTests(Workspace):
         self.assertEqual(self.store.installed("alice"), [])
 
     def test_skill_tools_need_approval_everywhere(self):
-        import deep_agents_demo.agent as agent_module
+        import deep_agents_demo.core.assembly as agent_module
         with patch.object(agent_module, "create_deep_agent") as create:
             agent_module.build_agent(None, None, object(), [self.manager.feature()])
         kwargs = create.call_args.kwargs

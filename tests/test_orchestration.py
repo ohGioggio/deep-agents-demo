@@ -14,12 +14,15 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from test_agents import ALL_AGENT, SEEN, Model, agent_from, call
 
-from deep_agents_demo.agent import build_agent, worker_factory
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.core.assembly import build_agent, worker_factory
 from deep_agents_demo.core.feature import Feature
-from deep_agents_demo.guardrails import Guardrails
+from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
+from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.workspace import SEED_DIR
+
+BUILTINS = tuple(BUILTIN_AGENTS.values())  # what the composition root passes
 
 
 class Workspace(unittest.TestCase):
@@ -95,7 +98,7 @@ CRITIC_FILE = "---\nname: critic\ndescription: Finds weaknesses.\ntools: Read, G
 class WorkerTests(Workspace):
     def make(self, *responses, features=(), agents=(), **options):
         model = Model(responses=[*responses, AIMessage(content="worker done")])
-        return worker_factory(model, InMemorySaver(), self.backend(), features, agents=agents, **options)
+        return worker_factory(model, InMemorySaver(), self.backend(), features, builtins=BUILTINS, agents=agents, **options)
 
     def run_worker(self, graph, approver=None):
         with patch("builtins.print"):
@@ -158,7 +161,9 @@ class WorkerTests(Workspace):
 
 class RunPlanToolTests(Workspace):
     def turn(self, *responses, runners=None, features=(), approver=None):
-        from deep_agents_demo.orchestration import orchestration_feature
+        from deep_agents_demo.features.orchestration.feature import (
+            orchestration_feature,
+        )
         model = Model(responses=[*responses, AIMessage(content="done")])
         agent = build_agent(model, InMemorySaver(), self.backend(), [orchestration_feature(), *features])
         with patch("builtins.print"):
@@ -207,9 +212,9 @@ def reply(text):
 
 class RunnerBase(Workspace):
     def runner(self, *responses, features=(), answers=(), approvals=(), interactive=True, agents=()):
-        from deep_agents_demo.orchestration import PlanRunner
+        from deep_agents_demo.features.orchestration.plans import PlanRunner
         model = Model(responses=[*responses, reply("UNEXPECTED EXTRA CALL")])
-        make = worker_factory(model, InMemorySaver(), self.backend(), features, agents=agents)
+        make = worker_factory(model, InMemorySaver(), self.backend(), features, builtins=BUILTINS, agents=agents)
         replies, approve = iter(answers), iter(approvals)
         self.said = []
         approver = Approver(ask=lambda _: next(approve), say=lambda *_: None)
@@ -232,7 +237,7 @@ class RunnerBase(Workspace):
 
 class RunnerTests(RunnerBase):
     def test_parse_verdict(self):
-        from deep_agents_demo.orchestration import parse_verdict
+        from deep_agents_demo.features.orchestration.plans import parse_verdict
         self.assertEqual(parse_verdict("PASS\nok"), (True, "ok"))
         self.assertEqual(parse_verdict("**FAIL**\nfix x"), (False, "fix x"))
         ok, notes = parse_verdict("Looks fine overall")
@@ -413,7 +418,7 @@ class WorkerStackTests(Workspace):
     def test_workers_summarize_long_contexts(self):
         """Review finding: workers lacked the summarization subagents get (it wraps model
         calls, so it isn't a graph node: check it's built for the worker's model)."""
-        from deep_agents_demo import agent as agent_module
+        from deep_agents_demo.core import assembly as agent_module
         model = Model(responses=[reply("x")])
         real = agent_module.create_summarization_middleware
         with patch.object(agent_module, "create_summarization_middleware", side_effect=real) as made:

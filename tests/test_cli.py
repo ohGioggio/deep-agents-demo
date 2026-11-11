@@ -8,7 +8,7 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deep_agents_demo.agent import build_agent
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.chat import turn_input
 
 SKILL = "---\nname: {name}\ndescription: The {name} skill.\n---\nBody.\n"

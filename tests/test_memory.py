@@ -11,16 +11,12 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deep_agents_demo.agent import build_agent
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.core.secrets import find_secrets, redact
-from deep_agents_demo.memory import (
-    AutoRecallMiddleware,
-    MemoryService,
-    WritePolicy,
-    file_memory_feature,
-    memory_feature,
-    memory_tools,
-)
+from deep_agents_demo.features.memory.recall import AutoRecallMiddleware
+from deep_agents_demo.features.memory.service import MemoryService, WritePolicy
+from deep_agents_demo.features.memory.feature import file_memory_feature, memory_feature
+from deep_agents_demo.features.memory.tools import memory_tools
 
 KEY = "sk-proj-abcDEF1234567890ghijKLMNOP"
 HEADER = "## Recalled memories about this user"
@@ -248,7 +244,7 @@ class AutoRecallTests(unittest.TestCase):
 
 class OptionalExtrasNoticeTests(unittest.TestCase):
     def test_only_mem0_optional_extras_notices_are_silenced(self):
-        import deep_agents_demo.memory  # noqa: F401  (installs the filters)
+        import deep_agents_demo.features.memory.service  # noqa: F401  (installs the filters)
         for name, notice in (("mem0.utils.spacy_models", "Failed to load spaCy lemma model: x"),
                              ("mem0.vector_stores.qdrant", "fastembed not installed - BM25 keyword search disabled.")):
             with self.assertLogs(name, "WARNING") as logs:
