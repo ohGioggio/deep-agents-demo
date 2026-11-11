@@ -1,6 +1,6 @@
-"""Versioned skill storage in SQLite.
+"""Versioned storage in SQLite, for skills and agents (``SKILL_TABLES``, ``AGENT_TABLES``).
 
-A skill is identified by (scope, owner, name): scope is "user" or "marketplace",
+An item (a skill, or an agent) is identified by (scope, owner, name): scope is "user" or "marketplace",
 and owner is the user id ("" for the shared marketplace). Installs record which
 marketplace skills each user has activated. Every change adds a
 version holding all of the skill's files, so nothing is ever overwritten: removing
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS {installs} (
 
 
 @dataclass(frozen=True)
-class Skill:
+class Item:
     scope: str
     owner: str
     name: str
@@ -62,7 +62,7 @@ class Version:
     files: dict
 
 
-def _locked(method):
+def locked(method):
     """Run under the store's lock: one connection is shared by the tool threads."""
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
@@ -71,7 +71,7 @@ def _locked(method):
     return wrapper
 
 
-class SkillStore:
+class VersionedStore:
     """Every public method holds ``lock``: LangGraph runs a step's tool calls in
     parallel threads, and they share this one SQLite connection (and its open
     transaction), so unlocked calls read half-written versions."""
@@ -89,7 +89,7 @@ class SkillStore:
     def _sql(self, text: str) -> str:
         return text.format(**self.tables)
 
-    @_locked
+    @locked
     def close(self):
         self.db.close()
 
@@ -98,18 +98,18 @@ class SkillStore:
             self._sql("SELECT id, current_version, removed FROM {items} WHERE scope=? AND owner=? AND name=?"),
             (scope, owner, name)).fetchone()
 
-    @_locked
-    def get(self, scope: str, owner: str, name: str) -> Skill | None:
+    @locked
+    def get(self, scope: str, owner: str, name: str) -> Item | None:
         """The current version, or None if the skill never existed. Removed skills are
         returned with ``removed=True`` and the files they had before removal."""
         row = self._row(scope, owner, name)
         if row is None:
             return None
         skill_id, version, removed = row
-        return Skill(scope, owner, name, version, self.version(scope, owner, name, version).files,
+        return Item(scope, owner, name, version, self.version(scope, owner, name, version).files,
                      bool(removed))
 
-    @_locked
+    @locked
     def version(self, scope, owner, name, version) -> Version | None:
         row = self._row(scope, owner, name)
         if row is None:
@@ -119,7 +119,7 @@ class SkillStore:
             (row[0], version)).fetchone()
         return Version(found[0], found[1], found[2], json.loads(found[3])) if found else None
 
-    @_locked
+    @locked
     def history(self, scope, owner, name) -> list[Version]:
         row = self._row(scope, owner, name)
         if row is None:
@@ -128,20 +128,20 @@ class SkillStore:
             self._sql("SELECT version, action, created_at, files FROM {versions} WHERE skill_id=? "
                       "ORDER BY version"), (row[0],))]
 
-    @_locked
-    def list_current(self, scope: str, owner: str) -> list[Skill]:
+    @locked
+    def list_current(self, scope: str, owner: str) -> list[Item]:
         """Every skill in this scope that is not removed."""
         names = [n for (n,) in self.db.execute(
             self._sql("SELECT name FROM {items} WHERE scope=? AND owner=? AND removed=0 ORDER BY name"),
             (scope, owner))]
         return [self.get(scope, owner, name) for name in names]
 
-    @_locked
+    @locked
     def save(self, scope, owner, name, files: dict, action: str) -> int:
         """Add a version (``action``: create, update, import, restore). Returns its number."""
         return self._add_version(scope, owner, name, files, action, removed=False)
 
-    @_locked
+    @locked
     def remove(self, scope, owner, name) -> int:
         """Mark the skill removed, keeping its files in a new "remove" version."""
         current = self.get(scope, owner, name)
@@ -150,19 +150,19 @@ class SkillStore:
         return self._add_version(scope, owner, name, current.files, "remove", removed=True)
 
     # marketplace installs: which catalogue skills a user has activated
-    @_locked
+    @locked
     def installed(self, owner: str) -> list[str]:
         return [n for (n,) in self.db.execute(
             self._sql("SELECT name FROM {installs} WHERE owner=? ORDER BY name"), (owner,))]
 
-    @_locked
+    @locked
     def install(self, owner: str, name: str) -> None:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self.db:
             self.db.execute(self._sql("INSERT OR IGNORE INTO {installs} (owner, name, installed_at) VALUES (?,?,?)"),
                             (owner, name, now))
 
-    @_locked
+    @locked
     def uninstall(self, owner: str, name: str) -> None:
         with self.db:
             self.db.execute(self._sql("DELETE FROM {installs} WHERE owner=? AND name=?"), (owner, name))

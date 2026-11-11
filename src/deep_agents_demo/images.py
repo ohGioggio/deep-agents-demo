@@ -21,6 +21,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 
 from deep_agents_demo.core.feature import Feature
+from deep_agents_demo.persistence.files import safe_folder_name
 
 MAX_BYTES = 20 * 1024 * 1024   # larger files are refused
 MAX_SIDE = 1568                # longer sides are scaled down to this (pixels)
@@ -88,7 +89,7 @@ class Uploads:
     """Saves attached images to ``<workspace>/uploads/<user>/``, readable by the agent."""
 
     def __init__(self, workspace: Path, user: str, prefix: str = ""):
-        folder = re.sub(r"[^A-Za-z0-9._-]", "_", user) or "_"
+        folder = safe_folder_name(user)
         self.folder = Path(workspace) / "uploads" / folder
         self.virtual = f"{prefix}/uploads/{folder}/"
 

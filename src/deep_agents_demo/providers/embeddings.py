@@ -8,7 +8,6 @@ is split in half until it goes through, and only a single text that still fails
 is retried with backoff (up to a minute, enough to outlast a rate-limit window).
 """
 import random
-import sys
 import time
 from urllib.parse import urlparse
 
@@ -32,7 +31,7 @@ def _retry_after(error) -> float | None:
 
 class CompatibleEmbeddings(Embeddings):
     def __init__(self, model, api_key, base_url, provider="auto", client=None,
-                 rate_limiter=None, max_retries=6, sleep=time.sleep, batch_size=16):
+                 rate_limiter=None, max_retries=6, sleep=time.sleep, batch_size=16, notify=None):
         self.model = model
         self.nvidia = provider == "nvidia" or (
             provider == "auto" and urlparse(base_url).hostname == "integrate.api.nvidia.com"
@@ -42,14 +41,15 @@ class CompatibleEmbeddings(Embeddings):
         # Retries are handled here (with longer waits), not by the OpenAI client.
         self.client = client or OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
         self.rate_limiter, self.max_retries, self.sleep = rate_limiter, max_retries, sleep
+        self.notify = notify or (lambda message: None)  # retry warnings; the UI decides where
         # Shrinks when the server rejects a batch, so later batches start at a size that works.
         self.batch_size = max(1, int(batch_size))
 
     @classmethod
-    def from_settings(cls, settings, rate_limiter=None):
+    def from_settings(cls, settings, rate_limiter=None, notify=None):
         """Build from ``config.EmbeddingSettings``."""
         return cls(settings.model, settings.api_key, settings.base_url, settings.provider,
-                   rate_limiter=rate_limiter, batch_size=settings.batch_size)
+                   rate_limiter=rate_limiter, batch_size=settings.batch_size, notify=notify)
 
     def _create(self, retry_server_errors=True, **kwargs):
         """One request, with backoff on rate limits and transient failures.
@@ -69,8 +69,8 @@ class CompatibleEmbeddings(Embeddings):
                 # 2, 4, 8, 16, 32, 60 s (+ jitter): the later waits outlast a 1-minute window.
                 delay = _retry_after(error) or min(60.0, 2.0 ** (attempt + 1))
                 delay += random.uniform(0, 1)
-                print(f"Embedding request failed ({type(error).__name__}); probably a rate limit. "
-                      f"Retrying in {delay:.0f}s ({attempt + 1}/{self.max_retries}).", file=sys.stderr)
+                self.notify(f"Embedding request failed ({type(error).__name__}); probably a rate limit. "
+                      f"Retrying in {delay:.0f}s ({attempt + 1}/{self.max_retries}).")
                 self.sleep(delay)
 
     def _embed_batch(self, batch, mode):
@@ -91,8 +91,8 @@ class CompatibleEmbeddings(Embeddings):
                 raise
             middle = len(batch) // 2
             self.batch_size = min(self.batch_size, middle)
-            print(f"Embedding batch of {len(batch)} failed with a server error; "
-                  f"retrying as {middle} + {len(batch) - middle}.", file=sys.stderr)
+            self.notify(f"Embedding batch of {len(batch)} failed with a server error; "
+                  f"retrying as {middle} + {len(batch) - middle}.")
             return self._embed_batch(batch[:middle], mode) + self._embed_batch(batch[middle:], mode)
         rows = sorted(response.data, key=lambda row: row.index)
         if [r.index for r in rows] != list(range(len(batch))):

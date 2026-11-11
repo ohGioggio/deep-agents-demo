@@ -8,7 +8,10 @@ import httpx
 import openai
 from openai import OpenAI
 
-from deep_agents_demo.embeddings import CompatibleEmbeddings, Mem0EmbeddingAdapter
+from deep_agents_demo.providers.embeddings import (
+    CompatibleEmbeddings,
+    Mem0EmbeddingAdapter,
+)
 
 NVIDIA_URL = "https://integrate.api.nvidia.com/v1"
 
@@ -143,7 +146,8 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(limiter.acquire.call_count, 2)
 
     def test_shared_rate_limiter_follows_the_setting(self):
-        from deep_agents_demo.config import Settings, rate_limiter
+        from deep_agents_demo.config import Settings
+        from deep_agents_demo.providers.rate_limit import rate_limiter
         self.assertIsNone(rate_limiter(Settings.from_env({}).requests_per_minute))
         rpm = Settings.from_env({"API_REQUESTS_PER_MINUTE": "40"}).requests_per_minute
         first, second = rate_limiter(rpm), rate_limiter(rpm)

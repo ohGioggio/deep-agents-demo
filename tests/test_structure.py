@@ -21,9 +21,9 @@ LAYERS = {"config": 0, "models": 0, "persistence": 1, "providers": 1, "core": 2,
 # importer, and a moved module may still import it until it moves.
 LEGACY = {
     "agent", "agent_files", "agent_manager", "agent_registry", "app", "approvals",
-    "catalog", "chat", "cli", "commands", "embeddings", "guardrails", "images", "memory",
-    "memory_policy", "openshell_backend", "orchestration", "rag", "rooms", "sandbox",
-    "skill_manager", "skill_store", "threads", "workspace",
+    "catalog", "chat", "cli", "commands", "guardrails", "images", "memory",
+    "openshell_backend", "orchestration", "rag", "rooms", "sandbox",
+    "skill_manager", "workspace",
 }
 
 # Moved modules (dotted, under the package) that still print, read input or use

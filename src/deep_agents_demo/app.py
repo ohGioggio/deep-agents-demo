@@ -4,6 +4,7 @@ Everything else receives what it needs as arguments. To see how the demo is
 wired (which model, memory, documents and sandbox an agent gets), read this
 module; to change the wiring, change it here.
 """
+import sys
 from contextlib import ExitStack
 from dataclasses import dataclass
 
@@ -15,9 +16,8 @@ from deep_agents_demo.agent import build_agent, worker_factory
 from deep_agents_demo.agent_manager import AgentManager
 from deep_agents_demo.agent_registry import AgentRegistry
 from deep_agents_demo.catalog import catalog_feature
-from deep_agents_demo.config import Settings, rate_limiter
+from deep_agents_demo.config import Settings
 from deep_agents_demo.core.tools import ToolRegistry
-from deep_agents_demo.embeddings import CompatibleEmbeddings
 from deep_agents_demo.guardrails import Guardrails
 from deep_agents_demo.images import Uploads, images_feature
 from deep_agents_demo.memory import (
@@ -28,25 +28,21 @@ from deep_agents_demo.memory import (
     memory_feature,
 )
 from deep_agents_demo.orchestration import orchestration_feature
+from deep_agents_demo.persistence.chats import Chats
+from deep_agents_demo.persistence.versioned_store import AGENT_TABLES, VersionedStore
+from deep_agents_demo.providers.chat import chat_model
+from deep_agents_demo.providers.embeddings import CompatibleEmbeddings
+from deep_agents_demo.providers.rate_limit import rate_limiter
 from deep_agents_demo.rag import DocumentIndex, documents_feature
 from deep_agents_demo.sandbox import BackendSetup, make_backend
 from deep_agents_demo.skill_manager import SkillManager
-from deep_agents_demo.skill_store import AGENT_TABLES, SkillStore
-from deep_agents_demo.threads import Chats
 from deep_agents_demo.workspace import seed_files
-
-
-def chat_model(settings: Settings, model: str | None = None) -> ChatOpenAI:
-    """The configured chat model, or another ``model`` id on the same endpoint and key."""
-    # Shares the request cap with the embeddings; retries ride out transient errors.
-    return ChatOpenAI(model=model or settings.chat.model, api_key=settings.chat.api_key,
-                      base_url=settings.chat.base_url,
-                      rate_limiter=rate_limiter(settings.requests_per_minute), max_retries=6)
 
 
 def embeddings(settings: Settings) -> CompatibleEmbeddings:
     return CompatibleEmbeddings.from_settings(settings.embeddings,
-                                              rate_limiter(settings.requests_per_minute))
+                                              rate_limiter(settings.requests_per_minute),
+                                              notify=lambda message: print(message, file=sys.stderr))
 
 
 def document_index(settings: Settings) -> DocumentIndex:
@@ -92,7 +88,7 @@ class Runtime:
 
 
 def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManager:
-    store = SkillStore(settings.paths.data / "skills.sqlite")
+    store = VersionedStore(settings.paths.data / "skills.sqlite")
     stack.callback(store.close)
     manager = SkillManager(store, user, settings.paths.workspace)
     manager.sync_folder()  # the database is the source of truth
@@ -100,7 +96,7 @@ def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManag
 
 
 def agent_manager(settings: Settings, user: str, stack: ExitStack) -> AgentManager:
-    store = SkillStore(settings.paths.data / "agents.sqlite", AGENT_TABLES)
+    store = VersionedStore(settings.paths.data / "agents.sqlite", AGENT_TABLES)
     stack.callback(store.close)
     return AgentManager(store, user, frozenset())  # known tools are set once features exist
 

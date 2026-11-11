@@ -22,8 +22,8 @@ from deep_agents_demo.core.middleware import ToolAccess
 from deep_agents_demo.core.tools import CORE, ToolRegistry, shell_block, tool_name
 from deep_agents_demo.guardrails import Guardrails
 from deep_agents_demo.memory import MemoryService, memory_feature
+from deep_agents_demo.persistence.versioned_store import VersionedStore
 from deep_agents_demo.skill_manager import SkillManager, split_skill_md, warnings
-from deep_agents_demo.skill_store import SkillStore
 from deep_agents_demo.workspace import SEED_DIR
 
 SEEN = []  # (tool names bound, system prompt) for every model call
@@ -135,7 +135,7 @@ class AccessTests(unittest.TestCase):
     def test_registry_knows_every_tool_deep_agents_binds(self):
         """Keeps BUILTIN in sync with Deep Agents: an unlisted tool couldn't be disabled."""
         from deep_agents_demo.skill_manager import SkillManager
-        store = SkillStore(self.root / "s.sqlite")
+        store = VersionedStore(self.root / "s.sqlite")
         self.addCleanup(store.close)
         features = [SkillManager(store, "alice", self.root).feature(), Guardrails.feature(),
                     memory_feature(MemoryService(FakeMemory(), "alice"), "both")]
@@ -314,7 +314,7 @@ class PerAgentAccessTests(unittest.TestCase):
 class SkillToolsTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
-        self.store = SkillStore(self.root / "skills.sqlite")
+        self.store = VersionedStore(self.root / "skills.sqlite")
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.addCleanup(self.store.close)
         self.manager = SkillManager(self.store, "alice", self.root)

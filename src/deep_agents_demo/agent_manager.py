@@ -21,7 +21,7 @@ from deep_agents_demo.agent_files import (
     translate_tools,
 )
 from deep_agents_demo.core.feature import Feature
-from deep_agents_demo.memory_policy import find_secrets, split_findings
+from deep_agents_demo.core.secrets import find_secrets, split_findings
 from deep_agents_demo.models.agents import READ_ONLY
 from deep_agents_demo.skill_manager import MARKETPLACE, USER, SkillChange, SkillManager
 

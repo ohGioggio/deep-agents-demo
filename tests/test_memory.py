@@ -1,7 +1,7 @@
 """Memory lifecycle tests: tools, write policy, user scoping and automatic recall."""
 import itertools
-import logging
 import json
+import logging
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,9 +12,15 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deep_agents_demo.agent import build_agent
-from deep_agents_demo.memory import (AutoRecallMiddleware, MemoryService, WritePolicy,
-                                     file_memory_feature, memory_feature, memory_tools)
-from deep_agents_demo.memory_policy import find_secrets, redact
+from deep_agents_demo.core.secrets import find_secrets, redact
+from deep_agents_demo.memory import (
+    AutoRecallMiddleware,
+    MemoryService,
+    WritePolicy,
+    file_memory_feature,
+    memory_feature,
+    memory_tools,
+)
 
 KEY = "sk-proj-abcDEF1234567890ghijKLMNOP"
 HEADER = "## Recalled memories about this user"

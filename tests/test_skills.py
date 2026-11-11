@@ -12,9 +12,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from deep_agents_demo.agent import build_agent
 from deep_agents_demo.approvals import NO_HUMAN, Approver
 from deep_agents_demo.chat import stream_turn
-from deep_agents_demo.skill_manager import (GATED_TOOLS, SkillManager, read_skill_folder,
-                                            render_skill_md, validate)
-from deep_agents_demo.skill_store import SkillStore
+from deep_agents_demo.persistence.versioned_store import VersionedStore
+from deep_agents_demo.skill_manager import (
+    GATED_TOOLS,
+    SkillManager,
+    read_skill_folder,
+    render_skill_md,
+    validate,
+)
 
 KEY = "sk-proj-abcDEF1234567890ghijKLMNOP"
 
@@ -24,7 +29,7 @@ class Workspace(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         (self.root / "skills").mkdir()
-        self.store = SkillStore(self.root / "skills.sqlite")
+        self.store = VersionedStore(self.root / "skills.sqlite")
         self.manager = SkillManager(self.store, "alice", self.root)
 
     def tearDown(self):

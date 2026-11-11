@@ -7,8 +7,15 @@ from langgraph.types import Command
 from deep_agents_demo.app import build_runtime, prepare_workspace
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.config import Settings
-from deep_agents_demo.images import ImageError, image_paths, message_content, without_images
-from deep_agents_demo.threads import Chats, format_table, format_transcript, new_name, thread_id, valid_name
+from deep_agents_demo.images import (
+    ImageError,
+    image_paths,
+    message_content,
+    without_images,
+)
+from deep_agents_demo.persistence.chats import Chats, new_name, thread_id, valid_name
+from deep_agents_demo.persistence.files import safe_folder_name
+from deep_agents_demo.ui.cli.render import format_table, format_transcript
 
 GREETING = ("Ask anything. Ideas: a question about your indexed documents, "
             "'Remember that I prefer short answers', or the example skill: "
@@ -121,7 +128,6 @@ def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runner
 def runners_for(runtime, settings, thread: str, approver, interactive: bool, quiet: bool = False) -> dict:
     """What answers non-approval pauses in a turn: the plan runner (run_plan) and the
     room runner (start_room), both on this thread so approvals and Ctrl+C work."""
-    import re
 
     from deep_agents_demo.orchestration import PlanRunner
     from deep_agents_demo.rooms import RoomRunner
@@ -136,7 +142,7 @@ def runners_for(runtime, settings, thread: str, approver, interactive: bool, qui
     def describe(name):
         agent = runtime.agents.get(name) if runtime.agents is not None else None
         return agent.description if agent else ""
-    folder = re.sub(r"[^A-Za-z0-9._-]", "_", runtime.chats.user) or "_"
+    folder = safe_folder_name(runtime.chats.user)
     rooms = RoomRunner(runtime.make_worker, approver, thread=thread, max_turns=settings.room_max_turns,
                        budget=settings.orchestration_max_calls, interactive=interactive,
                        transcripts=settings.paths.workspace / "rooms" / folder, describe=describe,

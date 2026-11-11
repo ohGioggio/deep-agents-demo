@@ -5,7 +5,7 @@ update, remove, import or restore) that knows its validation errors, a summary, 
 diff and the full files. The CLI shows a change before the user approves it, and
 the tool applies the same change afterwards, so what is approved is what is saved.
 
-Every saved version goes to ``SkillStore``. The user's current skills are written
+Every saved version goes to ``VersionedStore``. The user's current skills are written
 to ``<workspace>/user-skills/<user>/`` and the marketplace skills they installed to
 ``<workspace>/installed-skills/<user>/``, where Deep Agents loads them.
 """
@@ -27,8 +27,9 @@ from deepagents.middleware.skills import (
 )
 
 from deep_agents_demo.core.feature import Feature
-from deep_agents_demo.memory_policy import find_secrets, split_findings
-from deep_agents_demo.skill_store import SkillStore
+from deep_agents_demo.core.secrets import find_secrets, split_findings
+from deep_agents_demo.persistence.files import safe_folder_name
+from deep_agents_demo.persistence.versioned_store import VersionedStore
 
 USER, MARKETPLACE = "user", "marketplace"
 SCOPES = (USER, MARKETPLACE)
@@ -196,7 +197,7 @@ class SkillChange:
 # --- the manager ---------------------------------------------------------------------
 
 def _folder_name(owner: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]", "_", owner) or "_"
+    return safe_folder_name(owner)
 
 
 class SkillManager:
@@ -214,7 +215,7 @@ class SkillManager:
     main_file = "SKILL.md"
     browse_tool = "browse_marketplace"
 
-    def __init__(self, store: SkillStore, owner: str, workspace: Path):
+    def __init__(self, store: VersionedStore, owner: str, workspace: Path):
         self.store, self.owner = store, owner
         folder = _folder_name(owner)
         self.folder_rel = f"user-skills/{folder}/"

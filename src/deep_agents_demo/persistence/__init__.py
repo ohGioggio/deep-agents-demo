@@ -1,0 +1,1 @@
+"""Storage shared by features."""

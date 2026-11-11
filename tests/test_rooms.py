@@ -5,12 +5,12 @@ from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from test_agents import ALL_AGENT, SEEN, Model, agent_from, call
+from test_orchestration import Boom, Workspace, reply
 
 from deep_agents_demo.agent import worker_factory
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
-from test_agents import ALL_AGENT, SEEN, Model, agent_from, call
-from test_orchestration import Boom, Workspace, reply
 
 
 def chat_threads(root, chat_suffix):
@@ -26,7 +26,7 @@ def chat_threads(root, chat_suffix):
 
 class CleanupTests(Workspace):
     def test_deleting_a_chat_removes_its_room_threads(self):
-        from deep_agents_demo.threads import Chats, thread_id
+        from deep_agents_demo.persistence.chats import Chats, thread_id
         graph, saver_cm = chat_threads(self.root, ":room:")
         with saver_cm as saver:
             compiled = graph.compile(checkpointer=saver)
@@ -283,7 +283,7 @@ class ReviewFixTests(RoomBase):
 
 class ThreadPrefixTests(Workspace):
     def test_rename_moves_room_threads_and_c1_is_not_c10(self):
-        from deep_agents_demo.threads import Chats, thread_id
+        from deep_agents_demo.persistence.chats import Chats, thread_id
         graph, saver_cm = chat_threads(self.root, ":room:")
         with saver_cm as saver:
             compiled = graph.compile(checkpointer=saver)
@@ -306,9 +306,10 @@ class CommandTests(Workspace):
         self.assertIn("moderator", parse_room_command("critic moderator -- q"))
 
     def test_room_command_checks_agents_first(self):
+        from test_agents import KNOWN
+
         from deep_agents_demo.agent_registry import AgentRegistry
         from deep_agents_demo.chat import ChatSession
-        from test_agents import KNOWN
         said, rooms = [], []
         session = ChatSession(chats=None, current="c", say=said.append,
                               agents=AgentRegistry.load([], KNOWN), room=lambda n, q: rooms.append((n, q)))
@@ -324,7 +325,12 @@ class WiringTests(Workspace):
 
         from deep_agents_demo import app
         from deep_agents_demo.chat import runners_for
-        from deep_agents_demo.config import ChatSettings, MemorySettings, Paths, Settings
+        from deep_agents_demo.config import (
+            ChatSettings,
+            MemorySettings,
+            Paths,
+            Settings,
+        )
         settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
                             memory=MemorySettings(enabled=False), rag_enabled=False,
                             paths=Paths(data=self.root / "data", workspace=self.root / "ws",

@@ -9,8 +9,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
 
 from deep_agents_demo.core.feature import Feature
-from deep_agents_demo.embeddings import Mem0EmbeddingAdapter
-from deep_agents_demo.memory_policy import find_secrets, redact
+from deep_agents_demo.core.secrets import find_secrets, redact
+from deep_agents_demo.providers.embeddings import Mem0EmbeddingAdapter
 
 
 class _OptionalExtrasFilter(logging.Filter):
@@ -92,7 +92,7 @@ class WritePolicy:
     """What may be stored, and how stored text is shown.
 
     ``find_secrets(text)`` names the kinds of secrets in a text (empty if none);
-    ``redact(text)`` masks them. The default is ``memory_policy``.
+    ``redact(text)`` masks them. The default is ``core.secrets``.
     """
     find_secrets: Callable[[str], list] = find_secrets
     redact: Callable[[str], str] = redact

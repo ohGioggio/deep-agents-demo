@@ -12,15 +12,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from deep_agents_demo import app
 from deep_agents_demo.agent import build_agent
+from deep_agents_demo.agent_files import parse_agent_md
+from deep_agents_demo.agent_manager import AGENT_FILE, AgentManager
 from deep_agents_demo.agent_registry import AgentRegistry
 from deep_agents_demo.app import prepare_workspace
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.config import ChatSettings, MemorySettings, Paths, Settings
-
-from deep_agents_demo.agent_files import parse_agent_md
-from deep_agents_demo.agent_manager import AGENT_FILE, AgentManager
-from deep_agents_demo.skill_store import AGENT_TABLES, SkillStore
+from deep_agents_demo.persistence.versioned_store import AGENT_TABLES, VersionedStore
 
 
 class Workspace(unittest.TestCase):
@@ -32,7 +31,7 @@ class Workspace(unittest.TestCase):
 class StoreTests(Workspace):
     def test_agent_tables_are_separate(self):
         path = self.root / "data.sqlite"
-        skills, agents = SkillStore(path), SkillStore(path, AGENT_TABLES)
+        skills, agents = VersionedStore(path), VersionedStore(path, AGENT_TABLES)
         self.addCleanup(skills.close)
         self.addCleanup(agents.close)
         skills.save("user", "alice", "x", {"SKILL.md": "skill"}, "create")
@@ -51,7 +50,7 @@ KNOWN = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep",
 class ManagerTests(Workspace):
     def setUp(self):
         super().setUp()
-        self.store = SkillStore(self.root / "agents.sqlite", AGENT_TABLES)
+        self.store = VersionedStore(self.root / "agents.sqlite", AGENT_TABLES)
         self.addCleanup(self.store.close)
         self.manager = AgentManager(self.store, "alice", KNOWN)
 
@@ -186,7 +185,7 @@ class ManagerTests(Workspace):
 class MarketplaceTests(Workspace):
     def setUp(self):
         super().setUp()
-        self.store = SkillStore(self.root / "agents.sqlite", AGENT_TABLES)
+        self.store = VersionedStore(self.root / "agents.sqlite", AGENT_TABLES)
         self.addCleanup(self.store.close)
         self.alice = AgentManager(self.store, "alice", KNOWN)
         self.bob = AgentManager(self.store, "bob", KNOWN)
@@ -262,7 +261,7 @@ CREATE_HELPER = call("create_agent", {"name": "helper", "description": "Helps wi
 class ToolTests(Workspace):
     def setUp(self):
         super().setUp()
-        self.store = SkillStore(self.root / "agents.sqlite", AGENT_TABLES)
+        self.store = VersionedStore(self.root / "agents.sqlite", AGENT_TABLES)
         self.addCleanup(self.store.close)
         self.manager = AgentManager(self.store, "alice", KNOWN)
         (self.root / "skills").mkdir()

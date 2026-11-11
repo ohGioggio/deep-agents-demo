@@ -6,11 +6,16 @@ usual error message, so these functions don't depend on argparse.
 from contextlib import ExitStack
 from pathlib import Path
 
-from deep_agents_demo.app import document_index, history_runtime, prepare_workspace, sandbox_backend
+from deep_agents_demo.app import (
+    document_index,
+    history_runtime,
+    prepare_workspace,
+    sandbox_backend,
+)
 from deep_agents_demo.chat import confirm
 from deep_agents_demo.config import Settings
 from deep_agents_demo.sandbox import clear_sandbox
-from deep_agents_demo.threads import format_table, format_transcript
+from deep_agents_demo.ui.cli.render import format_table, format_transcript
 
 
 class UsageError(Exception):

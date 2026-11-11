@@ -426,7 +426,7 @@ class ChatCleanupTests(Workspace):
         from langgraph.checkpoint.sqlite import SqliteSaver
         from langgraph.graph import END, START, MessagesState, StateGraph
 
-        from deep_agents_demo.threads import Chats, thread_id
+        from deep_agents_demo.persistence.chats import Chats, thread_id
         graph = StateGraph(MessagesState)
         graph.add_node("n", lambda state: {"messages": [reply("hi")]})
         graph.add_edge(START, "n")
@@ -445,7 +445,7 @@ class ChatCleanupTests(Workspace):
         from langgraph.checkpoint.sqlite import SqliteSaver
         from langgraph.graph import END, START, MessagesState, StateGraph
 
-        from deep_agents_demo.threads import Chats, thread_id
+        from deep_agents_demo.persistence.chats import Chats, thread_id
         graph = StateGraph(MessagesState)
         graph.add_node("n", lambda state: {"messages": [reply("hi")]})
         graph.add_edge(START, "n")
