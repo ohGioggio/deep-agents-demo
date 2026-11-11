@@ -189,7 +189,8 @@ class PlanRunner:
             parts.append(f"Note from the user: {user_note}")
         if review_notes:
             parts.append(f"The reviewer's notes on your last attempt:\n{review_notes}")
-        parts.append("Do this step, then reply with what you did and the result.")
+        parts.append("Do only this step: later steps are done separately, after review. "
+                     "Then reply with what you did and the result.")
         return "\n\n".join(parts)
 
     @staticmethod
@@ -281,7 +282,10 @@ class PlanRunner:
                     break
             done.append(outcome)
             number += 1
-        return {"goal": goal, "steps": [r.as_dict() for r in done]}
+        return {"goal": goal, "steps": [r.as_dict() for r in done],
+                "note": ("Tell the user how each step went. The user decided what happens to "
+                         "failed, skipped and stopped steps: don't redo them yourself unless "
+                         "they ask.")}
 
 
 def orchestration_feature():

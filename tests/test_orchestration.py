@@ -245,6 +245,7 @@ class RunnerTests(RunnerBase):
         self.assertEqual(outcome["steps"][0]["result"], "result one")
         self.assertIn("result one", self.inputs()[2])
         self.assertIn("Earlier steps:", self.inputs()[2])
+        self.assertIn("Do only this step", self.inputs()[0], "live finding: step 1 did step 2 too")
         self.assertIn("[plan] step 1/2 · general-purpose", self.said)
         self.assertTrue(any("step 1/2 passed review" in s for s in self.said), self.said)
 
@@ -260,6 +261,7 @@ class RunnerTests(RunnerBase):
                              reply("c"), reply("PASS\nok"), answers=["s"])
         outcome = self.plan(runner, ("one", "general-purpose"), ("two", "general-purpose"))
         self.assertEqual(self.statuses(outcome), ["skipped", "passed"])
+        self.assertIn("don't redo", outcome["note"], "live finding: the main agent redid a skipped step")
         self.assertEqual(outcome["steps"][0]["notes"], "still no")
 
     def test_retry_runs_the_step_again(self):
