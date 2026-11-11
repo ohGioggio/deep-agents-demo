@@ -2,19 +2,8 @@
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 
+from deep_agents_demo.core.messages import has_image, without_images
 from deep_agents_demo.features.images.uploads import KEEP_IMAGES
-
-
-def _has_image(message) -> bool:
-    return isinstance(message.content, list) and any(
-        isinstance(block, dict) and block.get("type") in ("image", "image_url") for block in message.content)
-
-
-def without_images(message, note: str):
-    """A copy of ``message`` with each image replaced by a short text note."""
-    content = [{"type": "text", "text": note} if isinstance(block, dict)
-               and block.get("type") in ("image", "image_url") else block for block in message.content]
-    return message.model_copy(update={"content": content})
 
 
 class ImageWindow(AgentMiddleware):
@@ -28,7 +17,7 @@ class ImageWindow(AgentMiddleware):
 
     def _request(self, request):
         with_images = [i for i, m in enumerate(request.messages)
-                       if isinstance(m, (HumanMessage, ToolMessage)) and _has_image(m)]
+                       if isinstance(m, (HumanMessage, ToolMessage)) and has_image(m)]
         old = set(with_images[:-self.keep] if self.keep else with_images)
         if not old:
             return request

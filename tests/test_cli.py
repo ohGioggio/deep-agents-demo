@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.chat import turn_input
+from deep_agents_demo.core.turns import turn_input
 
 SKILL = "---\nname: {name}\ndescription: The {name} skill.\n---\nBody.\n"
 

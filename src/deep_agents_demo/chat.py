@@ -1,23 +1,20 @@
 """The interactive chat: the input loop, slash commands and streamed output."""
-import json
 import sys
-
-from langgraph.types import Command
 
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.config import Settings
+from deep_agents_demo.core.turns import run_turn
 from deep_agents_demo.features.images.uploads import (
     ImageError,
     image_paths,
     message_content,
 )
-from deep_agents_demo.features.images.window import without_images
 from deep_agents_demo.persistence.chats import Chats, new_name, thread_id, valid_name
 from deep_agents_demo.persistence.files import safe_folder_name
 from deep_agents_demo.startup.resources import Resources
 from deep_agents_demo.startup.runtime import build_runtime
 from deep_agents_demo.startup.workspace import prepare_workspace
-from deep_agents_demo.ui.cli.render import format_table, format_transcript
+from deep_agents_demo.ui.cli.render import CliRenderer, format_table, format_transcript
 
 GREETING = ("Ask anything. Ideas: a question about your indexed documents, "
             "'Remember that I prefer short answers', or the example skill: "
@@ -32,99 +29,13 @@ def confirm(question: str, ask=input) -> bool:
         return False
 
 
-def turn_input(prompt, reload_skills=False):
-    """Agent input for one user turn.
-
-    Deep Agents saves the skill list in the thread's checkpoint and loads it only
-    once per thread. ``skills_metadata=None`` asks it to reload, so skills added
-    or changed since the thread began (or a new sandbox route) are picked up.
-    """
-    payload = {"messages": [{"role": "user", "content": prompt}]}
-    if reload_skills:
-        payload["skills_metadata"] = None
-    return payload
-
-
-def stream_once(agent, payload, config, shown=None, label=None, quiet=False) -> list:
-    """Stream one run of the agent loop; return the approval requests it paused on.
-
-    ``shown`` collects the ids of printed messages: after a pause, LangGraph sends
-    the paused AI message again, and it should be printed once per turn. ``label``
-    names who is speaking (e.g. "room / critic"; default "main"); ``quiet`` prints
-    nothing (one-shot runs print only the final answer).
-    """
-    paused, shown = {}, shown if shown is not None else set()
-    # Include child updates so delegation/tool calls are observable.
-    for namespace, update in agent.stream(payload, config=config, stream_mode="updates",
-                                          subgraphs=True):
-        for node, state in update.items():
-            if node == "__interrupt__":
-                # A subagent's pause can surface at several levels; keep each once.
-                paused.update({item.id: item for item in state})
-                continue
-            if not isinstance(state, dict):
-                continue
-            who = label or "main"
-            who = (f"{who} / subagent" if label else "subagent") if namespace else who
-            for message in state.get("messages", []):
-                key = message.id or id(message)
-                if key in shown:
-                    continue
-                shown.add(key)
-                if not quiet:
-                    print(f"\n[{who} / {node}]")
-                    printable(message).pretty_print()
-            if "todos" in state and not quiet:
-                print("[todos]", json.dumps(state["todos"], ensure_ascii=False))
-    return list(paused.values())
-
-
-def printable(message):
-    """The message as printed: images become a short note instead of base64 text."""
-    if isinstance(message.content, list) and any(
-            isinstance(b, dict) and b.get("type") in ("image", "image_url") for b in message.content):
-        return without_images(message, "[image]")
-    return message
-
-
-def final_answer(agent, config) -> str:
-    """The text of the last AI message in a thread (what a one-shot run prints)."""
-    for message in reversed(agent.get_state(config).values.get("messages", [])):
-        if message.type == "ai" and not getattr(message, "tool_calls", None) and str(message.content).strip():
-            return message.text if isinstance(message.text, str) else str(message.content)
-    return ""
-
-
 def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runners=None,
                 label=None, quiet=False, show=None) -> None:
-    """Run one user turn to the end, asking ``approver`` about every paused tool call.
-
-    Without an approver, paused calls are rejected (nobody can approve them).
-    ``runners`` answer other pauses by their ``type`` (e.g. ``run_plan``): they run
-    here, on the chat loop's thread, and their return value resumes the tool.
-    """
-    approver, runners = approver or Approver(interactive=False), runners or {}
-    payload, shown = turn_input(prompt, reload_skills), set()
-
-    def answer(value):
-        kind = value.get("type") if isinstance(value, dict) else None
-        if kind in runners:
-            return runners[kind](value)
-        if kind == "run_plan":
-            return {"error": "plans can't run here (nobody to run them); do the steps yourself"}
-        if kind == "start_room":
-            return {"error": "rooms can't run here (nobody to run them)"}
-        return approver.decide(value)
-
-    # quiet: print only the final answer; show=False: print nothing at all.
-    show = not quiet if show is None else show
-    while True:
-        paused = stream_once(agent, payload, config, shown, label=label, quiet=not show)
-        if not paused:
-            if quiet:
-                print(final_answer(agent, config))
-            return
-        payload = Command(resume={item.id: answer(item.value) for item in paused})
+    """One turn printed by the CLI renderer, with ``approver`` deciding paused calls
+    (without one, paused calls are rejected: nobody can approve them)."""
+    approver = approver or Approver(interactive=False)
+    run_turn(agent, prompt, config, CliRenderer(), approver.decide, runners, reload_skills, label,
+             quiet, show)
 
 
 def runners_for(runtime, settings, thread: str, approver, interactive: bool, quiet: bool = False) -> dict:

@@ -10,7 +10,8 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.chat import ChatSession, turn_input
+from deep_agents_demo.chat import ChatSession
+from deep_agents_demo.core.turns import turn_input
 from deep_agents_demo.persistence.chats import Chats, new_name, thread_id, valid_name
 from deep_agents_demo.ui.cli.render import format_table
 
