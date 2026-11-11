@@ -12,7 +12,8 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deep_agents_demo.agent import Feature, build_agent
+from deep_agents_demo.agent import Feature, build_agent, worker_factory
+from deep_agents_demo.guardrails import Guardrails
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.workspace import SEED_DIR
@@ -84,6 +85,73 @@ class ParallelTests(Workspace):
         sub_calls = [m for kind, m in SEEN if kind == "messages" and "Help." in str(m[0].content)]
         tool_results = [str(x.content) for x in sub_calls[-1] if x.type == "tool"]
         self.assertTrue(any("isn't available to this agent" in r for r in tool_results), tool_results)
+
+
+CRITIC_FILE = "---\nname: critic\ndescription: Finds weaknesses.\ntools: Read, Grep, Glob\n---\nYou are a critic.\n"
+
+
+class WorkerTests(Workspace):
+    def make(self, *responses, features=(), agents=(), **options):
+        model = Model(responses=[*responses, AIMessage(content="worker done")])
+        return worker_factory(model, InMemorySaver(), self.backend(), features, agents=agents, **options)
+
+    def run_worker(self, graph, approver=None):
+        with patch("builtins.print"):
+            stream_turn(graph, "do the job", {"configurable": {"thread_id": "w"}},
+                        approver=approver or Approver(interactive=False))
+
+    def bound(self):
+        return [names for kind, names in SEEN if kind == "tools"]
+
+    def test_worker_has_the_agents_tools_and_prompt(self):
+        make = self.make(agents=[agent_from(CRITIC_FILE)])
+        self.run_worker(make("critic"))
+        first = [m for kind, m in SEEN if kind == "messages"][0]
+        self.assertIn("You are a critic.", str(first[0].content))
+        self.assertLessEqual(set(self.bound()[0]), {"read_file", "grep", "glob", "ls"})
+        self.assertIn("read_file", self.bound()[0])
+
+    def test_worker_approvals(self):
+        (self.root / "notes.md").write_text("keep")
+        make = self.make(call("delete", {"file_path": "/notes.md"}, "d"), features=[Guardrails.feature()],
+                         agents=[agent_from(ALL_AGENT)])
+
+        def ask(_prompt):
+            raise AssertionError("asked")
+        with self.assertRaisesRegex(AssertionError, "asked"):
+            self.run_worker(make("helper"), Approver(ask=ask, say=lambda *_: None))
+        self.assertTrue((self.root / "notes.md").exists())
+
+    def test_worker_disabled_tools(self):
+        make = self.make(call("write_file", {"file_path": "/x.md", "content": "x"}, "w"),
+                         agents=[agent_from(ALL_AGENT)], disabled_tools=("write_file",))
+        self.run_worker(make("helper"))
+        self.assertNotIn("write_file", self.bound()[0])
+        self.assertFalse((self.root / "x.md").exists())
+
+    def test_worker_call_cap(self):
+        ls = [call("ls", {"path": "/"}, f"l{i}") for i in range(5)]
+        make = self.make(*ls, agents=[agent_from(ALL_AGENT)], max_calls=2)
+        graph = make("helper")
+        self.run_worker(graph)
+        self.assertEqual(len([k for k, _ in SEEN if k == "messages"]), 2)
+        last = graph.get_state({"configurable": {"thread_id": "w"}}).values["messages"][-1]
+        self.assertIn("Partial result", str(last.content))
+
+    def test_unknown_agent_gives_none(self):
+        self.assertIsNone(self.make()("nope"))
+
+    def test_builtin_reviewer_and_general_purpose(self):
+        make = self.make()
+        self.run_worker(make("reviewer"))
+        self.assertNotIn("write_file", self.bound()[0])
+        self.assertIsNotNone(make("general-purpose"))
+
+    def test_workers_cannot_start_plans(self):
+        make = self.make(call("run_plan", {"goal": "g", "steps": [{"task": "a"}]}, "p"),
+                         features=[Feature("orchestration", tools=(run_plan,))], agents=[agent_from(ALL_AGENT)])
+        self.run_worker(make("helper"))
+        self.assertNotIn("run_plan", self.bound()[0])
 
 
 if __name__ == "__main__":

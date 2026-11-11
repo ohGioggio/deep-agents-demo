@@ -10,12 +10,15 @@ more feature, not editing this file.
 from dataclasses import dataclass, field
 
 from deepagents import create_deep_agent
-from deepagents.middleware.filesystem import FilesystemPermission
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware, TodoListMiddleware
 
 from deep_agents_demo.agent_files import READ_ONLY
-from deep_agents_demo.agent_registry import PinSkills, SubagentCallCap
+from deep_agents_demo.agent_registry import BUILTIN_AGENTS, PinSkills, SubagentCallCap
 from deep_agents_demo.orchestration import TaskLimiter
 from deep_agents_demo.tools import ToolAccess, ToolRegistry, shell_block, tool_name
 
@@ -129,22 +132,23 @@ def _spec(agent, *, model, model_for, tools, skill_sources, access, max_calls) -
     return spec
 
 
-def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", disabled_tools=(),
-                agents=(), model_for=None, max_calls=25, max_parallel=3):
-    """Assemble a deep agent from features.
+@dataclass
+class _Assembly:
+    """What build_agent and worker_factory share, computed once from the same inputs."""
+    features: tuple
+    registry: ToolRegistry
+    off: frozenset
+    skill_sources: list
+    interrupt_on: dict
+    tools: list
+    memory_sources: list
+    access: tuple
+    permissions: list
+    subagents: list
 
-    ``backend`` is where the file tools act (local files or a sandbox);
-    ``skills_prefix`` is where skill folders are mounted on it ("" locally,
-    "/instructions" when a sandbox is the default backend). ``disabled_tools``
-    are hidden and refused everywhere, subagents included (unknown and core
-    names are ignored; ``ToolRegistry.problems`` explains why).
 
-    ``agents`` are ``AgentDefinition``s the main agent can delegate to with ``task``;
-    one named ``general-purpose`` or ``researcher`` replaces the demo's own.
-    ``model_for(model_id)`` builds the model for agents that name one. Every subagent
-    makes at most ``max_calls`` model calls per run, and at most ``max_parallel``
-    subagents run at once.
-    """
+def _assemble(model, features, *, skills_prefix, disabled_tools, agents, model_for,
+              max_calls) -> _Assembly:
     features = tuple(features)
     registry = ToolRegistry(features)
     off = registry.disabled(disabled_tools)
@@ -182,30 +186,80 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
                  access=access, max_calls=max_calls) for agent in agents]
     replaced = {spec["name"] for spec in own}
     subagents = [spec for spec in (general_purpose, *researcher) if spec["name"] not in replaced]
-    subagents = [*subagents, *own]
+    # Skills change only through approved tools: the file tools may read skill folders
+    # but never write, edit or delete in them. Agent files likewise: the agents folder
+    # is the user's.
+    permissions = [FilesystemPermission(operations=["write"], mode="deny",
+                                        paths=[*(f"{source}**" for source in skill_sources),
+                                               f"{skills_prefix}/agents/**"])]
+    return _Assembly(features, registry, off, skill_sources, interrupt_on, tools, memory_sources,
+                     access, permissions, [*subagents, *own])
+
+
+def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", disabled_tools=(),
+                agents=(), model_for=None, max_calls=25, max_parallel=3):
+    """Assemble a deep agent from features.
+
+    ``backend`` is where the file tools act (local files or a sandbox);
+    ``skills_prefix`` is where skill folders are mounted on it ("" locally,
+    "/instructions" when a sandbox is the default backend). ``disabled_tools``
+    are hidden and refused everywhere, subagents included (unknown and core
+    names are ignored; ``ToolRegistry.problems`` explains why).
+
+    ``agents`` are ``AgentDefinition``s the main agent can delegate to with ``task``;
+    one named ``general-purpose`` or ``researcher`` replaces the demo's own.
+    ``model_for(model_id)`` builds the model for agents that name one. Every subagent
+    makes at most ``max_calls`` model calls per run, and at most ``max_parallel``
+    subagents run at once.
+    """
+    a = _assemble(model, features, skills_prefix=skills_prefix, disabled_tools=disabled_tools,
+                  agents=agents, model_for=model_for, max_calls=max_calls)
     return create_deep_agent(
         model=model,
-        tools=tools,
-        system_prompt=system_prompt(features, has_researcher=any(
-            spec["name"] == "researcher" for spec in subagents)),
+        tools=a.tools,
+        system_prompt=system_prompt(a.features, has_researcher=any(
+            spec["name"] == "researcher" for spec in a.subagents)),
         backend=backend,
         # None, not []: any list (even empty) adds Deep Agents' file-memory middleware,
         # whose prompt tells the agent to save memories to files, competing with Mem0.
-        memory=memory_sources or None,
-        skills=skill_sources,
-        # Skills change only through approved tools: the file tools may read skill
-        # folders but never write, edit or delete in them.
-        # Agent files likewise: the agents folder is the user's.
-        permissions=[FilesystemPermission(operations=["write"], mode="deny",
-                                          paths=[*(f"{source}**" for source in skill_sources),
-                                                 f"{skills_prefix}/agents/**"])],
+        memory=a.memory_sources or None,
+        skills=a.skill_sources,
+        permissions=a.permissions,
         # Paused for the user's decision before they run; subagents inherit this.
-        interrupt_on=interrupt_on or None,
-        middleware=[TodoListMiddleware(), *(m for f in features for m in f.middleware),
-                    ToolAccess(off, registry.skill_only(), registry.requirements()),
-                    TaskLimiter(max_parallel)],
-        subagents=subagents,
+        interrupt_on=a.interrupt_on or None,
+        middleware=[TodoListMiddleware(), *(m for f in a.features for m in f.middleware),
+                    ToolAccess(*a.access), TaskLimiter(max_parallel)],
+        subagents=a.subagents,
         checkpointer=checkpointer,
         # Deep Agents supplies summarization and large-output offloading.
         # Do not add a second summarizer just to demonstrate context management.
     )
+
+
+def worker_factory(model, checkpointer, backend, features=(), *, skills_prefix="", disabled_tools=(),
+                   agents=(), model_for=None, max_calls=25):
+    """``make(name, extra_middleware=())``: one agent as a standalone graph, for runners
+    on the chat loop's thread (plan workers and reviewers). It gets exactly what the
+    same agent gets as a subagent: its tools and limits, DISABLED_TOOLS, skill gates,
+    the call cap, the deny rules and the main agent's approvals. Returns None for an
+    unknown name. Built-in agents (reviewer, moderator) are included."""
+    by_name = {**BUILTIN_AGENTS, **{agent.name: agent for agent in agents}}
+    a = _assemble(model, features, skills_prefix=skills_prefix, disabled_tools=disabled_tools,
+                  agents=list(by_name.values()), model_for=model_for, max_calls=max_calls)
+    specs = {spec["name"]: spec for spec in a.subagents}
+    shared_tools = [tool for tool in a.tools if tool_name(tool) not in MAIN_ONLY]
+
+    def make(name, extra_middleware=()):
+        spec = specs.get(name)
+        if spec is None:
+            return None
+        middleware = [FilesystemMiddleware(backend=backend, permissions=a.permissions),
+                      PatchToolCallsMiddleware(),
+                      SkillsMiddleware(backend=backend, sources=a.skill_sources),
+                      *spec["middleware"], *extra_middleware]
+        if a.interrupt_on:
+            middleware.append(HumanInTheLoopMiddleware(interrupt_on=a.interrupt_on))
+        return create_agent(model=spec["model"], tools=spec.get("tools", shared_tools),
+                            system_prompt=spec["system_prompt"], middleware=middleware,
+                            checkpointer=checkpointer)
+    return make
