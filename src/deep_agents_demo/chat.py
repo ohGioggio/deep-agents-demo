@@ -102,14 +102,26 @@ def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runner
 
 
 def runners_for(runtime, settings, thread: str, approver, interactive: bool) -> dict:
-    """What answers non-approval pauses in a turn: run_plan's plan runner."""
+    """What answers non-approval pauses in a turn: the plan runner (run_plan) and the
+    room runner (start_room), both on this thread so approvals and Ctrl+C work."""
+    import re
+
     from deep_agents_demo.orchestration import PlanRunner
+    from deep_agents_demo.rooms import RoomRunner
     if runtime.make_worker is None:
         return {}
-    runner = PlanRunner(runtime.make_worker, approver, thread=thread,
-                        max_attempts=settings.plan_max_attempts,
-                        budget=settings.orchestration_max_calls, interactive=interactive)
-    return {"run_plan": runner.run}
+    plans = PlanRunner(runtime.make_worker, approver, thread=thread,
+                       max_attempts=settings.plan_max_attempts,
+                       budget=settings.orchestration_max_calls, interactive=interactive)
+
+    def describe(name):
+        agent = runtime.agents.get(name) if runtime.agents is not None else None
+        return agent.description if agent else ""
+    folder = re.sub(r"[^A-Za-z0-9._-]", "_", runtime.chats.user) or "_"
+    rooms = RoomRunner(runtime.make_worker, approver, thread=thread, max_turns=settings.room_max_turns,
+                       budget=settings.orchestration_max_calls, interactive=interactive,
+                       transcripts=settings.paths.workspace / "rooms" / folder, describe=describe)
+    return {"run_plan": plans.run, "start_room": rooms.run}
 
 
 def command(*names, usage, summary):
@@ -128,9 +140,11 @@ class ChatSession:
     adding a method.
     """
 
-    def __init__(self, chats: Chats, current: str, ask=input, say=print, uploads=None, agents=None):
+    def __init__(self, chats: Chats, current: str, ask=input, say=print, uploads=None, agents=None,
+                 room=None):
         self.chats, self.current, self.ask, self.say = chats, current, ask, say
         self.uploads, self.agents = uploads, agents
+        self.room = room  # (participants, question) -> runs a room and tells the agent
         self.pending = []  # images attached with /image, sent with the next message
         self.reload_skills = True  # reload once per chat, on its first turn this session
 
@@ -199,6 +213,24 @@ class ChatSession:
         lines.append("  general-purpose (and researcher, when documents or the catalog are on) are "
                      "built in unless an agent replaces them.")
         self.say("Subagents:\n" + "\n".join(lines))
+
+    @command("room", usage="/room A B -- QUESTION", summary="let agents discuss a question, moderated")
+    def room_command(self, arg):
+        from deep_agents_demo.rooms import parse_room_command
+        parsed = parse_room_command(arg)
+        if isinstance(parsed, str):
+            self.say(parsed)
+            return
+        names, question = parsed
+        built_in = ("general-purpose", "researcher")
+        unknown = [n for n in names if n not in built_in
+                   and (self.agents is None or self.agents.get(n) is None)]
+        if unknown:
+            self.say(f"There's no agent named {unknown[0]!r}. See /agents.")
+        elif self.room is None:
+            self.say("Rooms can't run here.")
+        else:
+            self.room(names, question)
 
     @command("help", usage="/help", summary="show this help")
     def help(self, arg):
@@ -279,6 +311,20 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
     with ExitStack() as stack:
         runtime = build_runtime(settings, user, stack, say)
         session = ChatSession(runtime.chats, thread, uploads=runtime.uploads, agents=runtime.agents)
+
+        def run_room(names, question):
+            """/room: run it, then tell the agent the outcome as an ordinary turn."""
+            runners = runners_for(runtime, settings, thread_id(runtime.chats.user, session.current),
+                                  approver, interactive=prompt is None)
+            outcome = runners["start_room"]({"type": "start_room", "question": question,
+                                             "participants": names})
+            stream_turn(runtime.agent,
+                        f"I ran a discussion room. Question: {question}. Participants: "
+                        f"{', '.join(names)}. Summary: {outcome['summary'] or '(none)'}. "
+                        f"Transcript: {outcome['transcript'] or '(not saved)'}. Keep this in mind; "
+                        "reply with one short line.",
+                        session.config, approver=approver, runners=runners)
+        session.room = run_room
         approver = Approver(preview=runtime.preview,
                             interactive=prompt is None)
         while True:

@@ -458,6 +458,7 @@ Switched to 'park-ideas' (3 turns).
 | `/delete NAME` | Delete a chat and its history, after asking |
 | `/image PATH` | Attach a PNG or JPG to your next message (or just write its path in the message) |
 | `/agents` | List the subagents the agent can hand work to, with their tools, model and source |
+| `/room A B -- QUESTION` | Let agents discuss a question in a moderated room (Ctrl+C to step in) |
 | `/help` | Show these commands |
 
 The same operations work from the shell without starting a chat or calling the
@@ -512,9 +513,8 @@ its description. `/agents` lists them all.
   sandbox skill rule apply inside every subagent; `permissionMode` can't loosen
   them. Each run makes at most `SUBAGENT_MAX_CALLS` model calls (25), counted across
   approval pauses; then it hands back what it has, marked partial.
-- **Built-ins:** `reviewer` (checks a step's result, read-only; used by plans below)
-  and `moderator` (runs a discussion between agents, for the discussion rooms being
-  built next; [design](design/specs/2026-11-11-subagents-registry-design.md)).
+- **Built-ins:** `reviewer` (checks a step's result, read-only; used by plans) and
+  `moderator` (runs rooms). Both are described in the sections below.
 - **At most `SUBAGENT_MAX_PARALLEL` (3) subagents run at once;** extra hand-offs
   wait. They all share the request limit, so on NVIDIA's free tier parallel work
   overlaps rather than multiplies speed.
@@ -546,6 +546,33 @@ hands them to `run_plan`. Then, one step at a time:
   your approvals, guardrails and `DISABLED_TOOLS`, and can't start plans of their own.
 - **The outcome** lists each step as passed, skipped, failed or stopped, with the
   reviewer's notes; the agent reports it to you.
+
+### Rooms: a moderated discussion
+
+Let several agents talk a question through: `/room critic tester -- Should we cache
+the catalog?`, or ask the agent ("have the critic and the tester discuss X"). The
+built-in `moderator` (or your own agent of that name) picks who speaks next and what
+they should address, and ends the room when they agree or nothing new is said:
+
+```text
+[room] moderator -> critic: What could go wrong with caching?
+...the critic's turn...
+[room] moderator -> tester: How would you test the invalidation?
+...
+[room] summary:
+Agreed: cache with a 10-minute TTL. Open: who owns invalidation. Next: a test plan.
+```
+
+- **Step in:** Ctrl+C pauses after the current turn. Type your own turn (the
+  moderator takes it into account), `/end` for the summary now, `/stop` to end
+  without one, or Enter to go on. Ctrl+C again stops at once.
+- **Limits:** `ROOM_MAX_TURNS` (12) participant turns, and `ORCHESTRATION_MAX_CALLS`
+  (150) model calls per room (then continue or wrap up). The summary is always
+  written, even when the budget runs out.
+- **Participants** keep their own tools, limits and your approvals; each turn sees
+  the latest 6,000 characters of the discussion.
+- **The summary** (agreements, open disagreements, next steps) goes back to the
+  agent, and the full transcript is saved to `demo_workspace/rooms/<user>/`.
 
 ### Agents the agent writes, with your approval
 
@@ -829,6 +856,7 @@ src/deep_agents_demo/
 ├── agent_registry.py  # built-in and folder subagents, precedence, /agents overview
 ├── agent_manager.py   # agents written through the chat: approval, versions, marketplace
 ├── orchestration.py   # run_plan and the plan runner (review, retries, budget), parallel cap
+├── rooms.py           # start_room, /room and the room runner (moderator, turns, summary)
 ├── approvals.py    # the approval prompt for paused tool calls
 ├── guardrails.py   # risky actions (dangerous commands, delete, forget) ask first
 ├── images.py       # attached PNG/JPG images, and the agent checking images it renders

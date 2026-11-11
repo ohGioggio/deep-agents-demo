@@ -41,6 +41,24 @@ def parse_moderator(text: str, participants: list[str]) -> tuple[str, str, str]:
     return "unclear", "", str(text or "").strip()
 
 
+ROOM_USAGE = "Usage: /room AGENT AGENT [...] -- QUESTION   (e.g. /room critic tester -- Is it safe?)"
+
+
+def parse_room_command(arg: str) -> tuple[list[str], str] | str:
+    """(participants, question) from "/room a b -- question", or a message saying why not."""
+    if "--" not in arg:
+        return ROOM_USAGE
+    left, _, question = arg.partition("--")
+    names = list(dict.fromkeys(n for n in re.split(r"[\s,]+", left) if n))
+    if not question.strip():
+        return ROOM_USAGE
+    if len(names) < 2:
+        return "A room needs at least 2 different agents. " + ROOM_USAGE
+    if "moderator" in names:
+        return "The moderator runs the room; pick other agents. " + ROOM_USAGE
+    return names, question.strip()
+
+
 def _slug(question: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", question.lower()[:40]).strip("-") or "room"
 
