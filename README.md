@@ -78,7 +78,7 @@ plan, the delegation and the tool calls as they happen:
 
 ```text
 [main / model]          the agent picks the matching skill (scene-planning)
-[plan]                  the to-do list it writes, updated as tasks complete
+[todos]                 the to-do list it writes, updated as tasks complete
 [main / tools]          search_assets and triangle_budget check the options
 [subagent / tools]      a subagent, if it delegates a lookup
 [main / tools]          the proposal is saved to /scene_plan.md
@@ -229,7 +229,7 @@ well, or disable memory and RAG, to keep everything local.
 uv run deep-agents-demo                                  # interactive chat
 uv run deep-agents-demo --thread second                  # new conversation, same memories
 uv run deep-agents-demo --user alice                     # separate memory namespace
-uv run deep-agents-demo --prompt "Plan a small park"     # one prompt, then exit
+uv run deep-agents-demo --prompt "Plan a small park"     # one prompt: prints just the answer
 uv run deep-agents-demo --index-docs docs                # rebuild the RAG index
 uv run deep-agents-demo --clear-sandbox                  # delete the agent's files in OpenShell
 uv run deep-agents-demo --list-threads                   # your chats, most recent first
@@ -241,7 +241,8 @@ uv run python -m unittest discover -s tests -v           # offline tests
 | --- | --- | --- |
 | `--thread` | `city-demo` | Conversation ID; reuse it to resume history |
 | `--user` | `demo-user` | Mem0 namespace, not authentication |
-| `--prompt` | | Run a single prompt instead of interactive chat |
+| `--prompt` | | Run a single prompt instead of interactive chat; prints only the answer |
+| `--verbose` | | With `--prompt`, print every step (tool calls, subagents, plans, rooms) too |
 | `--index-docs DIR` | | Rebuild the RAG index from `DIR`, then exit |
 | `--clear-sandbox` | | Delete everything the agent created in the OpenShell sandbox, then exit |
 | `--list-threads` | | List your chats with turns, last use and last message, then exit |

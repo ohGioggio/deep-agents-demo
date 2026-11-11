@@ -152,7 +152,7 @@ class RoomRunner(Runner):
         self.lines, self.user_said = [], ""
         question = str(request.get("question", "")).strip()
         participants = [str(p) for p in request.get("participants", [])]
-        missing = [name for name in participants if self.make(name) is None]
+        missing = [name for name in participants if not self._exists(name)]
         if missing:  # before any model call: a typo shouldn't waste the room's turns
             return {"question": question, "participants": participants,
                     "error": f"no agent named {missing[0]!r}; see list_agents (or /agents)"}
@@ -197,9 +197,20 @@ class RoomRunner(Runner):
                     self.lines.append(f"**{name}:** {answer}")
                 except _RunFailed as error:
                     self.lines.append(f"*({name} could not answer: {error})*")
+                except _WrapUp as wrap:  # keep what the interrupted turn had said
+                    partial = str(wrap.args[0]).strip() if wrap.args else ""
+                    if partial:
+                        self.lines.append(f"**{name}:** {partial}")
+                    self.lines.append(f"*({name}'s turn was cut short: the request budget ran out)*")
+                    turns += 1
+                    raise
                 turns += 1
         except _WrapUp:
             ended_by = "budget"
+        except KeyboardInterrupt:  # a second Ctrl+C: stop the room, keep the chat
+            self.lines.append("*(stopped by the user)*")
+            self.say(f"{self.label} Stopped.")
+            ended_by = "stopped"
         error = ""
         if ended_by in ("turn limit", "user", "budget", "moderator (asked for the summary)"):
             summary, error = self._summary(question, participants, turns)

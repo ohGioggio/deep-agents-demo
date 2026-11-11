@@ -267,4 +267,5 @@ def worker_factory(model, checkpointer, backend, features=(), *, skills_prefix="
         return create_agent(model=spec["model"], tools=spec.get("tools", shared_tools),
                             system_prompt=spec["system_prompt"], middleware=middleware,
                             checkpointer=checkpointer)
+    make.names = frozenset(specs)  # check a name without building its agent
     return make

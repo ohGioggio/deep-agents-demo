@@ -156,6 +156,16 @@ class Runner:
         self.interactive, self.ask, self.say = interactive, ask, say
         self.pause_requested = False  # set by Ctrl+C; checked between turns or steps
         self._previous_handler = None
+        self.quiet = False  # one-shot runs: print nothing but the answer
+
+    def _speaker(self, name: str) -> str:
+        """How an agent's output is labelled, e.g. "room / critic"."""
+        return f"{self.label.strip('[]')} / {name}"
+
+    def _exists(self, name: str) -> bool:
+        """Is there an agent called ``name``? (Without building it, when the factory knows.)"""
+        names = getattr(self.make, "names", None)
+        return name in names if names is not None else self.make(name) is not None
 
     def _with_ctrl_c(self, fn, *args):
         """Interactive: Ctrl+C pauses after the current turn (twice: stop now). In one-shot
@@ -185,11 +195,12 @@ class Runner:
             pass
 
     # one run of one agent -------------------------------------------------------------
-    def _invoke(self, graph, text: str, thread_id: str) -> str:
+    def _invoke(self, graph, text: str, thread_id: str, label=None) -> str:
         from deep_agents_demo.chat import stream_turn  # chat.py imports the app, which imports us
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
         try:
-            stream_turn(graph, text, config, reload_skills=True, approver=self.approver)
+            stream_turn(graph, text, config, reload_skills=True, approver=self.approver, label=label,
+                        show=not self.quiet)
             return _last_text(graph, config)
         except (KeyboardInterrupt, _WrapUp):
             raise
@@ -200,10 +211,10 @@ class Runner:
         """Run one agent within the budget; when it runs out, ask to continue or wrap up.
         ``capped=False`` runs outside the budget (a room's final summary)."""
         if not capped:
-            return self._invoke(self.make(name), text, thread_id)
+            return self._invoke(self.make(name), text, thread_id, label=self._speaker(name))
         while True:
             cap = BudgetCap(self.budget)
-            result = self._invoke(self.make(name, (cap,)), text, thread_id)
+            result = self._invoke(self.make(name, (cap,)), text, thread_id, label=self._speaker(name))
             if not cap.fired:
                 return result
             if not self._continue_after_budget():
@@ -270,7 +281,7 @@ class PlanRunner(Runner):
     # one step ---------------------------------------------------------------------------
     def _attempts(self, goal, step, number, total, done, user_note, round_no, notes="") -> StepResult:
         label = f"[plan] step {number}/{total}"
-        if self.make(step.agent) is None:
+        if not self._exists(step.agent):
             return StepResult(step, "failed", notes=f"no agent named {step.agent!r}")
         result = ""
         for attempt in range(1, self.max_attempts + 1):
@@ -325,6 +336,11 @@ class PlanRunner(Runner):
             try:
                 outcome = self._attempts(goal, step, number + 1, len(steps), done, user_note,
                                          round_no, notes)
+            except KeyboardInterrupt:  # a second Ctrl+C: stop the plan, keep the chat
+                self.say(f"{self.label} Stopped.")
+                done += [StepResult(rest, "stopped", notes="stopped by the user")
+                         for rest in steps[number:]]
+                break
             except _WrapUp as wrap:
                 partial = str(wrap.args[0]) if wrap.args else ""
                 done.append(StepResult(step, "stopped", partial,

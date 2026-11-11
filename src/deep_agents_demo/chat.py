@@ -36,11 +36,13 @@ def turn_input(prompt, reload_skills=False):
     return payload
 
 
-def stream_once(agent, payload, config, shown=None) -> list:
+def stream_once(agent, payload, config, shown=None, label=None, quiet=False) -> list:
     """Stream one run of the agent loop; return the approval requests it paused on.
 
     ``shown`` collects the ids of printed messages: after a pause, LangGraph sends
-    the paused AI message again, and it should be printed once per turn.
+    the paused AI message again, and it should be printed once per turn. ``label``
+    names who is speaking (e.g. "room / critic"; default "main"); ``quiet`` prints
+    nothing (one-shot runs print only the final answer).
     """
     paused, shown = {}, shown if shown is not None else set()
     # Include child updates so delegation/tool calls are observable.
@@ -53,16 +55,18 @@ def stream_once(agent, payload, config, shown=None) -> list:
                 continue
             if not isinstance(state, dict):
                 continue
-            label = "subagent" if namespace else "main"
+            who = label or "main"
+            who = (f"{who} / subagent" if label else "subagent") if namespace else who
             for message in state.get("messages", []):
                 key = message.id or id(message)
                 if key in shown:
                     continue
                 shown.add(key)
-                print(f"\n[{label} / {node}]")
-                printable(message).pretty_print()
-            if "todos" in state:
-                print("[plan]", json.dumps(state["todos"], ensure_ascii=False))
+                if not quiet:
+                    print(f"\n[{who} / {node}]")
+                    printable(message).pretty_print()
+            if "todos" in state and not quiet:
+                print("[todos]", json.dumps(state["todos"], ensure_ascii=False))
     return list(paused.values())
 
 
@@ -74,7 +78,16 @@ def printable(message):
     return message
 
 
-def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runners=None) -> None:
+def final_answer(agent, config) -> str:
+    """The text of the last AI message in a thread (what a one-shot run prints)."""
+    for message in reversed(agent.get_state(config).values.get("messages", [])):
+        if message.type == "ai" and not getattr(message, "tool_calls", None) and str(message.content).strip():
+            return message.text if isinstance(message.text, str) else str(message.content)
+    return ""
+
+
+def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runners=None,
+                label=None, quiet=False, show=None) -> None:
     """Run one user turn to the end, asking ``approver`` about every paused tool call.
 
     Without an approver, paused calls are rejected (nobody can approve them).
@@ -94,14 +107,18 @@ def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runner
             return {"error": "rooms can't run here (nobody to run them)"}
         return approver.decide(value)
 
+    # quiet: print only the final answer; show=False: print nothing at all.
+    show = not quiet if show is None else show
     while True:
-        paused = stream_once(agent, payload, config, shown)
+        paused = stream_once(agent, payload, config, shown, label=label, quiet=not show)
         if not paused:
+            if quiet:
+                print(final_answer(agent, config))
             return
         payload = Command(resume={item.id: answer(item.value) for item in paused})
 
 
-def runners_for(runtime, settings, thread: str, approver, interactive: bool) -> dict:
+def runners_for(runtime, settings, thread: str, approver, interactive: bool, quiet: bool = False) -> dict:
     """What answers non-approval pauses in a turn: the plan runner (run_plan) and the
     room runner (start_room), both on this thread so approvals and Ctrl+C work."""
     import re
@@ -110,9 +127,11 @@ def runners_for(runtime, settings, thread: str, approver, interactive: bool) -> 
     from deep_agents_demo.rooms import RoomRunner
     if runtime.make_worker is None:
         return {}
+    say = (lambda *_args, **_kwargs: None) if quiet else print
     plans = PlanRunner(runtime.make_worker, approver, thread=thread,
                        max_attempts=settings.plan_max_attempts,
-                       budget=settings.orchestration_max_calls, interactive=interactive)
+                       budget=settings.orchestration_max_calls, interactive=interactive, say=say)
+    plans.quiet = quiet
 
     def describe(name):
         agent = runtime.agents.get(name) if runtime.agents is not None else None
@@ -120,7 +139,9 @@ def runners_for(runtime, settings, thread: str, approver, interactive: bool) -> 
     folder = re.sub(r"[^A-Za-z0-9._-]", "_", runtime.chats.user) or "_"
     rooms = RoomRunner(runtime.make_worker, approver, thread=thread, max_turns=settings.room_max_turns,
                        budget=settings.orchestration_max_calls, interactive=interactive,
-                       transcripts=settings.paths.workspace / "rooms" / folder, describe=describe)
+                       transcripts=settings.paths.workspace / "rooms" / folder, describe=describe,
+                       say=say)
+    rooms.quiet = quiet
     return {"run_plan": plans.run, "start_room": rooms.run}
 
 
@@ -304,8 +325,11 @@ HELP = "Chat commands:\n" + "\n".join(
 ) + f"\n  {'exit':<15} quit"
 
 
-def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = None) -> None:
-    """Interactive chat, or a single ``prompt`` that prints only the answer."""
+def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = None,
+             verbose: bool = False) -> None:
+    """Interactive chat, or a single ``prompt`` that prints only the answer (every step
+    with ``verbose``)."""
+    quiet = prompt is not None and not verbose
     # Startup chatter only helps in an interactive chat; --prompt prints just the answer.
     say = print if prompt is None else (lambda *_args, **_kwargs: None)
     prepare_workspace(settings)
@@ -317,7 +341,7 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
         def run_room(names, question):
             """/room: run it, then tell the agent the outcome as an ordinary turn."""
             runners = runners_for(runtime, settings, thread_id(runtime.chats.user, session.current),
-                                  approver, interactive=prompt is None)
+                                  approver, interactive=prompt is None, quiet=quiet)
             from deep_agents_demo.rooms import room_followup
             outcome = runners["start_room"]({"type": "start_room", "question": question,
                                              "participants": names})
@@ -325,7 +349,7 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
                 say(f"Room not started: {outcome.get('error')}")
                 return
             stream_turn(runtime.agent, room_followup(question, names, outcome), session.config,
-                        approver=approver, runners=runners)
+                        approver=approver, runners=runners, quiet=quiet)
         session.room = run_room
         approver = Approver(preview=runtime.preview,
                             interactive=prompt is None)
@@ -343,9 +367,9 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
             # Skills reload every turn (local files, cheap), so an approved change is
             # visible from the next message.
             runners = runners_for(runtime, settings, thread_id(runtime.chats.user, session.current),
-                                  approver, interactive=prompt is None)
+                                  approver, interactive=prompt is None, quiet=quiet)
             stream_turn(runtime.agent, session.content(line), session.config, reload_skills=True,
-                        approver=approver, runners=runners)
+                        approver=approver, runners=runners, quiet=quiet)
             if runtime.refresh():  # an approved agent change: available from the next message
                 session.agents = runtime.agents
                 say("Agents updated.")
