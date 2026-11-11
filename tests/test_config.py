@@ -2,8 +2,10 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from deep_agents_demo import chat, cli, commands
 from deep_agents_demo.config import ChatSettings, Settings
+from deep_agents_demo.ui.cli import commands
+from deep_agents_demo.ui.cli import main as cli
+from deep_agents_demo.ui.cli import repl as chat
 
 
 class SettingsTests(unittest.TestCase):

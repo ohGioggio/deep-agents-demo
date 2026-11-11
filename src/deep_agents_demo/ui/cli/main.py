@@ -20,9 +20,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from deep_agents_demo import commands
-from deep_agents_demo.chat import run_chat
 from deep_agents_demo.config import ENV_FILE, Settings
+from deep_agents_demo.ui.cli import commands
+from deep_agents_demo.ui.cli.repl import run_chat
 
 
 def parse_args(argv=None):

@@ -15,7 +15,7 @@ from test_memory import FakeMemory
 from deep_agents_demo.core.assembly import build_agent
 from recording_ui import Approver
 from deep_agents_demo.features.catalog.feature import catalog_feature
-from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.ui.cli.repl import stream_turn
 from deep_agents_demo.config import Settings
 from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.core.middleware import ToolAccess

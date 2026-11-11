@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from recording_ui import Approver
-from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.ui.cli.repl import stream_turn
 from deep_agents_demo.config import ChatSettings, MemorySettings, Paths, Settings
 from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.features.agents.files import parse_agent_md

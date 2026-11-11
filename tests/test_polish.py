@@ -8,7 +8,7 @@ from test_agents import Model, call
 from test_orchestration import RunnerBase, reply
 from test_rooms import RoomBase
 
-from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.ui.cli.repl import stream_turn
 
 
 class Interrupting:
@@ -99,7 +99,7 @@ class QuietTests(unittest.TestCase):
         self.assertEqual(printed, ["The answer."])
 
     def test_verbose_flag(self):
-        from deep_agents_demo import cli
+        from deep_agents_demo.ui.cli import main as cli
         self.assertTrue(cli.parse_args(["--prompt", "hi", "--verbose"])[1].verbose)
         self.assertFalse(cli.parse_args(["--prompt", "hi"])[1].verbose)
 

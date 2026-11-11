@@ -7,13 +7,13 @@ import sys
 from contextlib import ExitStack
 from pathlib import Path
 
-from deep_agents_demo.chat import confirm
 from deep_agents_demo.config import Settings
 from deep_agents_demo.features.sandbox.providers import clear_sandbox
 from deep_agents_demo.startup.resources import document_index, sandbox_backend
 from deep_agents_demo.startup.runtime import history_runtime
 from deep_agents_demo.startup.workspace import prepare_workspace
 from deep_agents_demo.ui.cli.render import format_table, format_transcript
+from deep_agents_demo.ui.cli.repl import confirm
 
 
 class UsageError(Exception):

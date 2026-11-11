@@ -9,7 +9,7 @@ from recording_ui import Approver, RecordingUI
 from test_agents import ALL_AGENT, SEEN, Model, agent_from, call
 from test_orchestration import Boom, Workspace, reply
 
-from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.ui.cli.repl import stream_turn
 from deep_agents_demo.core.assembly import worker_factory
 from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
 
@@ -312,7 +312,7 @@ class CommandTests(Workspace):
     def test_room_command_checks_agents_first(self):
         from test_agents import KNOWN
 
-        from deep_agents_demo.chat import ChatSession
+        from deep_agents_demo.ui.cli.repl import ChatSession
         from deep_agents_demo.features.agents.registry import AgentRegistry
         said, rooms = [], []
         session = ChatSession(chats=None, current="c", say=said.append,
@@ -327,7 +327,7 @@ class WiringTests(Workspace):
     def test_start_room_through_the_runtime(self):
         from contextlib import ExitStack
 
-        from deep_agents_demo.chat import runners_for
+        from deep_agents_demo.ui.cli.repl import runners_for
         from deep_agents_demo.config import (
             ChatSettings,
             MemorySettings,

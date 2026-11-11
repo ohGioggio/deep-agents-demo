@@ -12,7 +12,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from PIL import Image
 
 from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.chat import ChatSession
+from deep_agents_demo.ui.cli.repl import ChatSession
 from deep_agents_demo.core.turns import printable
 from deep_agents_demo.features.images.uploads import (
     MAX_SIDE,

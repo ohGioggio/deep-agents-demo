@@ -13,7 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from recording_ui import Approver
 from test_memory import FakeMemory
 
-from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.ui.cli.repl import stream_turn
 from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.core.feature import Feature, approval_configs
 from deep_agents_demo.features.guardrails.feature import Guardrails

@@ -19,7 +19,7 @@ LAYERS = {"config": 0, "models": 0, "persistence": 1, "providers": 1, "core": 2,
 # Flat modules not moved into a layer yet (by file stem). Each task that moves one
 # removes it; the last move empties the set. A legacy module isn't checked as an
 # importer, and a moved module may still import it until it moves.
-LEGACY = {"chat", "cli", "commands"}
+LEGACY: set[str] = set()
 
 # Moved modules (dotted, under the package) that still print, read input or use
 # signal; emptied once the UI seam is in place.
@@ -128,9 +128,45 @@ class LayerTests(unittest.TestCase):
         self.assertEqual({m for m in IO_PENDING if not (PACKAGE / (m.replace(".", "/") + ".py")).exists()},
                          set(), "IO_PENDING names a module that doesn't exist")
 
-    def test_no_import_cycle_through_agent(self):
-        code = ("import sys, deep_agents_demo.core.feature; "
-                "print('deep_agents_demo.orchestration' in sys.modules)")
+    def test_entry_point(self):
+        import importlib
+        import tomllib
+        project = tomllib.loads((PACKAGE.parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+        target = project["project"]["scripts"]["deep-agents-demo"]
+        self.assertEqual(target, "deep_agents_demo.ui.cli.main:main")
+        module, _, name = target.partition(":")
+        self.assertTrue(callable(getattr(importlib.import_module(module), name)))
+        self.assertIn("from deep_agents_demo.ui.cli.main import main",
+                      (PACKAGE / "__main__.py").read_text(encoding="utf-8"))
+        self.assertEqual(LEGACY, set(), "every module is in a layer")
+
+    def test_removed_modules_are_not_imported(self):
+        import re
+        removed = ["agent", "agent_files", "agent_manager", "agent_registry", "app", "approvals",
+                   "catalog", "chat", "cli", "commands", "embeddings", "guardrails", "images", "memory",
+                   "memory_policy", "openshell_backend", "orchestration", "rag", "rooms", "sandbox",
+                   "skill_manager", "skill_store", "threads", "tools", "workspace"]
+        names = "|".join(removed)
+        # \b: "deep_agents_demo.agent" must not match "deep_agents_demo.agents"; a patch
+        # target like "deep_agents_demo.images.MAX_BYTES" still matches.
+        dotted = re.compile(rf"deep_agents_demo\.({names})\b")
+        bare = re.compile(rf"from deep_agents_demo import ({names})\b")
+        found = []
+        root = PACKAGE.parents[1]
+        for folder in ("src", "tests", "evals"):
+            for path in (root / folder).rglob("*.py"):
+                if path == Path(__file__).resolve():
+                    continue  # this file names them on purpose
+                text = path.read_text(encoding="utf-8")
+                for pattern in (dotted, bare):
+                    found += [f"{path.relative_to(root)}: {m.group(0)}" for m in pattern.finditer(text)]
+        self.assertEqual(found, [])
+
+    def test_core_imports_no_feature(self):
+        # Assembling an agent once imported orchestration, which imported the chat, which
+        # imported the app, which imported the agent: core must stand alone.
+        code = ("import sys, deep_agents_demo.core.assembly, deep_agents_demo.core.turns; "
+                "print(any(m.startswith('deep_agents_demo.features') for m in sys.modules))")
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(out.stdout.strip(), "False")

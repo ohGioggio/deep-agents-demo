@@ -37,7 +37,7 @@ from deep_agents_demo.startup.resources import embeddings  # noqa: E402
 from deep_agents_demo.core.assembly import build_agent  # noqa: E402
 from deep_agents_demo.config import RECALL_MODES, Settings  # noqa: E402
 from deep_agents_demo.features.catalog.feature import catalog_feature  # noqa: E402
-from deep_agents_demo.features.memory.service import MemoryService, close_memory, make_memory
+from deep_agents_demo.features.memory.service import MemoryService, close_memory, make_memory  # noqa: E402
 from deep_agents_demo.features.memory.feature import memory_feature  # noqa: E402
 from deep_agents_demo.startup.workspace import seed_files  # noqa: E402
 

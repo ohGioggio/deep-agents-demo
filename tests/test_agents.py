@@ -13,7 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from deep_agents_demo.core import assembly as agent_module
 from deep_agents_demo.core.assembly import build_agent
 from recording_ui import Approver
-from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.ui.cli.repl import stream_turn
 from deep_agents_demo.core.middleware import SubagentCallCap
 from deep_agents_demo.core.tools import BUILTIN, tool_name
 from deep_agents_demo.features.agents.files import (
@@ -399,7 +399,7 @@ class WiringTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
 
     def test_agents_command_lists_sources(self):
-        from deep_agents_demo.chat import ChatSession
+        from deep_agents_demo.ui.cli.repl import ChatSession
         write(self.root / "agents" / "critic.md", CRITIC)
         registry = AgentRegistry.load([self.root / "agents"], KNOWN)
         said = []
@@ -409,7 +409,7 @@ class WiringTests(unittest.TestCase):
             self.assertIn(expected, text)
 
     def test_agents_footer_matches_reality(self):
-        from deep_agents_demo.chat import ChatSession
+        from deep_agents_demo.ui.cli.repl import ChatSession
         write(self.root / "agents" / "gp.md", "---\nname: general-purpose\ndescription: Mine.\n---\nx")
         said = []
         ChatSession(chats=None, current="c", say=said.append,
