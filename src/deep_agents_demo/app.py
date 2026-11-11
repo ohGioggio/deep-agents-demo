@@ -13,11 +13,12 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from deep_agents_demo.agent import build_agent, worker_factory
-from deep_agents_demo.agent_manager import AgentManager
-from deep_agents_demo.agent_registry import AgentRegistry
 from deep_agents_demo.catalog import catalog_feature
 from deep_agents_demo.config import Settings
 from deep_agents_demo.core.tools import ToolRegistry
+from deep_agents_demo.features.agents.manager import AgentManager
+from deep_agents_demo.features.agents.registry import AgentRegistry
+from deep_agents_demo.features.skills.manager import SkillManager
 from deep_agents_demo.guardrails import Guardrails
 from deep_agents_demo.images import Uploads, images_feature
 from deep_agents_demo.memory import (
@@ -35,7 +36,6 @@ from deep_agents_demo.providers.embeddings import CompatibleEmbeddings
 from deep_agents_demo.providers.rate_limit import rate_limiter
 from deep_agents_demo.rag import DocumentIndex, documents_feature
 from deep_agents_demo.sandbox import BackendSetup, make_backend
-from deep_agents_demo.skill_manager import SkillManager
 from deep_agents_demo.workspace import seed_files
 
 

@@ -308,8 +308,8 @@ class CommandTests(Workspace):
     def test_room_command_checks_agents_first(self):
         from test_agents import KNOWN
 
-        from deep_agents_demo.agent_registry import AgentRegistry
         from deep_agents_demo.chat import ChatSession
+        from deep_agents_demo.features.agents.registry import AgentRegistry
         said, rooms = [], []
         session = ChatSession(chats=None, current="c", say=said.append,
                               agents=AgentRegistry.load([], KNOWN), room=lambda n, q: rooms.append((n, q)))

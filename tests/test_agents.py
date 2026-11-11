@@ -12,17 +12,17 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from deep_agents_demo import agent as agent_module
 from deep_agents_demo.agent import build_agent
-from deep_agents_demo.agent_files import (
+from deep_agents_demo.approvals import Approver
+from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.core.middleware import SubagentCallCap
+from deep_agents_demo.core.tools import BUILTIN, tool_name
+from deep_agents_demo.features.agents.files import (
     parse_agent_md,
     render_agent_md,
     resolve_model,
     translate_tools,
 )
-from deep_agents_demo.agent_registry import AgentRegistry
-from deep_agents_demo.approvals import Approver
-from deep_agents_demo.chat import stream_turn
-from deep_agents_demo.core.middleware import SubagentCallCap
-from deep_agents_demo.core.tools import BUILTIN, tool_name
+from deep_agents_demo.features.agents.registry import AgentRegistry
 from deep_agents_demo.guardrails import Guardrails
 from deep_agents_demo.workspace import SEED_DIR
 

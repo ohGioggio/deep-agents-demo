@@ -22,7 +22,6 @@ from langchain.agents.middleware import (
     TodoListMiddleware,
 )
 
-from deep_agents_demo.agent_registry import BUILTIN_AGENTS
 from deep_agents_demo.core.feature import approval_configs
 from deep_agents_demo.core.middleware import (
     PinSkills,
@@ -31,6 +30,7 @@ from deep_agents_demo.core.middleware import (
     ToolAccess,
 )
 from deep_agents_demo.core.tools import ToolRegistry, shell_block, tool_name
+from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
 from deep_agents_demo.models.agents import READ_ONLY
 
 IDENTITY = (

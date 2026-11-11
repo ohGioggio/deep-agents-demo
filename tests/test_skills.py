@@ -12,14 +12,13 @@ from langgraph.checkpoint.memory import InMemorySaver
 from deep_agents_demo.agent import build_agent
 from deep_agents_demo.approvals import NO_HUMAN, Approver
 from deep_agents_demo.chat import stream_turn
-from deep_agents_demo.persistence.versioned_store import VersionedStore
-from deep_agents_demo.skill_manager import (
-    GATED_TOOLS,
-    SkillManager,
+from deep_agents_demo.features.skills.format import (
     read_skill_folder,
     render_skill_md,
     validate,
 )
+from deep_agents_demo.features.skills.manager import GATED_TOOLS, SkillManager
+from deep_agents_demo.persistence.versioned_store import VersionedStore
 
 KEY = "sk-proj-abcDEF1234567890ghijKLMNOP"
 

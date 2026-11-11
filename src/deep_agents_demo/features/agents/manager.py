@@ -1,17 +1,19 @@
 """Agents written through the chat: plan a change, show it for approval, save a version.
 
-``AgentManager`` reuses the skills machinery (``SkillManager``: planning, scopes,
-versions, the marketplace, approvals) with an agent file instead of a SKILL.md:
+``AgentManager`` is a ``core.items.ItemManager`` (planning, scopes, versions, the
+marketplace, approvals) whose item is an agent file instead of a SKILL.md:
 each version is one file, ``agent.md``, in Claude Code's agent format. Nothing is
 written to folders; after an approved change ``changed`` is set and the runtime
 rebuilds the agent, so the change is available from the user's next message.
 """
 import itertools
 import json
-import threading
 from pathlib import Path
 
-from deep_agents_demo.agent_files import (
+from deep_agents_demo.core.feature import Feature
+from deep_agents_demo.core.items import MARKETPLACE, USER, ItemChange, ItemManager
+from deep_agents_demo.core.secrets import find_secrets, split_findings
+from deep_agents_demo.features.agents.files import (
     CLAUDE_TOOLS,
     _names,
     normalise_agent_text,
@@ -20,10 +22,7 @@ from deep_agents_demo.agent_files import (
     split_agent_md,
     translate_tools,
 )
-from deep_agents_demo.core.feature import Feature
-from deep_agents_demo.core.secrets import find_secrets, split_findings
 from deep_agents_demo.models.agents import READ_ONLY
-from deep_agents_demo.skill_manager import MARKETPLACE, USER, SkillChange, SkillManager
 
 AGENT_FILE = "agent.md"
 MAX_AGENT_SIZE = 100_000
@@ -36,7 +35,7 @@ def _note(note: str) -> str:
     return note.split(": ", 1)[1] if ": " in note else note
 
 
-class AgentChange(SkillChange):
+class AgentChange(ItemChange):
     noun = "Agent"
     main_file = AGENT_FILE
 
@@ -58,18 +57,18 @@ class AgentChange(SkillChange):
         return names
 
 
-class AgentManager(SkillManager):
+class AgentManager(ItemManager):
     """One user's agents (scope "user") and the agent marketplace."""
 
     noun = "agent"
     change_type = AgentChange
     main_file = AGENT_FILE
     browse_tool = "browse_agents"
+    own_source = "yours"
 
     def __init__(self, store, owner: str, known_tools):
-        self.store, self.owner = store, owner
+        super().__init__(store, owner)
         self.known_tools = frozenset(known_tools)
-        self.lock = threading.RLock()
         self.changed = False  # set after an approved change; the runtime rebuilds and clears it
         self.registry = None  # the AgentRegistry in use, for list_agents (set by the runtime)
 
@@ -180,25 +179,6 @@ class AgentManager(SkillManager):
         # Stored as this module reads it, so updates and summaries see the same file.
         return self._change("import", agent.name, {AGENT_FILE: normalise_agent_text(text)},
                             scope=scope)
-
-    # views --------------------------------------------------------------------------
-    def overview(self):
-        """The user's agents and installed ones, with versions (agents' wording)."""
-        mine = {a.name: a for a in self.store.list_current(USER, self.owner)}
-        rows = [{"name": name, "source": "yours", "version": agent.version}
-                for name, agent in sorted(mine.items())]
-        for name in self.store.installed(self.owner):
-            listed = self._live(name, MARKETPLACE)
-            rows.append({"name": name, "source": "marketplace (installed)",
-                         "version": listed.version if listed else None,
-                         "note": ("removed from the marketplace" if listed is None else
-                                  "overridden by your own agent with the same name" if name in mine
-                                  else "")})
-        return rows
-
-    def sync_folder(self):
-        """Agents live only in the database; nothing to write to folders."""
-        return None
 
     # the agent's tools ----------------------------------------------------------------
     def tools(self):

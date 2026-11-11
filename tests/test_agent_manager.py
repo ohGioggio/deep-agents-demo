@@ -12,13 +12,13 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from deep_agents_demo import app
 from deep_agents_demo.agent import build_agent
-from deep_agents_demo.agent_files import parse_agent_md
-from deep_agents_demo.agent_manager import AGENT_FILE, AgentManager
-from deep_agents_demo.agent_registry import AgentRegistry
 from deep_agents_demo.app import prepare_workspace
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.config import ChatSettings, MemorySettings, Paths, Settings
+from deep_agents_demo.features.agents.files import parse_agent_md
+from deep_agents_demo.features.agents.manager import AGENT_FILE, AgentManager
+from deep_agents_demo.features.agents.registry import AgentRegistry
 from deep_agents_demo.persistence.versioned_store import AGENT_TABLES, VersionedStore
 
 

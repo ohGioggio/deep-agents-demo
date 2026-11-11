@@ -2,7 +2,7 @@
 
 Sources, lowest to highest (a higher one wins on a name clash):
 
-1. built-ins: ``reviewer`` and ``moderator`` here; ``general-purpose`` and
+1. built-ins: ``reviewer`` and ``moderator`` (``builtins.py``); ``general-purpose`` and
    ``researcher`` are built by ``build_agent`` and can be replaced the same way;
 2. folders of Claude Code agent files: ``AGENT_DIRS`` in order, then
    ``demo_workspace/agents/``.
@@ -11,33 +11,9 @@ Sources, lowest to highest (a higher one wins on a name clash):
 """
 from pathlib import Path
 
-from deep_agents_demo.agent_files import parse_agent_md
+from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
+from deep_agents_demo.features.agents.files import parse_agent_md
 from deep_agents_demo.models.agents import READ_ONLY, AgentDefinition
-
-REVIEWER_PROMPT = (
-    "You review one step of a larger task. You get the goal, the step, and the worker's "
-    "result. Check the result against the step: is it done, is it correct, is anything "
-    "missing or made up? Look at the files it names if that helps. Reply with a verdict "
-    "on the first line, PASS or FAIL, then concrete notes: for FAIL, exactly what to fix. "
-    "Don't fix it yourself.")
-MODERATOR_PROMPT = (
-    "You moderate a discussion between agents with different roles on one question. "
-    "Decide who speaks next and what they should address, keep the discussion on the "
-    "question, and stop it when they agree, when nothing new is being said, or when the "
-    "user asks. Then write a summary: what was agreed, the open disagreements, and the "
-    "next steps.")
-
-BUILTIN_AGENTS = {
-    "reviewer": AgentDefinition(
-        name="reviewer", source="built-in", read_only=True, prompt=REVIEWER_PROMPT,
-        description="Checks a worker's result against the step it was given and replies "
-                    "PASS or FAIL with concrete notes. Read-only."),
-    "moderator": AgentDefinition(
-        name="moderator", source="built-in", tools=(), prompt=MODERATOR_PROMPT,
-        description="Runs a discussion between agents: picks who speaks next, keeps it on "
-                    "topic, and ends with a summary of agreements, disagreements and next steps."),
-}
-
 
 # Built by build_agent itself, but replaceable by name like the ones above.
 BUILT_IN_ELSEWHERE = ("general-purpose", "researcher")

@@ -20,10 +20,11 @@ from deep_agents_demo.config import Settings
 from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.core.middleware import ToolAccess
 from deep_agents_demo.core.tools import CORE, ToolRegistry, shell_block, tool_name
+from deep_agents_demo.features.skills.format import split_skill_md, warnings
+from deep_agents_demo.features.skills.manager import SkillManager
 from deep_agents_demo.guardrails import Guardrails
 from deep_agents_demo.memory import MemoryService, memory_feature
 from deep_agents_demo.persistence.versioned_store import VersionedStore
-from deep_agents_demo.skill_manager import SkillManager, split_skill_md, warnings
 from deep_agents_demo.workspace import SEED_DIR
 
 SEEN = []  # (tool names bound, system prompt) for every model call
@@ -134,7 +135,7 @@ class AccessTests(unittest.TestCase):
 
     def test_registry_knows_every_tool_deep_agents_binds(self):
         """Keeps BUILTIN in sync with Deep Agents: an unlisted tool couldn't be disabled."""
-        from deep_agents_demo.skill_manager import SkillManager
+        from deep_agents_demo.features.skills.manager import SkillManager
         store = VersionedStore(self.root / "s.sqlite")
         self.addCleanup(store.close)
         features = [SkillManager(store, "alice", self.root).feature(), Guardrails.feature(),
