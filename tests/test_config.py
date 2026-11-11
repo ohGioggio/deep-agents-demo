@@ -65,6 +65,15 @@ class SettingsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "AGENT_DIRS"):
                 Settings.from_env({"OPENAI_API_KEY": "k", "AGENT_MODEL": "m", "AGENT_DIRS": "~nobody/x"})
 
+    def test_orchestration_settings(self):
+        base = {"OPENAI_API_KEY": "k", "AGENT_MODEL": "m"}
+        settings = Settings.from_env(base)
+        self.assertEqual((settings.plan_max_attempts, settings.orchestration_max_calls,
+                          settings.subagent_max_parallel), (2, 150, 3))
+        for name in ("PLAN_MAX_ATTEMPTS", "ORCHESTRATION_MAX_CALLS", "SUBAGENT_MAX_PARALLEL"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, name):
+                Settings.from_env({**base, name: "0"})
+
     def test_settings_are_immutable(self):
         with self.assertRaises(Exception):
             Settings.from_env({}).rag_enabled = False

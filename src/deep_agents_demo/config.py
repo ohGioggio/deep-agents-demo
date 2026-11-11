@@ -87,6 +87,9 @@ class Settings:
     disabled_tools: tuple = ()        # tool names hidden from the agent and refused
     agent_dirs: tuple = ()            # extra folders of agent files (before demo_workspace/agents)
     subagent_max_calls: int = 25      # model calls per subagent run
+    plan_max_attempts: int = 2        # reviews a plan step may fail before the user is asked
+    orchestration_max_calls: int = 150  # model calls one plan (or room) may use before asking
+    subagent_max_parallel: int = 3    # subagents running at the same time
     paths: Paths = field(default_factory=Paths)
 
     @classmethod
@@ -119,9 +122,13 @@ class Settings:
         batch_size = number("EMBEDDING_BATCH_SIZE", 16)
         if batch_size < 1:
             raise ValueError("EMBEDDING_BATCH_SIZE must be at least 1")
-        max_calls = number("SUBAGENT_MAX_CALLS", 25)
-        if max_calls < 1:
-            raise ValueError("SUBAGENT_MAX_CALLS must be at least 1")
+        def at_least_one(name, default):
+            value = number(name, default)
+            if value < 1:
+                raise ValueError(f"{name} must be at least 1")
+            return value
+
+        max_calls = at_least_one("SUBAGENT_MAX_CALLS", 25)
         try:
             agent_dirs = tuple(Path(part.strip()).expanduser()
                                for part in get("AGENT_DIRS", "").split(os.pathsep) if part.strip())
@@ -158,6 +165,9 @@ class Settings:
                 name for name in re.split(r"[\s,]+", get("DISABLED_TOOLS", "")) if name)),
             agent_dirs=agent_dirs,
             subagent_max_calls=max_calls,
+            plan_max_attempts=at_least_one("PLAN_MAX_ATTEMPTS", 2),
+            orchestration_max_calls=at_least_one("ORCHESTRATION_MAX_CALLS", 150),
+            subagent_max_parallel=at_least_one("SUBAGENT_MAX_PARALLEL", 3),
         )
 
 

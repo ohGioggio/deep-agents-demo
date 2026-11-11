@@ -16,6 +16,7 @@ from langchain.agents.middleware import TodoListMiddleware
 
 from deep_agents_demo.agent_files import READ_ONLY
 from deep_agents_demo.agent_registry import PinSkills, SubagentCallCap
+from deep_agents_demo.orchestration import TaskLimiter
 from deep_agents_demo.tools import ToolAccess, ToolRegistry, shell_block, tool_name
 
 IDENTITY = (
@@ -99,6 +100,10 @@ def _skip_blocked(config, off):
     return {**config, "when": ask}
 
 
+# Tools only the main agent may use: a subagent starting plans or rooms would nest.
+MAIN_ONLY = ("run_plan", "start_room")
+
+
 def _spec(agent, *, model, model_for, tools, skill_sources, access, max_calls) -> dict:
     """A Deep Agents subagent spec for one agent definition.
 
@@ -109,7 +114,8 @@ def _spec(agent, *, model, model_for, tools, skill_sources, access, max_calls) -
     allowed = (frozenset(READ_ONLY) if agent.read_only
                else None if agent.tools is None else frozenset(agent.tools))
     # Deep Agents gives subagents no to-do list; ToolAccess still applies the allowlist.
-    middleware = [ToolAccess(*access, allowed=allowed, denied=frozenset(agent.disallowed)),
+    middleware = [ToolAccess(*access, allowed=allowed,
+                             denied=frozenset(agent.disallowed) | frozenset(MAIN_ONLY)),
                   SubagentCallCap(min(max_calls, agent.max_turns or max_calls))]
     if allowed is None or "write_todos" in allowed:  # its prompt would mention an unusable tool
         middleware.insert(0, TodoListMiddleware())
@@ -124,7 +130,7 @@ def _spec(agent, *, model, model_for, tools, skill_sources, access, max_calls) -
 
 
 def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", disabled_tools=(),
-                agents=(), model_for=None, max_calls=25):
+                agents=(), model_for=None, max_calls=25, max_parallel=3):
     """Assemble a deep agent from features.
 
     ``backend`` is where the file tools act (local files or a sandbox);
@@ -136,7 +142,8 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
     ``agents`` are ``AgentDefinition``s the main agent can delegate to with ``task``;
     one named ``general-purpose`` or ``researcher`` replaces the demo's own.
     ``model_for(model_id)`` builds the model for agents that name one. Every subagent
-    makes at most ``max_calls`` model calls per run.
+    makes at most ``max_calls`` model calls per run, and at most ``max_parallel``
+    subagents run at once.
     """
     features = tuple(features)
     registry = ToolRegistry(features)
@@ -156,7 +163,8 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
     # agent's tools, permissions and approvals.
     access = (off, registry.skill_only(), registry.requirements())
     general_purpose = {**GENERAL_PURPOSE_SUBAGENT, "model": model, "skills": skill_sources,
-                       "middleware": [TodoListMiddleware(), ToolAccess(*access),
+                       "middleware": [TodoListMiddleware(),
+                                      ToolAccess(*access, denied=frozenset(MAIN_ONLY)),
                                       SubagentCallCap(max_calls)]}
     researcher = [{
         "name": "researcher",
@@ -168,7 +176,7 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
         "tools": lookups,
         "model": model,
         # Its lookups are its purpose, so only disabled tools are kept from it.
-        "middleware": [ToolAccess(off), SubagentCallCap(max_calls)],
+        "middleware": [ToolAccess(off, denied=frozenset(MAIN_ONLY)), SubagentCallCap(max_calls)],
     }] if lookups else []
     own = [_spec(agent, model=model, model_for=model_for, tools=tools, skill_sources=skill_sources,
                  access=access, max_calls=max_calls) for agent in agents]
@@ -194,7 +202,8 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
         # Paused for the user's decision before they run; subagents inherit this.
         interrupt_on=interrupt_on or None,
         middleware=[TodoListMiddleware(), *(m for f in features for m in f.middleware),
-                    ToolAccess(off, registry.skill_only(), registry.requirements())],
+                    ToolAccess(off, registry.skill_only(), registry.requirements()),
+                    TaskLimiter(max_parallel)],
         subagents=subagents,
         checkpointer=checkpointer,
         # Deep Agents supplies summarization and large-output offloading.
