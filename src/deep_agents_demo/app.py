@@ -15,6 +15,7 @@ from deep_agents_demo.agent import build_agent
 from deep_agents_demo.config import Settings, rate_limiter
 from deep_agents_demo.embeddings import CompatibleEmbeddings
 from deep_agents_demo.guardrails import Guardrails
+from deep_agents_demo.images import Uploads, images_feature
 from deep_agents_demo.catalog import catalog_feature
 from deep_agents_demo.memory import (MemoryService, close_memory, file_memory_feature, make_memory,
                                      memory_feature)
@@ -59,6 +60,7 @@ class Runtime:
     agent: object
     chats: Chats
     preview: object = None  # describes a paused tool call for the approval prompt
+    uploads: object = None  # saves images the user attaches
 
 
 def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManager:
@@ -72,6 +74,7 @@ def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManag
 def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None, guardrails=None):
     """The features this configuration turns on, in prompt order."""
     yield catalog_feature()  # example tools, always available
+    yield images_feature(setup.skills_prefix)  # attached images; check rendered ones
     if skills is not None:
         yield skills.feature()
     if settings.memory.enabled:
@@ -111,7 +114,8 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
     def preview(name, args):
         return skills.plan(name, args) or guardrails.preview(name, args)
 
-    return Runtime(agent=agent, chats=Chats(saver, agent, user), preview=preview)
+    return Runtime(agent=agent, chats=Chats(saver, agent, user), preview=preview,
+                   uploads=Uploads(settings.paths.workspace, user, setup.skills_prefix))
 
 
 def history_runtime(settings: Settings, user: str, stack: ExitStack) -> Runtime:

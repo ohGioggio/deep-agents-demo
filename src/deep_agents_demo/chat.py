@@ -7,6 +7,7 @@ from langgraph.types import Command
 from deep_agents_demo.app import build_runtime, prepare_workspace
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.config import Settings
+from deep_agents_demo.images import ImageError, image_paths, message_content, without_images
 from deep_agents_demo.threads import Chats, format_table, format_transcript, new_name, thread_id, valid_name
 
 GREETING = ("Ask anything. Ideas: a question about your indexed documents, "
@@ -59,10 +60,18 @@ def stream_once(agent, payload, config, shown=None) -> list:
                     continue
                 shown.add(key)
                 print(f"\n[{label} / {node}]")
-                message.pretty_print()
+                printable(message).pretty_print()
             if "todos" in state:
                 print("[plan]", json.dumps(state["todos"], ensure_ascii=False))
     return list(paused.values())
+
+
+def printable(message):
+    """The message as printed: images become a short note instead of base64 text."""
+    if isinstance(message.content, list) and any(
+            isinstance(b, dict) and b.get("type") in ("image", "image_url") for b in message.content):
+        return without_images(message, "[image]")
+    return message
 
 
 def stream_turn(agent, prompt, config, reload_skills=True, approver=None) -> None:
@@ -95,8 +104,10 @@ class ChatSession:
     adding a method.
     """
 
-    def __init__(self, chats: Chats, current: str, ask=input, say=print):
+    def __init__(self, chats: Chats, current: str, ask=input, say=print, uploads=None):
         self.chats, self.current, self.ask, self.say = chats, current, ask, say
+        self.uploads = uploads
+        self.pending = []  # images attached with /image, sent with the next message
         self.reload_skills = True  # reload once per chat, on its first turn this session
 
     @property
@@ -119,6 +130,35 @@ class ChatSession:
         else:
             method(self, arg.strip())
         return True
+
+    def attach(self, path) -> bool:
+        """Attach one image for the next message; say why if it can't be."""
+        if self.uploads is None:
+            self.say("Images can't be attached here.")
+            return False
+        try:
+            attachment = self.uploads.attach(path)
+        except ImageError as error:
+            self.say(f"Not attached: {error}.")
+            return False
+        self.pending.append(attachment)
+        self.say(f"Attached {attachment.describe()}.")
+        return True
+
+    def content(self, line: str):
+        """The message to send: the text, plus images attached with /image or named in it."""
+        for path in image_paths(line):
+            self.attach(path)
+        attachments, self.pending = self.pending, []
+        return message_content(line, attachments)
+
+    @command("image", usage="/image PATH", summary="attach a PNG or JPG to your next message")
+    def image(self, arg):
+        path = arg.strip().strip('"').strip("'")
+        if not path:
+            self.say("Usage: /image PATH (or just write the image's path in your message)")
+        elif self.attach(path):
+            self.say("It will be sent with your next message.")
 
     @command("help", usage="/help", summary="show this help")
     def help(self, arg):
@@ -198,7 +238,7 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
     say(GREETING)
     with ExitStack() as stack:
         runtime = build_runtime(settings, user, stack, say)
-        session = ChatSession(runtime.chats, thread)
+        session = ChatSession(runtime.chats, thread, uploads=runtime.uploads)
         approver = Approver(preview=runtime.preview,
                             interactive=prompt is None)
         while True:
@@ -214,6 +254,7 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
                 continue
             # Skills reload every turn (local files, cheap), so an approved change is
             # visible from the next message.
-            stream_turn(runtime.agent, line, session.config, reload_skills=True, approver=approver)
+            stream_turn(runtime.agent, session.content(line), session.config, reload_skills=True,
+                        approver=approver)
             if prompt is not None:
                 break

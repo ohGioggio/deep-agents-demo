@@ -456,6 +456,7 @@ Switched to 'park-ideas' (3 turns).
 | `/history` | Show this chat's messages and the agent's replies |
 | `/rename NAME` | Rename this chat |
 | `/delete NAME` | Delete a chat and its history, after asking |
+| `/image PATH` | Attach a PNG or JPG to your next message (or just write its path in the message) |
 | `/help` | Show these commands |
 
 The same operations work from the shell without starting a chat or calling the
@@ -467,6 +468,32 @@ model: `--list-threads`, `--show-thread`, `--rename-thread` and
   conversation, not what the agent remembers about you; use `forget` for that.
 - **A new chat is saved on its first message,** so an empty `/new` leaves nothing behind.
 - **Names** use letters, digits, `.`, `_` and `-` (up to 64 characters).
+
+## Images: show the agent a picture, let it check its own
+
+The chat model must accept images (the NVIDIA `...-vl-...` models do).
+
+- **Attach a PNG or JPG** by writing its path in your message (quote it if it has
+  spaces), or with `/image PATH` before the message:
+
+  ```text
+  You: What's wrong with this chart? C:/Users/me/Desktop/sales.png
+  Attached sales.png (1200x800, 64 KB).
+  ```
+
+- **Checked and kept small:** files are recognised by their contents, not their
+  name; anything else or over 20 MB is refused; images larger than 1568 px are
+  scaled down. A copy is saved to `demo_workspace/uploads/<user>/`, so the agent
+  can open it again later (`/history` shows `[Attached image: ...]`).
+- **The agent checks what it draws.** `read_file` returns images to the model, and
+  the agent is told to open every image or chart it creates and fix it if labels
+  overlap, parts are cut off or it's empty. With a sandbox, it renders with
+  matplotlib, opens the PNG, and re-renders until it looks right.
+- **Only recent images are resent.** Each image costs many tokens on every model
+  call, so only the last three messages with images are sent to the model; older
+  ones become a note with their path, which the agent can open again.
+
+Images live in [`images.py`](src/deep_agents_demo/images.py).
 
 ## Guardrails: risky actions ask first
 
@@ -685,6 +712,7 @@ src/deep_agents_demo/
 ├── tools.py        # tools registry, DISABLED_TOOLS and skill-only tools
 ├── approvals.py    # the approval prompt for paused tool calls
 ├── guardrails.py   # risky actions (dangerous commands, delete, forget) ask first
+├── images.py       # attached PNG/JPG images, and the agent checking images it renders
 ├── sandbox.py      # backend selection: local files, OpenShell or Daytona (lazy)
 └── openshell_backend.py  # OpenShell sandbox backend for Deep Agents
 ```

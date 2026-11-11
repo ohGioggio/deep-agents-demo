@@ -13,3 +13,7 @@ docs/*
 
 # Local diagram sources (see assets/diagrams/README.md)
 assets/diagrams/
+
+# Local research notes and reports
+research_notes/
+reports/

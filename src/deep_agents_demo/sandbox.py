@@ -186,7 +186,8 @@ def sandbox_feature(workdir, openshell_skill=False) -> Feature:
     """Rules for working in a sandbox; with OpenShell, also its skill folder."""
     prompt = (f"You are using a sandbox. Keep code and output under {workdir}; when a skill or "
               f"the user names a path starting with /, put it under {workdir} instead. "
-              "Local /instructions paths contain skills only. ")
+              "Local /instructions paths contain skills and the images the user attached "
+              "(uploads/); create your own files under the workdir. ")
     if openshell_skill:
         # The sandbox skill describes the OpenShell image; offering it without that
         # sandbox misleads the agent (it told users to pip install inside /sandbox).
