@@ -128,10 +128,17 @@ class SkillChange:
     errors: list = field(default_factory=list)
     warnings: list = field(default_factory=list)   # shown in the summary; the user decides
 
+    # Subclasses (agents) change these; class attributes, not dataclass fields.
+    noun = "Skill"
+    main_file = "SKILL.md"
+
     @property
     def description(self) -> str:
         files = self.after or self.before or {}
-        return str(split_skill_md(files.get("SKILL.md", ""))[0].get("description", ""))
+        return str(split_skill_md(files.get(self.main_file, ""))[0].get("description", ""))
+
+    def tools_used(self) -> list[str]:
+        return declared_tools(self.after if self.after is not None else self.before or {})
 
     def _diff_lines(self):
         before, after = self.before or {}, self.after or {}
@@ -154,7 +161,7 @@ class SkillChange:
 
     def where(self) -> str:
         if self.action in ("install", "uninstall"):
-            return f"marketplace skill, for user {self.owner}"
+            return f"marketplace {self.noun.lower()}, for user {self.owner}"
         return "marketplace, shared with everyone" if self.scope == MARKETPLACE else f"user: {self.owner}"
 
     def summary(self) -> str:
@@ -164,11 +171,11 @@ class SkillChange:
             versions = f"v{self.version_from} -> v{self.version_to}"
         else:
             versions = f"new, v{self.version_to}"
-        lines = [f"Skill change requested: {self.action.upper()} {self.name!r} "
+        lines = [f"{self.noun} change requested: {self.action.upper()} {self.name!r} "
                  f"({self.where()}), {versions}"]
         if self.description:
             lines.append(f"  {self.description}")
-        tools = declared_tools(self.after if self.after is not None else self.before or {})
+        tools = self.tools_used()
         if tools:
             lines.append(f"  Tools it uses: {', '.join(tools)}")
         diff = list(self._diff_lines())
@@ -197,6 +204,12 @@ class SkillManager:
     overrides an installed marketplace skill, which overrides a seeded example.
     """
 
+    # Subclasses (agents) change these.
+    noun = "skill"
+    change_type = SkillChange
+    main_file = "SKILL.md"
+    browse_tool = "browse_marketplace"
+
     def __init__(self, store: SkillStore, owner: str, workspace: Path):
         self.store, self.owner = store, owner
         folder = _folder_name(owner)
@@ -220,18 +233,28 @@ class SkillManager:
         skill = self.store.get(scope, self._owner(scope), name)
         return skill if skill and not skill.removed else None
 
+    # hooks ------------------------------------------------------------------------
+    def validate(self, name, files) -> list[str]:
+        return validate(name, files)
+
+    def warnings(self, files) -> list[str]:
+        return warnings(files, self.known_tools)
+
+    def after_apply(self) -> None:
+        self.sync_folder()
+
     # planning (no side effects) -------------------------------------------------
     def _change(self, action, name, after, errors=(), scope=USER):
         current = self.store.get(scope, self._owner(scope), name)
         live = current if current and not current.removed else None
-        change = SkillChange(action, name, self.owner, scope,
+        change = self.change_type(action, name, self.owner, scope,
                              before=live.files if live else None, after=after,
                              version_from=live.version if live else None,
                              version_to=(current.version + 1) if current else 1,
                              errors=list(errors))
         if after is not None and not change.errors:
-            change.errors = validate(name, after)
-            change.warnings = warnings(after, self.known_tools)
+            change.errors = self.validate(name, after)
+            change.warnings = self.warnings(after)
         return change
 
     def _tool_errors(self, tools):
@@ -248,8 +271,8 @@ class SkillManager:
 
     def plan_create(self, name, description, instructions, files=None, scope=USER, tools=None):
         if self._live(name, scope):
-            return self._change("create", name, None, [f"a {scope} skill named {name!r} already "
-                                                       "exists; use update_skill"], scope)
+            return self._change("create", name, None, [f"a {scope} {self.noun} named {name!r} already "
+                                                       f"exists; use update_{self.noun}"], scope)
         extra = {"allowed-tools": " ".join(dict.fromkeys(tools))} if tools else None
         after = {**(files or {}), "SKILL.md": render_skill_md(name, description, instructions, extra)}
         return self._change("create", name, after, self._tool_errors(tools), scope=scope)
@@ -258,8 +281,8 @@ class SkillManager:
                     scope=USER, tools=None):
         current = self._live(name, scope)
         if current is None:
-            return self._change("update", name, None, [f"no {scope} skill named {name!r}; use "
-                                                       "create_skill"], scope)
+            return self._change("update", name, None, [f"no {scope} {self.noun} named {name!r}; use "
+                                                       f"create_{self.noun}"], scope)
         after = dict(current.files)
         if description is not None or instructions is not None or tools is not None:
             front, body = split_skill_md(after["SKILL.md"])
@@ -280,7 +303,7 @@ class SkillManager:
 
     def plan_remove(self, name, scope=USER):
         if self._live(name, scope) is None:
-            return self._change("remove", name, None, [f"no {scope} skill named {name!r}"], scope)
+            return self._change("remove", name, None, [f"no {scope} {self.noun} named {name!r}"], scope)
         return self._change("remove", name, None, scope=scope)
 
     def plan_restore(self, name, version, scope=USER):
@@ -304,46 +327,45 @@ class SkillManager:
         """Copy one of the user's skills to the marketplace (a new skill or a new version)."""
         mine = self._live(name, USER)
         if mine is None:
-            return self._change("publish", name, None, [f"no user skill named {name!r} to publish"],
+            return self._change("publish", name, None, [f"no user {self.noun} named {name!r} to publish"],
                                 MARKETPLACE)
         return self._change("publish", name, dict(mine.files), scope=MARKETPLACE)
 
     def plan_install(self, name):
         listed = self._live(name, MARKETPLACE)
         if listed is None:
-            return SkillChange("install", name, self.owner, MARKETPLACE,
-                               errors=[f"the marketplace has no skill named {name!r}; see browse_marketplace"])
+            return self.change_type("install", name, self.owner, MARKETPLACE,
+                                    errors=[f"the marketplace has no {self.noun} named {name!r}; "
+                                            f"see {self.browse_tool}"])
         if name in self.store.installed(self.owner):
-            return SkillChange("install", name, self.owner, MARKETPLACE,
-                               errors=[f"{name!r} is already installed"])
-        change = SkillChange("install", name, self.owner, MARKETPLACE, after=dict(listed.files),
-                             version_to=listed.version)
-        change.errors, change.warnings = validate(name, listed.files), warnings(listed.files)
+            return self.change_type("install", name, self.owner, MARKETPLACE,
+                                    errors=[f"{name!r} is already installed"])
+        change = self.change_type("install", name, self.owner, MARKETPLACE, after=dict(listed.files),
+                                  version_to=listed.version)
+        change.errors, change.warnings = self.validate(name, listed.files), self.warnings(listed.files)
         return change
 
     def plan_uninstall(self, name):
         if name not in self.store.installed(self.owner):
-            return SkillChange("uninstall", name, self.owner, MARKETPLACE,
-                               errors=[f"{name!r} is not installed"])
+            return self.change_type("uninstall", name, self.owner, MARKETPLACE,
+                                    errors=[f"{name!r} is not installed"])
         listed = self.store.get(MARKETPLACE, "", name)
-        return SkillChange("uninstall", name, self.owner, MARKETPLACE,
-                           before=dict(listed.files) if listed else {},
+        return self.change_type("uninstall", name, self.owner, MARKETPLACE,
+                                before=dict(listed.files) if listed else {},
                            version_from=listed.version if listed else None)
 
     def plan(self, tool_name, args) -> SkillChange | None:
         """The change a gated tool call would make, or None for other tools."""
-        planners = {"create_skill": self.plan_create, "update_skill": self.plan_update,
-                    "remove_skill": self.plan_remove, "restore_skill": self.plan_restore,
-                    "import_skill": self.plan_import, "publish_skill": self.plan_publish,
-                    "install_skill": self.plan_install, "uninstall_skill": self.plan_uninstall}
+        verbs = ("create", "update", "remove", "restore", "import", "publish", "install", "uninstall")
+        planners = {f"{verb}_{self.noun}": getattr(self, f"plan_{verb}") for verb in verbs}
         planner = planners.get(tool_name)
         if planner is None:
             return None
         try:
             return planner(**args)
         except (TypeError, ValueError) as error:  # arguments the model got wrong
-            return SkillChange(tool_name.removesuffix("_skill"), str(args.get("name", "?")),
-                               self.owner, errors=[f"bad arguments: {error}"])
+            return self.change_type(tool_name.removesuffix(f"_{self.noun}"), str(args.get("name", "?")),
+                                    self.owner, errors=[f"bad arguments: {error}"])
 
     # applying ---------------------------------------------------------------------
     def apply(self, change: SkillChange) -> dict:
@@ -363,7 +385,7 @@ class SkillManager:
         else:
             result["version"] = self.store.save(change.scope, self._owner(change.scope), change.name,
                                                 change.after, change.action)
-        self.sync_folder()
+        self.after_apply()
         return {**result, "note": "The change is available from the user's next message."}
 
     def sync_folder(self):
@@ -390,7 +412,7 @@ class SkillManager:
         query = query.lower().strip()
         found = []
         for skill in self.store.list_current(MARKETPLACE, ""):
-            description = str(split_skill_md(skill.files["SKILL.md"])[0].get("description", ""))
+            description = str(split_skill_md(skill.files[self.main_file])[0].get("description", ""))
             if query and query not in skill.name.lower() and query not in description.lower():
                 continue
             found.append({"name": skill.name, "description": description, "version": skill.version,
@@ -481,7 +503,7 @@ class SkillManager:
             except ValueError as error:
                 return json.dumps({"error": str(error)})
             if not versions:
-                return json.dumps({"error": f"no {scope} skill named {name!r}"})
+                return json.dumps({"error": f"no {scope} {self.noun} named {name!r}"})
             return json.dumps([{"version": v.version, "action": v.action, "saved": v.created_at,
                                 "files": sorted(v.files)} for v in versions])
 
