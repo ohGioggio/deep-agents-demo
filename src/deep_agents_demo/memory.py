@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
 
-from deep_agents_demo.agent import Feature
+from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.embeddings import Mem0EmbeddingAdapter
 from deep_agents_demo.memory_policy import find_secrets, redact
 

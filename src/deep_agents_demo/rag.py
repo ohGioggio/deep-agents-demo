@@ -5,8 +5,7 @@ import uuid
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient, models
 
-from deep_agents_demo.agent import Feature
-
+from deep_agents_demo.core.feature import Feature
 
 
 class DocumentIndex:

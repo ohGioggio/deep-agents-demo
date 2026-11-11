@@ -10,13 +10,14 @@ from deepagents.backends.sandbox import BaseSandbox
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from test_memory import FakeMemory
 
-from deep_agents_demo.agent import Feature, approval_configs, build_agent
+from deep_agents_demo.agent import build_agent
 from deep_agents_demo.approvals import NO_HUMAN, Approver
 from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.core.feature import Feature, approval_configs
 from deep_agents_demo.guardrails import Guardrails, risky_command
 from deep_agents_demo.memory import MemoryService, memory_feature
-from test_memory import FakeMemory
 
 RISKY = {
     "rm -rf build/": "recursively",

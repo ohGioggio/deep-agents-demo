@@ -14,20 +14,25 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from deep_agents_demo.agent import build_agent, worker_factory
 from deep_agents_demo.agent_manager import AgentManager
 from deep_agents_demo.agent_registry import AgentRegistry
+from deep_agents_demo.catalog import catalog_feature
 from deep_agents_demo.config import Settings, rate_limiter
+from deep_agents_demo.core.tools import ToolRegistry
 from deep_agents_demo.embeddings import CompatibleEmbeddings
 from deep_agents_demo.guardrails import Guardrails
 from deep_agents_demo.images import Uploads, images_feature
+from deep_agents_demo.memory import (
+    MemoryService,
+    close_memory,
+    file_memory_feature,
+    make_memory,
+    memory_feature,
+)
 from deep_agents_demo.orchestration import orchestration_feature
-from deep_agents_demo.catalog import catalog_feature
-from deep_agents_demo.memory import (MemoryService, close_memory, file_memory_feature, make_memory,
-                                     memory_feature)
 from deep_agents_demo.rag import DocumentIndex, documents_feature
 from deep_agents_demo.sandbox import BackendSetup, make_backend
 from deep_agents_demo.skill_manager import SkillManager
 from deep_agents_demo.skill_store import AGENT_TABLES, SkillStore
 from deep_agents_demo.threads import Chats
-from deep_agents_demo.tools import ToolRegistry
 from deep_agents_demo.workspace import seed_files
 
 

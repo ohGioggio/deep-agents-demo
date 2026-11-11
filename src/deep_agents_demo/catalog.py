@@ -1,7 +1,7 @@
 """Example tools: a fictional 3D asset catalog and the tools that query it."""
 import json
 
-from deep_agents_demo.agent import Feature
+from deep_agents_demo.core.feature import Feature
 
 # Deliberately fictional data, so this example needs only a model API key.
 CATALOG = [

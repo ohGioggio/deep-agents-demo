@@ -2,11 +2,14 @@
 import shlex
 from dataclasses import dataclass
 
-from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse
+from deepagents.backends.protocol import (
+    ExecuteResponse,
+    FileDownloadResponse,
+    FileUploadResponse,
+)
 from deepagents.backends.sandbox import BaseSandbox
 
-from deep_agents_demo.agent import Feature
-
+from deep_agents_demo.core.feature import Feature
 
 # Empties the working directory and removes the sandbox user's own top-level
 # entries in the temp directory. If the working directory lives inside the temp

@@ -9,20 +9,22 @@ from deepagents.backends import CompositeBackend, FilesystemBackend
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
-
-from deep_agents_demo.agent import Feature, build_agent
-from deep_agents_demo.approvals import Approver
-from deep_agents_demo.chat import stream_turn
-from deep_agents_demo.guardrails import Guardrails
-from deep_agents_demo.memory import MemoryService, memory_feature
-from deep_agents_demo.catalog import catalog_feature
-from deep_agents_demo.config import Settings
-from deep_agents_demo.skill_manager import SkillManager, split_skill_md, warnings
-from deep_agents_demo.skill_store import SkillStore
-from deep_agents_demo.tools import CORE, ToolAccess, ToolRegistry, shell_block, tool_name
-from deep_agents_demo.workspace import SEED_DIR
 from test_guardrails import FakeSandbox
 from test_memory import FakeMemory
+
+from deep_agents_demo.agent import build_agent
+from deep_agents_demo.approvals import Approver
+from deep_agents_demo.catalog import catalog_feature
+from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.config import Settings
+from deep_agents_demo.core.feature import Feature
+from deep_agents_demo.core.middleware import ToolAccess
+from deep_agents_demo.core.tools import CORE, ToolRegistry, shell_block, tool_name
+from deep_agents_demo.guardrails import Guardrails
+from deep_agents_demo.memory import MemoryService, memory_feature
+from deep_agents_demo.skill_manager import SkillManager, split_skill_md, warnings
+from deep_agents_demo.skill_store import SkillStore
+from deep_agents_demo.workspace import SEED_DIR
 
 SEEN = []  # (tool names bound, system prompt) for every model call
 

@@ -12,13 +12,14 @@ from deepagents.backends import FilesystemBackend
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from test_agents import ALL_AGENT, SEEN, Model, agent_from, call
 
-from deep_agents_demo.agent import Feature, build_agent, worker_factory
-from deep_agents_demo.guardrails import Guardrails
+from deep_agents_demo.agent import build_agent, worker_factory
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.core.feature import Feature
+from deep_agents_demo.guardrails import Guardrails
 from deep_agents_demo.workspace import SEED_DIR
-from test_agents import ALL_AGENT, SEEN, Model, agent_from, call
 
 
 class Workspace(unittest.TestCase):
@@ -466,7 +467,12 @@ class WiringTests(Workspace):
 
         from deep_agents_demo import app
         from deep_agents_demo.chat import runners_for
-        from deep_agents_demo.config import ChatSettings, MemorySettings, Paths, Settings
+        from deep_agents_demo.config import (
+            ChatSettings,
+            MemorySettings,
+            Paths,
+            Settings,
+        )
         settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
                             memory=MemorySettings(enabled=False), rag_enabled=False,
                             paths=Paths(data=self.root / "data", workspace=self.root / "ws",

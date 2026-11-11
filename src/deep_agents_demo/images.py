@@ -20,7 +20,7 @@ from pathlib import Path
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 
-from deep_agents_demo.agent import Feature
+from deep_agents_demo.core.feature import Feature
 
 MAX_BYTES = 20 * 1024 * 1024   # larger files are refused
 MAX_SIDE = 1568                # longer sides are scaled down to this (pixels)

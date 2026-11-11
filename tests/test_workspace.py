@@ -91,6 +91,7 @@ class FeatureAssemblyTests(unittest.TestCase):
 
     def build(self, features, **kwargs):
         from unittest.mock import patch
+
         import deep_agents_demo.agent as agent_module
         with patch.object(agent_module, "create_deep_agent") as create:
             agent_module.build_agent(None, None, object(), features, **kwargs)
@@ -103,8 +104,8 @@ class FeatureAssemblyTests(unittest.TestCase):
             self.assertEqual(kwargs["skills"], expected)
 
     def test_tools_middleware_and_researcher_come_from_features(self):
-        from deep_agents_demo.agent import Feature
         from deep_agents_demo.catalog import catalog_feature
+        from deep_agents_demo.core.feature import Feature
         search_docs, remember, marker = _tool("search_docs"), _tool("remember"), object()
         kwargs = self.build([catalog_feature(),
                              Feature("memory", tools=(remember,), middleware=(marker,)),
@@ -131,7 +132,8 @@ class FeatureAssemblyTests(unittest.TestCase):
 
 class PromptTests(unittest.TestCase):
     def test_sections_come_in_feature_order_between_identity_and_closing(self):
-        from deep_agents_demo.agent import CLOSING, IDENTITY, Feature
+        from deep_agents_demo.agent import CLOSING, IDENTITY
+        from deep_agents_demo.core.feature import Feature
         prompt = system_prompt([Feature("a", prompt="FIRST. "), Feature("b", prompt="SECOND. ")])
         self.assertTrue(prompt.startswith(IDENTITY))
         self.assertTrue(prompt.endswith(CLOSING))

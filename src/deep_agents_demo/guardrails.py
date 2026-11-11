@@ -15,7 +15,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from deep_agents_demo.agent import Feature
+from deep_agents_demo.core.feature import Feature
 
 # (pattern, why it is risky). Patterns are matched case-sensitively on the whole
 # command, so they also catch risky parts of a pipeline or a `&&` chain.

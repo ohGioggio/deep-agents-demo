@@ -196,7 +196,9 @@ class Runner:
 
     # one run of one agent -------------------------------------------------------------
     def _invoke(self, graph, text: str, thread_id: str, label=None) -> str:
-        from deep_agents_demo.chat import stream_turn  # chat.py imports the app, which imports us
+        from deep_agents_demo.chat import (
+            stream_turn,  # chat.py imports the app, which imports us
+        )
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
         try:
             stream_turn(graph, text, config, reload_skills=True, approver=self.approver, label=label,
@@ -231,7 +233,6 @@ class Runner:
         except (EOFError, KeyboardInterrupt):
             return False
         return answer.strip().lower().startswith("c")
-
 
 
 class PlanRunner(Runner):
@@ -391,21 +392,8 @@ def start_room(question: str, participants: list[str]) -> str:
 
 
 def orchestration_feature():
-    from deep_agents_demo.agent import Feature  # agent.py imports this module
+    from deep_agents_demo.core.feature import Feature  # agent.py imports this module
     return Feature(name="orchestration", prompt=PLAN_PROMPT + ROOM_PROMPT,
                    tools=(run_plan, start_room))
 
 
-class TaskLimiter(AgentMiddleware):
-    """At most ``limit`` ``task`` calls run at the same time (LangGraph runs a step's
-    tool calls in parallel threads); the rest wait for a free slot."""
-
-    def __init__(self, limit: int):
-        super().__init__()
-        self.slots = threading.BoundedSemaphore(limit)
-
-    def wrap_tool_call(self, request, handler):
-        if request.tool_call["name"] != "task":
-            return handler(request)
-        with self.slots:
-            return handler(request)

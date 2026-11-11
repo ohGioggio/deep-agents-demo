@@ -11,10 +11,18 @@ import json
 import threading
 from pathlib import Path
 
-from deep_agents_demo.agent import Feature
-from deep_agents_demo.agent_files import (CLAUDE_TOOLS, READ_ONLY, _names, normalise_agent_text, parse_agent_md, render_agent_md,
-                                          split_agent_md, translate_tools)
+from deep_agents_demo.agent_files import (
+    CLAUDE_TOOLS,
+    _names,
+    normalise_agent_text,
+    parse_agent_md,
+    render_agent_md,
+    split_agent_md,
+    translate_tools,
+)
+from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.memory_policy import find_secrets, split_findings
+from deep_agents_demo.models.agents import READ_ONLY
 from deep_agents_demo.skill_manager import MARKETPLACE, USER, SkillChange, SkillManager
 
 AGENT_FILE = "agent.md"

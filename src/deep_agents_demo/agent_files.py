@@ -16,12 +16,12 @@ names fall back to the configured model, and fields with no equivalent here are
 kept (for round-trip) but ignored. ``render_agent_md`` writes a file back.
 """
 import re
-from dataclasses import dataclass, field
 
 import yaml
 
+from deep_agents_demo.models.agents import AgentDefinition
+
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-READ_ONLY = ("ls", "read_file", "grep", "glob", "write_todos")
 # Claude Code tool -> this agent's tools.
 CLAUDE_TOOLS = {
     "Read": ("read_file",), "Write": ("write_file",), "Edit": ("edit_file",),
@@ -34,22 +34,6 @@ CLAUDE_MODELS = ("sonnet", "opus", "haiku", "fable")
 USED_FIELDS = ("name", "description", "tools", "disallowedTools", "model", "permissionMode",
                "maxTurns", "skills", "color")
 _FRONTMATTER = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)(.*)\Z", re.DOTALL)
-
-
-@dataclass(frozen=True)
-class AgentDefinition:
-    name: str
-    description: str
-    prompt: str                              # the system prompt (the file's body)
-    tools: tuple | None = None               # this agent's tool names; None = all tools
-    disallowed: tuple = ()
-    model: str | None = None                 # None = the configured chat model
-    skills: tuple = ()                       # skills pinned into its context at start
-    max_turns: int | None = None             # lowers the per-run model-call cap
-    read_only: bool = False                  # permissionMode: plan
-    color: str | None = None
-    source: str = ""                         # "built-in" or the file it came from
-    frontmatter: dict = field(default_factory=dict, compare=False)  # as read, for round-trip
 
 
 def _names(value) -> list[str]:

@@ -18,11 +18,15 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import yaml
-from deepagents.middleware.skills import (MAX_SKILL_DESCRIPTION_LENGTH, MAX_SKILL_FILE_SIZE,
-                                          _FRONTMATTER_PATTERN, _parse_skill_metadata,
-                                          _validate_skill_name)
+from deepagents.middleware.skills import (
+    _FRONTMATTER_PATTERN,
+    MAX_SKILL_DESCRIPTION_LENGTH,
+    MAX_SKILL_FILE_SIZE,
+    _parse_skill_metadata,
+    _validate_skill_name,
+)
 
-from deep_agents_demo.agent import Feature
+from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.memory_policy import find_secrets, split_findings
 from deep_agents_demo.skill_store import SkillStore
 
