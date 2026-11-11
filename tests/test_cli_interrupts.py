@@ -1,0 +1,86 @@
+"""Ctrl+C in the CLI: plans and rooms run under the pause/stop handler when
+interactive, and Ctrl+C keeps its usual meaning in one-shot runs."""
+import signal
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+from deep_agents_demo.config import ChatSettings, Paths, Settings
+from deep_agents_demo.core.approvals import Approvals
+from deep_agents_demo.ui.cli.interrupts import ctrl_c_controls
+from deep_agents_demo.ui.cli.repl import runners_for
+
+
+class Stopping:
+    """A graph whose run is cut short (a second Ctrl+C), so no prompt follows."""
+
+    def stream(self, *args, **kwargs):
+        raise KeyboardInterrupt
+
+
+class Target:
+    def __init__(self):
+        self.pause_requested, self.stopped = False, False
+
+    def request_pause(self):
+        self.pause_requested = True
+
+    def stop(self):
+        self.stopped = True
+
+
+class RunnersForTests(unittest.TestCase):
+    def setUp(self):
+        root = Path(tempfile.mkdtemp())
+        self.settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
+                                 paths=Paths(data=root / "data", workspace=root / "ws",
+                                             checkpoints=root / "data" / "c.sqlite"))
+        self.seen = []
+
+        def make(name, extra=()):
+            self.seen.append(signal.getsignal(signal.SIGINT))
+            return Stopping()
+        make.names = frozenset({"general-purpose", "reviewer", "moderator", "critic", "helper"})
+        self.runtime = SimpleNamespace(make_worker=make, agents=None, chats=SimpleNamespace(user="u"))
+
+    def run_both(self, interactive):
+        runners = runners_for(self.runtime, self.settings, "t", Approvals(), interactive=interactive, quiet=True)
+        plan = runners["run_plan"]({"type": "run_plan", "goal": "g",
+                                     "steps": [{"task": "one", "agent": "general-purpose"}]})
+        room = runners["start_room"]({"type": "start_room", "question": "q",
+                                      "participants": ["critic", "helper"]})
+        return plan, room
+
+    def test_interactive_runs_install_the_handler_and_restore_it(self):
+        before = signal.getsignal(signal.SIGINT)
+        plan, room = self.run_both(interactive=True)
+        self.assertEqual(len(self.seen), 2)
+        self.assertTrue(all(handler is not before for handler in self.seen), "plan and room run under Ctrl+C")
+        self.assertIs(signal.getsignal(signal.SIGINT), before)
+        self.assertEqual(plan["steps"][0]["status"], "stopped")
+        self.assertEqual(room["ended_by"], "stopped")
+
+    def test_one_shot_runs_leave_ctrl_c_alone(self):
+        before = signal.getsignal(signal.SIGINT)
+        self.run_both(interactive=False)
+        self.assertEqual(self.seen, [before, before])
+
+
+class CtrlCControlsTests(unittest.TestCase):
+    def test_a_handled_pause_lets_the_next_press_pause_again(self):
+        target = Target()
+        with ctrl_c_controls(target, interactive=True, label="[plan]"):
+            handler = signal.getsignal(signal.SIGINT)
+            handler(2, None)
+            self.assertTrue(target.pause_requested)
+            target.pause_requested = False  # the runner handled the pause
+            handler(2, None)
+            self.assertEqual((target.pause_requested, target.stopped), (True, False))
+            with self.assertRaises(KeyboardInterrupt):
+                handler(2, None)
+            self.assertTrue(target.stopped)
+
+
+if __name__ == "__main__":
+    unittest.main()

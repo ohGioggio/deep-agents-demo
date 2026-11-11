@@ -223,14 +223,6 @@ class SteppingInTests(RoomBase):
         outcome = self.room(runner)
         self.assertEqual((outcome["ended_by"], outcome["summary"]), ("budget", "The summary."))
 
-    def test_one_shot_ignores_ctrl_c(self):
-        import signal
-        seen = []
-        runner = self.runner(interactive=False)
-        runner.make = lambda name, extra=(): seen.append(signal.getsignal(signal.SIGINT)) or Boom()
-        self.room(runner)
-        self.assertIs(seen[0], signal.getsignal(signal.SIGINT))
-
 
 class ReviewFixTests(RoomBase):
     def test_unknown_participant_fails_before_any_model_call(self):
