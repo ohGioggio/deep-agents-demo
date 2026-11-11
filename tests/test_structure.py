@@ -19,11 +19,11 @@ LAYERS = {"config": 0, "models": 0, "persistence": 1, "providers": 1, "core": 2,
 # Flat modules not moved into a layer yet (by file stem). Each task that moves one
 # removes it; the last move empties the set. A legacy module isn't checked as an
 # importer, and a moved module may still import it until it moves.
-LEGACY = {"approvals", "chat", "cli", "commands"}
+LEGACY = {"chat", "cli", "commands"}
 
 # Moved modules (dotted, under the package) that still print, read input or use
 # signal; emptied once the UI seam is in place.
-IO_PENDING: set[str] = {"features.orchestration.runner", "features.orchestration.plans"}
+IO_PENDING: set[str] = set()
 
 ENTRY = {"__init__", "__main__"}
 

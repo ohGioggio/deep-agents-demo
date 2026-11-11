@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import yaml
 from deepagents.middleware.skills import _FRONTMATTER_PATTERN
 
+from deep_agents_demo.models.approvals import ApprovalRequest
 from deep_agents_demo.persistence.versioned_store import VersionedStore
 
 USER, MARKETPLACE = "user", "marketplace"
@@ -74,6 +75,11 @@ class ItemChange:
         label = "files that will be removed" if self.after is None else "files after the change"
         return f"--- {label} ---\n" + "\n".join(
             f"=== {path} ===\n{text.rstrip()}\n" for path, text in sorted(files.items()))
+
+    def as_request(self) -> ApprovalRequest:
+        """What a front end shows for approval."""
+        return ApprovalRequest(title=f"{self.action}_{self.noun.lower()}", summary=self.summary(),
+                               diff=self.diff(), full=self.full(), errors=tuple(self.errors))
 
     def where(self) -> str:
         if self.action in ("install", "uninstall"):

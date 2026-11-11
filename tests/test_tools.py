@@ -13,7 +13,7 @@ from test_guardrails import FakeSandbox
 from test_memory import FakeMemory
 
 from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.approvals import Approver
+from recording_ui import Approver
 from deep_agents_demo.features.catalog.feature import catalog_feature
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.config import Settings

@@ -12,9 +12,9 @@ from deepagents.backends import FilesystemBackend
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from recording_ui import Approver, RecordingUI
 from test_agents import ALL_AGENT, SEEN, Model, agent_from, call
 
-from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.core.assembly import build_agent, worker_factory
 from deep_agents_demo.core.feature import Feature
@@ -215,16 +215,15 @@ class RunnerBase(Workspace):
         from deep_agents_demo.features.orchestration.plans import PlanRunner
         model = Model(responses=[*responses, reply("UNEXPECTED EXTRA CALL")])
         make = worker_factory(model, InMemorySaver(), self.backend(), features, builtins=BUILTINS, agents=agents)
-        replies, approve = iter(answers), iter(approvals)
-        self.said = []
+        approve = iter(approvals)
+        ui = RecordingUI(answers)
+        self.said = ui.lines
         approver = Approver(ask=lambda _: next(approve), say=lambda *_: None)
-        return PlanRunner(make, approver, thread="t", max_attempts=2, interactive=interactive,
-                          ask=lambda _: next(replies), say=self.said.append)
+        return PlanRunner(make, approver, ui, ui, thread="t", max_attempts=2, interactive=interactive)
 
     def plan(self, runner, *tasks, goal="g"):
-        with patch("builtins.print"):
-            return runner.run({"type": "run_plan", "goal": goal,
-                               "steps": [{"task": t, "agent": a} for t, a in tasks]})
+        return runner.run({"type": "run_plan", "goal": goal,
+                           "steps": [{"task": t, "agent": a} for t, a in tasks]})
 
     def statuses(self, outcome):
         return [s["status"] for s in outcome["steps"]]
@@ -399,19 +398,25 @@ class ReviewFixTests(RunnerBase):
 
     def test_ctrl_c_is_left_alone_when_not_interactive(self):
         import signal
-        seen = []
-        runner = self.runner(interactive=False)
-        runner.make = lambda name, extra=(): seen.append(signal.getsignal(signal.SIGINT)) or Boom()
-        self.plan(runner, ("one", "general-purpose"))
-        self.assertIs(seen[0], signal.getsignal(signal.SIGINT))
+
+        from deep_agents_demo.ui.cli.interrupts import ctrl_c_controls
+        before = signal.getsignal(signal.SIGINT)
+        with ctrl_c_controls(self.runner(interactive=False), interactive=False):
+            self.assertIs(signal.getsignal(signal.SIGINT), before)
 
     def test_second_ctrl_c_stops_now_and_nothing_prints_in_the_handler(self):
+        import signal
+
+        from deep_agents_demo.ui.cli.interrupts import ctrl_c_controls
         runner = self.runner()
-        runner._on_sigint(2, None)
-        self.assertTrue(runner.pause_requested)
-        self.assertEqual(self.said, [])
-        with self.assertRaises(KeyboardInterrupt):
-            runner._on_sigint(2, None)
+        with ctrl_c_controls(runner, interactive=True, label=runner.label):
+            handler = signal.getsignal(signal.SIGINT)
+            handler(2, None)
+            self.assertTrue(runner.pause_requested)
+            self.assertEqual(self.said, [])
+            with self.assertRaises(KeyboardInterrupt):
+                handler(2, None)
+            self.assertTrue(runner.stopped)
 
 
 class WorkerStackTests(Workspace):

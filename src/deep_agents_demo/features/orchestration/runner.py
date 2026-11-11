@@ -1,16 +1,14 @@
-"""What plans and rooms share: running one agent on the chat loop's thread,
-with the budget, approvals and Ctrl+C (pause, then stop)."""
-import os
-import signal
-import sys
-import threading
-
+"""What plans and rooms share: running one agent on the caller's thread, with the
+budget, approvals, and pausing or stopping when the front end asks (``Interruptible``)."""
+from deep_agents_demo.core.ports import EventSink, Interaction
+from deep_agents_demo.core.turns import run_turn
 from deep_agents_demo.features.orchestration.limits import (
     BUDGET_STOP,
     Budget,
     BudgetCap,
     _WrapUp,
 )
+from deep_agents_demo.models.events import NoticeEvent
 
 
 def _last_text(graph, config) -> str:
@@ -32,20 +30,47 @@ RECURSION_LIMIT = 9_999
 
 
 class Runner:
-    """What plan and room runners share: runs agents on the chat loop's thread (so
-    approvals work), within a request budget, with Ctrl+C pausing between turns.
-    ``make(name, extra_middleware)`` builds an agent (``worker_factory``)."""
+    """What plan and room runners share (the Template method: subclasses write
+    ``_run``): runs agents on the caller's thread (so approvals work), within a
+    request budget. ``make(name, extra_middleware)`` builds an agent
+    (``worker_factory``); ``approvals`` decides paused calls; ``interaction`` asks the
+    user; ``sink`` shows the agents' output and the runner's notices.
+
+    Implements ``Interruptible``: ``request_pause()`` hands the user the turn at the
+    next step or turn; ``stop()`` (or a KeyboardInterrupt from the front end) stops."""
 
     label = "[run]"
 
-    def __init__(self, make, approver, *, thread: str, budget: int = 150, interactive: bool = True,
-                 ask=input, say=print):
-        self.make, self.approver, self.thread = make, approver, thread
+    def __init__(self, make, approvals, interaction: Interaction, sink: EventSink, *, thread: str,
+                 budget: int = 150, interactive: bool = True):
+        self.make, self.approvals, self.thread = make, approvals, thread
+        self.interaction, self.sink = interaction, sink
         self.budget_size, self.budget = budget, Budget(budget)
-        self.interactive, self.ask, self.say = interactive, ask, say
-        self.pause_requested = False  # set by Ctrl+C; checked between turns or steps
-        self._previous_handler = None
-        self.quiet = False  # one-shot runs: print nothing but the answer
+        self.interactive = interactive
+        self.pause_requested = False  # checked between turns or steps
+        self.stopped = False          # checked before every agent run
+        self.quiet = False  # one-shot runs: show nothing but the answer
+
+    # Interruptible ------------------------------------------------------------------------
+    def request_pause(self) -> None:
+        self.pause_requested = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def say(self, text: str) -> None:
+        """A notice for the user (e.g. "[plan] step 1/2 - general-purpose")."""
+        if not self.quiet:
+            self.sink.emit(NoticeEvent(text))
+
+    def run(self, request: dict) -> dict:
+        try:
+            return self._run(request)
+        finally:  # a late pause or stop must not reach the next run
+            self.pause_requested = self.stopped = False
+
+    def _run(self, request: dict) -> dict:
+        raise NotImplementedError
 
     def _speaker(self, name: str) -> str:
         """How an agent's output is labelled, e.g. "room / critic"."""
@@ -56,42 +81,14 @@ class Runner:
         names = getattr(self.make, "names", None)
         return name in names if names is not None else self.make(name) is not None
 
-    def _with_ctrl_c(self, fn, *args):
-        """Interactive: Ctrl+C pauses after the current turn (twice: stop now). In one-shot
-        runs nobody can answer a pause, so Ctrl+C keeps its usual meaning."""
-        self._previous_handler = None
-        if self.interactive and threading.current_thread() is threading.main_thread():
-            self._previous_handler = signal.signal(signal.SIGINT, self._on_sigint)
-        try:
-            return fn(*args)
-        finally:
-            self.pause_requested = False  # a late Ctrl+C must not pause the next run
-            if self._previous_handler is not None:
-                signal.signal(signal.SIGINT, self._previous_handler)
-
-    # Ctrl+C -----------------------------------------------------------------------------
-    def _on_sigint(self, _signum, _frame):
-        """First Ctrl+C: pause after this step. Second: stop now. Nothing is printed
-        through Python's stdout here: the handler can fire in the middle of a print."""
-        if self.pause_requested:
-            signal.signal(signal.SIGINT, self._previous_handler or signal.default_int_handler)
-            raise KeyboardInterrupt
-        self.pause_requested = True
-        try:
-            os.write(sys.stderr.fileno(),
-                     f"\n{self.label} Pausing after this one (Ctrl+C again to stop now).\n".encode())
-        except (OSError, ValueError, AttributeError):
-            pass
-
     # one run of one agent -------------------------------------------------------------
     def _invoke(self, graph, text: str, thread_id: str, label=None) -> str:
-        from deep_agents_demo.chat import (
-            stream_turn,  # chat.py imports the app, which imports us
-        )
+        if self.stopped:
+            raise KeyboardInterrupt  # handled like a second Ctrl+C: stop, keep the chat
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
         try:
-            stream_turn(graph, text, config, reload_skills=True, approver=self.approver, label=label,
-                        show=not self.quiet)
+            run_turn(graph, text, config, self.sink, self.approvals.decide, reload_skills=True,
+                     label=label, show=not self.quiet)
             return _last_text(graph, config)
         except (KeyboardInterrupt, _WrapUp):
             raise
@@ -118,7 +115,8 @@ class Runner:
         if not self.interactive:
             return False
         try:
-            answer = self.ask(f"[c]ontinue with another {self.budget.size} or [w]rap up > ")
+            answer = self.interaction.choose(f"[c]ontinue with another {self.budget.size} or [w]rap up > ",
+                                             ("continue", "wrap up"))
         except (EOFError, KeyboardInterrupt):
             return False
-        return answer.strip().lower().startswith("c")
+        return (answer or "").strip().lower().startswith("c")

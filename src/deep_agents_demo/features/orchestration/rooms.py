@@ -86,10 +86,10 @@ def _slug(question: str) -> str:
 class RoomRunner(Runner):
     label = "[room]"
 
-    def __init__(self, make, approver, *, thread: str, max_turns: int = 12, budget: int = 150,
-                 interactive: bool = True, ask=input, say=print, transcripts=None, describe=None):
-        super().__init__(make, approver, thread=thread, budget=budget, interactive=interactive,
-                         ask=ask, say=say)
+    def __init__(self, make, approvals, interaction, sink, *, thread: str, max_turns: int = 12,
+                 budget: int = 150, interactive: bool = True, transcripts=None, describe=None):
+        super().__init__(make, approvals, interaction, sink, thread=thread, budget=budget,
+                         interactive=interactive)
         self.max_turns = max_turns
         self.transcripts = Path(transcripts) if transcripts else None
         self.describe = describe or (lambda name: "")
@@ -147,9 +147,6 @@ class RoomRunner(Runner):
             body += ["## Summary", summary]
         path.write_text("\n\n".join(body) + "\n", encoding="utf-8")
         return str(path)
-
-    def run(self, request: dict) -> dict:
-        return self._with_ctrl_c(self._run, request)
 
     def _run(self, request: dict) -> dict:
         self.budget, self.room_id = Budget(self.budget_size), uuid.uuid4().hex[:8]
@@ -234,10 +231,13 @@ class RoomRunner(Runner):
         or "stopped" (/stop: end without a summary)."""
         self.pause_requested = False
         try:
-            answer = self.ask(f"{self.label} You: (your turn, /end for the summary now, "
-                              "/stop to end without one, Enter to go on) ").strip()
+            answer = self.interaction.ask(f"{self.label} You: (your turn, /end for the summary now, "
+                                          "/stop to end without one, Enter to go on) ")
         except (EOFError, KeyboardInterrupt):
             return "stopped"
+        if answer is None:
+            return "stopped"
+        answer = answer.strip()
         if answer.lower() == "/end":
             return "user"
         if answer.lower() == "/stop":

@@ -10,7 +10,8 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.approvals import NO_HUMAN, Approver
+from deep_agents_demo.models.approvals import NO_HUMAN
+from recording_ui import Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.features.skills.format import (
     read_skill_folder,

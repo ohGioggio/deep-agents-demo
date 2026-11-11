@@ -10,16 +10,17 @@ from deepagents.backends.sandbox import BaseSandbox
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from recording_ui import Approver
 from test_memory import FakeMemory
 
-from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.approvals import NO_HUMAN, Approver
 from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.core.feature import Feature, approval_configs
 from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.features.guardrails.patterns import risky_command
-from deep_agents_demo.features.memory.service import MemoryService
 from deep_agents_demo.features.memory.feature import memory_feature
+from deep_agents_demo.features.memory.service import MemoryService
+from deep_agents_demo.models.approvals import NO_HUMAN
 
 RISKY = {
     "rm -rf build/": "recursively",
@@ -94,6 +95,13 @@ class PreviewTests(unittest.TestCase):
         self.assertIn("Path: /notes.md", guardrails.preview("delete", {"file_path": "/notes.md"}).summary())
         self.assertIn("Memory: Prefers pine trees", guardrails.preview("forget", {"memory_id": "m1"}).summary())
         self.assertIsNone(guardrails.preview("write_file", {}))
+
+    def test_preview_as_request(self):
+        action = Guardrails().preview("execute", {"command": "rm -rf build"})
+        request = action.as_request()
+        self.assertEqual(request.summary, action.summary())
+        self.assertEqual((request.diff, request.full), (action.diff(), action.full()))
+        self.assertEqual(request.title, "execute")
 
 
 class FakeSandbox(BaseSandbox):

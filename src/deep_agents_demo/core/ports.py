@@ -5,16 +5,18 @@ an approval prompt only ``Interaction``. The CLI implements them in ``ui/cli/``;
 a GUI or a server would implement the same three. All are synchronous: a front end
 that isn't runs the engine on a worker thread.
 """
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from deep_agents_demo.models.approvals import ApprovalRequest, Decision
 
 
+@runtime_checkable
 class EventSink(Protocol):
     def emit(self, event) -> None:
         """Show one ``models.events`` event."""
 
 
+@runtime_checkable
 class Interaction(Protocol):
     def decide(self, request: ApprovalRequest) -> Decision:
         """Approve or reject a paused tool call."""
@@ -26,6 +28,7 @@ class Interaction(Protocol):
         """Free text from the user; None if there is nobody to ask."""
 
 
+@runtime_checkable
 class Interruptible(Protocol):
     def request_pause(self) -> None:
         """Pause at the next safe point and hand the user the turn."""

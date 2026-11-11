@@ -5,10 +5,10 @@ from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from recording_ui import Approver, RecordingUI
 from test_agents import ALL_AGENT, SEEN, Model, agent_from, call
 from test_orchestration import Boom, Workspace, reply
 
-from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.core.assembly import worker_factory
 from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
@@ -101,17 +101,16 @@ class RoomBase(Workspace):
         model = Model(responses=[*responses, reply("UNEXPECTED EXTRA CALL")])
         make = worker_factory(model, InMemorySaver(), self.backend(), features, builtins=BUILTINS,
                               agents=[agent_from(CRITIC), agent_from(ALL_AGENT)])
-        replies, approve = iter(answers), iter(approvals)
-        self.said = []
-        return RoomRunner(make, Approver(ask=lambda _: next(approve), say=lambda *_: None),
-                          thread="t", max_turns=max_turns, interactive=interactive,
-                          ask=lambda _: next(replies), say=self.said.append, transcripts=transcripts,
+        approve = iter(approvals)
+        ui = RecordingUI(answers)
+        self.said = ui.lines
+        return RoomRunner(make, Approver(ask=lambda _: next(approve), say=lambda *_: None), ui, ui,
+                          thread="t", max_turns=max_turns, interactive=interactive, transcripts=transcripts,
                           describe=lambda name: {"critic": "Finds weaknesses.", "helper": "Helps."}.get(name, ""))
 
     def room(self, runner, question="Ship it?", participants=("critic", "helper")):
-        with patch("builtins.print"):
-            return runner.run({"type": "start_room", "question": question,
-                               "participants": list(participants)})
+        return runner.run({"type": "start_room", "question": question,
+                           "participants": list(participants)})
 
     def inputs(self):
         return [next(str(m.content) for m in msgs if m.type == "human")

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.features.guardrails.patterns import risky_command
+from deep_agents_demo.models.approvals import ApprovalRequest
 
 
 def _execute_is_risky(request) -> bool:
@@ -41,6 +42,10 @@ class RiskyAction:
         return json.dumps(self.args, indent=2, ensure_ascii=False)
 
     full = diff
+
+    def as_request(self) -> ApprovalRequest:
+        return ApprovalRequest(title=self.name, summary=self.summary(), diff=self.diff(),
+                               full=self.full(), errors=tuple(self.errors))
 
 
 class Guardrails:

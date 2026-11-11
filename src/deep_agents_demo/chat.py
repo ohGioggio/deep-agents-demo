@@ -1,8 +1,8 @@
 """The interactive chat: the input loop, slash commands and streamed output."""
 import sys
 
-from deep_agents_demo.approvals import Approver
 from deep_agents_demo.config import Settings
+from deep_agents_demo.core.approvals import Approvals
 from deep_agents_demo.core.turns import run_turn
 from deep_agents_demo.features.images.uploads import (
     ImageError,
@@ -14,6 +14,8 @@ from deep_agents_demo.persistence.files import safe_folder_name
 from deep_agents_demo.startup.resources import Resources
 from deep_agents_demo.startup.runtime import build_runtime
 from deep_agents_demo.startup.workspace import prepare_workspace
+from deep_agents_demo.ui.cli.interrupts import ctrl_c_controls
+from deep_agents_demo.ui.cli.prompts import CliInteraction
 from deep_agents_demo.ui.cli.render import CliRenderer, format_table, format_transcript
 
 GREETING = ("Ask anything. Ideas: a question about your indexed documents, "
@@ -33,7 +35,7 @@ def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runner
                 label=None, quiet=False, show=None) -> None:
     """One turn printed by the CLI renderer, with ``approver`` deciding paused calls
     (without one, paused calls are rejected: nobody can approve them)."""
-    approver = approver or Approver(interactive=False)
+    approver = approver or Approvals()
     run_turn(agent, prompt, config, CliRenderer(), approver.decide, runners, reload_skills, label,
              quiet, show)
 
@@ -46,22 +48,29 @@ def runners_for(runtime, settings, thread: str, approver, interactive: bool, qui
     from deep_agents_demo.features.orchestration.rooms import RoomRunner
     if runtime.make_worker is None:
         return {}
-    say = (lambda *_args, **_kwargs: None) if quiet else print
-    plans = PlanRunner(runtime.make_worker, approver, thread=thread,
+    interaction, sink = CliInteraction(), CliRenderer()
+    plans = PlanRunner(runtime.make_worker, approver, interaction, sink, thread=thread,
                        max_attempts=settings.plan_max_attempts,
-                       budget=settings.orchestration_max_calls, interactive=interactive, say=say)
+                       budget=settings.orchestration_max_calls, interactive=interactive)
     plans.quiet = quiet
 
     def describe(name):
         agent = runtime.agents.get(name) if runtime.agents is not None else None
         return agent.description if agent else ""
     folder = safe_folder_name(runtime.chats.user)
-    rooms = RoomRunner(runtime.make_worker, approver, thread=thread, max_turns=settings.room_max_turns,
-                       budget=settings.orchestration_max_calls, interactive=interactive,
-                       transcripts=settings.paths.workspace / "rooms" / folder, describe=describe,
-                       say=say)
+    rooms = RoomRunner(runtime.make_worker, approver, interaction, sink, thread=thread,
+                       max_turns=settings.room_max_turns, budget=settings.orchestration_max_calls,
+                       interactive=interactive, transcripts=settings.paths.workspace / "rooms" / folder,
+                       describe=describe)
     rooms.quiet = quiet
-    return {"run_plan": plans.run, "start_room": rooms.run}
+
+    def with_ctrl_c(runner):
+        """Ctrl+C pauses the runner (twice: stops it) while it runs."""
+        def run(request):
+            with ctrl_c_controls(runner, interactive, runner.label):
+                return runner.run(request)
+        return run
+    return {"run_plan": with_ctrl_c(plans), "start_room": with_ctrl_c(rooms)}
 
 
 def command(*names, usage, summary):
@@ -275,8 +284,7 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
             stream_turn(runtime.agent, room_followup(question, names, outcome), session.config,
                         approver=approver, runners=runners, quiet=quiet)
         session.room = run_room
-        approver = Approver(preview=runtime.preview,
-                            interactive=prompt is None)
+        approver = Approvals(runtime.preview, CliInteraction(), interactive=prompt is None)
         while True:
             try:
                 line = prompt if prompt is not None else input(f"\n[{session.current}] You: ").strip()

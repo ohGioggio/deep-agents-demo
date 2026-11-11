@@ -58,17 +58,17 @@ def parse_verdict(text: str) -> tuple[bool, str]:
 class PlanRunner(Runner):
     """Runs a plan on the chat loop's thread: per step a worker, then the reviewer;
     a failed review is retried with its notes; after ``max_attempts`` failures the
-    user decides (retry, skip, stop). Approvals inside workers use ``approver``.
+    user decides (retry, skip, stop). Approvals inside workers use ``approvals``.
 
     Every run gets its own thread (plan id, step, round, attempt), so a later plan or
     a retry never sees earlier messages or an already used-up call cap."""
 
     label = "[plan]"
 
-    def __init__(self, make, approver, *, thread: str, max_attempts: int = 2, budget: int = 150,
-                 interactive: bool = True, ask=input, say=print):
-        super().__init__(make, approver, thread=thread, budget=budget, interactive=interactive,
-                         ask=ask, say=say)
+    def __init__(self, make, approvals, interaction, sink, *, thread: str, max_attempts: int = 2,
+                 budget: int = 150, interactive: bool = True):
+        super().__init__(make, approvals, interaction, sink, thread=thread, budget=budget,
+                         interactive=interactive)
         self.max_attempts = max_attempts
         self.plan_id = ""
 
@@ -76,8 +76,10 @@ class PlanRunner(Runner):
         """Ctrl+C was pressed: a note for the next worker, "" to go on, None to stop."""
         self.pause_requested = False
         try:
-            answer = self.ask("[plan] You: (a note for the next step, /stop, or Enter to go on) ")
+            answer = self.interaction.ask("[plan] You: (a note for the next step, /stop, or Enter to go on) ")
         except (EOFError, KeyboardInterrupt):
+            return None
+        if answer is None:
             return None
         return None if answer.strip().lower() == "/stop" else answer.strip()
 
@@ -128,15 +130,13 @@ class PlanRunner(Runner):
         if not self.interactive:
             return "stop"
         try:
-            answer = self.ask("[r]etry  [s]kip  [x] stop > ").strip().lower()
+            answer = (self.interaction.choose("[r]etry  [s]kip  [x] stop > ", ("retry", "skip", "stop"))
+                      or "").strip().lower()
         except (EOFError, KeyboardInterrupt):
             return "stop"
         return {"r": "retry", "s": "skip"}.get(answer[:1], "stop")
 
     # the plan ------------------------------------------------------------------------------
-    def run(self, request: dict) -> dict:
-        return self._with_ctrl_c(self._run, request)
-
     def _run(self, request: dict) -> dict:
         self.budget = Budget(self.budget_size)  # one budget per plan
         self.plan_id = uuid.uuid4().hex[:8]     # fresh threads for every plan

@@ -4,11 +4,11 @@ from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
-
-from deep_agents_demo.chat import stream_turn
-from test_agents import SEEN, Model, call
+from test_agents import Model, call
 from test_orchestration import RunnerBase, reply
 from test_rooms import RoomBase
+
+from deep_agents_demo.chat import stream_turn
 
 
 class Interrupting:
@@ -40,10 +40,9 @@ class RoomPolishTests(RoomBase):
         self.assertEqual(len(list(folder.glob("*.md"))), 1)
 
     def test_turns_are_labelled_with_the_speaker(self):
-        printed = []
         runner = self.runner(reply("NEXT: critic\nGo."), reply("A point."), reply("END\nDone."))
-        with patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(map(str, a)))):
-            runner.run({"type": "start_room", "question": "q", "participants": ["critic", "helper"]})
+        runner.run({"type": "start_room", "question": "q", "participants": ["critic", "helper"]})
+        printed = self.said  # what the CLI renderer printed for the room
         self.assertTrue(any("[room / critic / model]" in p for p in printed), printed[:10])
         self.assertFalse(any("[main / model]" in p for p in printed))
 
