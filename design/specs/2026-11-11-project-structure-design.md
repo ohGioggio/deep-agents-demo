@@ -2,7 +2,7 @@
 
 Status: idea agreed in chat on 2026-11-11 ("its good, write the design"); the user
 asked that the design use design patterns, decorators, OOP and the SOLID principles.
-Nothing is moved yet.
+Built on 2026-11-11 (plan: `design/plans/2026-11-11-project-structure-plan.md`).
 
 ## Intent
 

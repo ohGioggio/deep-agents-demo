@@ -334,7 +334,7 @@ Design notes: [design/specs/2026-11-10-agent-written-skills-design.md](design/sp
 
 ## Tools: the registry and DISABLED_TOOLS
 
-[`tools.py`](src/deep_agents_demo/tools.py) keeps a registry of every tool the agent
+[`core/tools.py`](src/deep_agents_demo/core/tools.py) keeps a registry of every tool the agent
 can have: Deep Agents' built-ins (files, shell, planning, delegation) and each
 feature's tools, with their group and a one-line description. It's for the code
 and its configuration: there's no chat command to list or switch tools.
@@ -636,7 +636,7 @@ The chat model must accept images (the NVIDIA `...-vl-...` models do).
   call, so only the last three messages with images are sent to the model; older
   ones become a note with their path, which the agent can open again.
 
-Images live in [`images.py`](src/deep_agents_demo/images.py).
+Images live in [`features/images/`](src/deep_agents_demo/features/images/).
 
 ## Guardrails: risky actions ask first
 
@@ -664,7 +664,7 @@ Risky action requested: execute
 - **The patterns are a safety net, not a parser:** a command that only *mentions*
   `rm -rf` inside quotes still asks. The sandbox policy remains the real boundary.
 
-The patterns live in [`guardrails.py`](src/deep_agents_demo/guardrails.py); add a
+The patterns live in [`features/guardrails/patterns.py`](src/deep_agents_demo/features/guardrails/patterns.py); add a
 line to `DANGER` to cover another command.
 
 ## Running code in a sandbox
@@ -834,57 +834,95 @@ EMBEDDING_DIMENSIONS=4096
 
 ## Project layout
 
+The package is layered. A module imports only from its own layer or lower, a
+feature never imports another feature, and only `ui/` talks to the terminal.
+`tests/test_structure.py` checks all three on every run.
+
 ```text
-src/deep_agents_demo/
-├── cli.py          # parses arguments and dispatches; nothing else
-├── config.py       # Settings: every setting, read from the environment once and validated
-├── app.py          # composition root: builds model, memory, documents, sandbox and agent
-├── chat.py         # interactive chat loop, slash commands and streamed output
-├── commands.py     # one-shot commands: index docs, clear sandbox, manage chats
-├── agent.py        # Feature, and build_agent: assembles features into a deep agent
-├── catalog.py      # example tools: fictional asset catalog
-├── workspace.py    # copies seed/ into demo_workspace/ on first run
-├── seed/           # starter memory file and skills (SKILL.md files)
-├── memory.py       # MemoryService (one user's Mem0 access + write policy), tools, auto recall
-├── memory_policy.py  # write policy: detects and redacts secrets
-├── rag.py          # Qdrant document index and the search_docs tool
-├── embeddings.py   # OpenAI / NVIDIA-compatible embedding client
-├── threads.py      # chat management: list, show, rename, delete
-├── skill_manager.py  # agent-written skills: plan, validate, approve, save, tools
-├── skill_store.py  # versioned skill storage in SQLite
-├── tools.py        # tools registry, DISABLED_TOOLS and skill-only tools
-├── agent_files.py  # subagent files in Claude Code's format: parse, translate, write
-├── agent_registry.py  # built-in and folder subagents, precedence, /agents overview
-├── agent_manager.py   # agents written through the chat: approval, versions, marketplace
-├── orchestration.py   # run_plan and the plan runner (review, retries, budget), parallel cap
-├── rooms.py           # start_room, /room and the room runner (moderator, turns, summary)
-├── approvals.py    # the approval prompt for paused tool calls
-├── guardrails.py   # risky actions (dangerous commands, delete, forget) ask first
-├── images.py       # attached PNG/JPG images, and the agent checking images it renders
-├── sandbox.py      # backend selection: local files, OpenShell or Daytona (lazy)
-└── openshell_backend.py  # OpenShell sandbox backend for Deep Agents
+config, models  →  persistence, providers  →  core  →  features  →  startup  →  ui
 ```
 
-Settings flow one way: `cli.py` reads them once into a frozen `Settings`, and
-`app.py` passes each component only the part it needs. No other module reads
-environment variables, so every dependency is visible in a function signature.
+```text
+src/deep_agents_demo/
+├── config.py            # Settings: every setting, read from the environment once and validated
+├── seed/                # starter memory, skills and agents, copied into demo_workspace/
+├── models/              # plain data (frozen dataclasses, to_dict): what crosses to a front end
+│   ├── events.py        #   MessageEvent, TodosEvent, NoticeEvent, FinalAnswerEvent
+│   ├── approvals.py     #   ApprovalRequest, Decision
+│   ├── agents.py        #   AgentDefinition
+│   └── outcomes.py      #   plan steps and outcomes, room outcomes
+├── persistence/         # storage shared by features
+│   ├── versioned_store.py  # versioned items in SQLite (skills and agents), installs
+│   ├── chats.py         #   chats on LangGraph checkpoints: list, messages, rename, delete
+│   └── files.py         #   safe folder names
+├── providers/           # outside services
+│   ├── chat.py          #   the chat model client
+│   ├── embeddings.py    #   OpenAI / NVIDIA-compatible embeddings
+│   ├── rate_limit.py    #   one request cap shared by chat and embeddings
+│   └── registry.py      #   ProviderRegistry: named providers registered with a decorator
+├── core/                # the engine: no terminal, no wiring, no features
+│   ├── feature.py       #   Feature: what a capability adds to the agent
+│   ├── assembly.py      #   build_agent and worker_factory: features into a deep agent
+│   ├── turns.py         #   run_turn: one turn, emitting events, answering pauses
+│   ├── ports.py         #   EventSink, Interaction, Interruptible: how a front end plugs in
+│   ├── approvals.py     #   the rules for paused tool calls (asking goes through Interaction)
+│   ├── items.py         #   ItemManager / ItemChange: plan, approve, version, publish, install
+│   ├── tools.py         #   tools registry, DISABLED_TOOLS, shell equivalents
+│   ├── middleware.py    #   ToolAccess, SubagentCallCap, PinSkills, TaskLimiter
+│   ├── messages.py      #   message helpers (images as a note)
+│   └── secrets.py       #   detects and redacts secrets
+├── features/            # one folder per capability
+│   ├── catalog/         #   example tools: fictional asset catalog
+│   ├── memory/          #   Mem0 service, tools, automatic recall, file memory
+│   ├── documents/       #   Qdrant document index and search_docs
+│   ├── images/          #   attached PNG/JPG images, the image window
+│   ├── guardrails/      #   risky actions (dangerous commands, delete, forget) ask first
+│   ├── skills/          #   SKILL.md format, SkillManager
+│   ├── agents/          #   Claude Code agent files, registry, built-ins, AgentManager
+│   ├── orchestration/   #   run_plan and start_room: runners, budget, plans, rooms
+│   └── sandbox/         #   local files, OpenShell or Daytona (SANDBOXES registry)
+├── startup/             # wiring only
+│   ├── resources.py     #   Resources: opened once per process (Mem0, index, stores, checkpoints)
+│   ├── runtime.py       #   build_runtime: one user's agent on top of Resources; features()
+│   └── workspace.py     #   seeds demo_workspace/
+└── ui/
+    ├── cli/             # the command line
+    │   ├── main.py      #   parses arguments and dispatches (the deep-agents-demo script)
+    │   ├── repl.py      #   chat loop and slash commands
+    │   ├── render.py    #   prints events, chat tables and transcripts
+    │   ├── prompts.py   #   the approval prompt and questions (Interaction over input())
+    │   ├── interrupts.py  # Ctrl+C: pause, then stop, a running plan or room
+    │   └── commands.py  #   one-shot commands: index docs, clear sandbox, manage chats
+    └── gui/             # reserved: how a GUI plugs in (README)
+```
+
+Settings flow one way: `ui/cli/main.py` reads them once into a frozen
+`Settings`, and `startup/` passes each component only the part it needs. No
+other module reads environment variables, so every dependency is visible in a
+function signature. `startup/resources.py` opens what a process shares (one
+Mem0, one document index, the stores, the checkpointer); `build_runtime` builds
+one user's agent on top of it, so a server could serve several users.
 
 **Extending the agent.** Each capability describes itself as a `Feature` (a
 prompt section, tools, middleware, read-only lookups for the `researcher`,
-skill folders), built in its own module: `memory_feature`, `documents_feature`,
-`catalog_feature`, `sandbox_feature`. `build_agent` only assembles features, so:
+skill folders), built in its own folder under `features/`: `memory_feature`,
+`documents_feature`, `catalog_feature`, `sandbox_feature`. `build_agent` only
+assembles features, so:
 
-- **A new capability** is a function returning a `Feature`, added to
-  `features()` in `app.py`.
-- **A new sandbox provider** is a function in `sandbox.py` registered in
-  `PROVIDERS` (and listed in `config.SANDBOX_PROVIDERS`; a test keeps them in sync).
-- **A new slash command** is a `ChatSession` method decorated with `@command`;
-  the lookup and `/help` are built from the decorators.
+- **A new capability** is a folder in `features/` with a function returning a
+  `Feature`, added to `features()` in `startup/runtime.py`.
+- **A new sandbox provider** is a function in `features/sandbox/providers.py`
+  decorated with `@SANDBOXES.register("name")` (and listed in
+  `config.SANDBOX_PROVIDERS`; a test keeps them in step).
+- **A new slash command** is a `ChatSession` method in `ui/cli/repl.py`
+  decorated with `@command`; the lookup and `/help` are built from the decorators.
 - **A tool only a skill needs** is listed in its feature's `skill_only` and in
   that skill's `allowed-tools`; the agent sees it once it reads the skill.
 - **A tool that needs your approval** is listed in its feature's `approvals`,
   either by name (always ask) or as `(name, when)` to ask only when `when(request)`
   says so; the chat loop then pauses before it runs and asks you.
+- **A new front end** (a GUI, a server) implements the three ports in
+  `core/ports.py` and runs turns with `core.turns.run_turn`; see `ui/gui/README.md`.
 
 ## Where data is stored
 
@@ -1028,6 +1066,9 @@ The tests run offline and need no API keys:
   and on Linux (as in CI) also end to end through a real bash, including all of
   Deep Agents' file tools.
 - **Policy:** `policy.yaml` is checked to enforce every rule.
+- **Structure:** the layering rules (imports only downward, no feature importing
+  another, terminal I/O only in `ui/`) and the CLI's exact output, through a
+  recording front end that renders with the real CLI renderer.
 
 Live model calls and real OpenShell or Daytona sandboxes are not covered by the
 suite; the OpenShell policy was verified by hand against a running sandbox.
