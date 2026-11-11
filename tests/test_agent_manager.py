@@ -111,6 +111,26 @@ class ManagerTests(Workspace):
         refused = self.manager.plan_import(str(folder))
         self.assertTrue(any("reviewer2.md" in e and "one at a time" in e for e in refused.errors), refused.errors)
 
+    def test_imported_windows_file_shows_its_tools_and_can_be_updated(self):
+        """Review finding: a BOM or blank first line broke the summary and later updates."""
+        path = self.root / "win.md"
+        path.write_text("﻿\n---\r\nname: win\r\ndescription: From Windows.\r\ntools: Read\r\n---\r\nHi.\r\n",
+                        encoding="utf-8")
+        change = self.manager.plan_import(str(path))
+        self.assertEqual(change.errors, [])
+        self.assertIn("Tools it uses: Read", change.summary())
+        self.manager.apply(change)
+        update = self.manager.plan_update("win", description="Still from Windows.")
+        self.assertEqual(update.errors, [])
+
+    def test_agents_that_no_longer_load_are_reported(self):
+        """Review finding: an agent whose tools disappear vanished without a word."""
+        self.create(name="finder", tools=["search_assets"])
+        later = AgentManager(self.store, "alice", KNOWN - {"search_assets"})
+        _installed, own, notes = later.definitions()
+        self.assertEqual(own, [])
+        self.assertTrue(any("finder" in n for n in notes), notes)
+
     def test_apply_marks_changed_and_rejected_does_not(self):
         bad = self.manager.plan_create("critic", "d", "p", tools=["make_coffee"])
         self.assertFalse(self.manager.apply(bad)["saved"])
@@ -159,6 +179,15 @@ class MarketplaceTests(Workspace):
         self.assertTrue(any("removed from the marketplace" in n for n in notes), notes)
         row = next(r for r in self.bob.overview() if r["name"] == "critic")
         self.assertIn("removed from the marketplace", row["note"])
+
+    def test_list_agents_reports_removed_marketplace_agents(self):
+        """Review finding: in the app list_agents uses the registry, which had no such note."""
+        self.bob.apply(self.bob.plan_install("critic"))
+        self.alice.apply(self.alice.plan_remove("critic", scope="marketplace"))
+        installed, own, _ = self.bob.definitions()
+        self.bob.registry = AgentRegistry.load([], KNOWN, installed=installed, own=own)
+        list_agents = {tool.__name__: tool for tool in self.bob.tools()}["list_agents"]
+        self.assertIn("removed from the marketplace", list_agents())
 
     def test_browse_filters_and_marks_installed(self):
         self.bob.apply(self.bob.plan_install("critic"))

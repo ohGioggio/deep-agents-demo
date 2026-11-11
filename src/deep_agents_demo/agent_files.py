@@ -89,9 +89,28 @@ def resolve_model(value) -> tuple[str | None, str | None]:
     return text, None
 
 
+def normalise_agent_text(text: str) -> str:
+    """The text as this module reads it: no BOM, LF line endings, no leading blank lines."""
+    return text.lstrip("\ufeff").replace("\r\n", "\n").lstrip("\n")
+
+
+def split_agent_md(text: str) -> tuple[dict, str]:
+    """(frontmatter, prompt) of an agent file, read exactly as ``parse_agent_md`` reads it;
+    ({}, text) if it has no readable frontmatter."""
+    text = normalise_agent_text(text)
+    match = _FRONTMATTER.match(text)
+    try:
+        front = yaml.safe_load(match.group(1)) if match else None
+    except yaml.YAMLError:
+        front = None
+    if not isinstance(front, dict):
+        return {}, text
+    return front, match.group(2).strip()
+
+
 def parse_agent_md(text: str, source: str, known_tools) -> tuple[AgentDefinition | None, list[str]]:
     """The agent a file defines (None if it can't be loaded) and notes for the user."""
-    text = text.lstrip("\ufeff").replace("\r\n", "\n").lstrip("\n")
+    text = normalise_agent_text(text)
     match = _FRONTMATTER.match(text)
     if not match:
         return None, [f"{source}: skipped: no YAML frontmatter between --- lines"]

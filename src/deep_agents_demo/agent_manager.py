@@ -11,9 +11,10 @@ import threading
 from pathlib import Path
 
 from deep_agents_demo.agent import Feature
-from deep_agents_demo.agent_files import _names, parse_agent_md, render_agent_md, translate_tools
+from deep_agents_demo.agent_files import (_names, normalise_agent_text, parse_agent_md, render_agent_md,
+                                          split_agent_md, translate_tools)
 from deep_agents_demo.memory_policy import find_secrets, split_findings
-from deep_agents_demo.skill_manager import MARKETPLACE, USER, SkillChange, SkillManager, split_skill_md
+from deep_agents_demo.skill_manager import MARKETPLACE, USER, SkillChange, SkillManager
 
 AGENT_FILE = "agent.md"
 MAX_AGENT_SIZE = 100_000
@@ -32,7 +33,7 @@ class AgentChange(SkillChange):
 
     def tools_used(self) -> list[str]:
         files = self.after if self.after is not None else self.before or {}
-        front = split_skill_md(files.get(AGENT_FILE, ""))[0]
+        front = split_agent_md(files.get(AGENT_FILE, ""))[0]
         return _names(front["tools"]) if front.get("tools") else ["all"]
 
 
@@ -119,7 +120,7 @@ class AgentManager(SkillManager):
         if current is None:
             return self._change("update", name, None, [f"no {scope} agent named {name!r}; use "
                                                        "create_agent"], scope)
-        front, body = split_skill_md(current.files[AGENT_FILE])
+        front, body = split_agent_md(current.files[AGENT_FILE])
         if description is not None:
             front["description"] = " ".join(str(description).split())
         front = self._front(front, tools, model, skills)
@@ -143,7 +144,9 @@ class AgentManager(SkillManager):
         agent, notes = parse_agent_md(text, path.name, self.known_tools)
         if agent is None:
             return self.change_type("import", str(path), self.owner, scope, errors=[_note(notes[0])])
-        return self._change("import", agent.name, {AGENT_FILE: text}, scope=scope)
+        # Stored as this module reads it, so updates and summaries see the same file.
+        return self._change("import", agent.name, {AGENT_FILE: normalise_agent_text(text)},
+                            scope=scope)
 
     # the agent's tools ----------------------------------------------------------------
     def tools(self):
@@ -197,8 +200,11 @@ class AgentManager(SkillManager):
 
         def list_agents() -> str:
             """Every subagent you can hand work to: built-in, folders, installed, the user's own."""
-            rows = self.registry.overview() if self.registry is not None else self.overview()
-            return json.dumps(rows)
+            if self.registry is None:
+                return json.dumps(self.overview())
+            # The registry lists what loaded; the notes say what didn't (e.g. an installed
+            # agent removed from the marketplace, or one whose tools no longer exist).
+            return json.dumps({"agents": self.registry.overview(), "notes": self.definitions()[2]})
 
         def agent_history(name: str, scope: str = "user") -> str:
             """The saved versions of one of the user's agents. scope: "user" or "marketplace"."""
@@ -235,15 +241,19 @@ class AgentManager(SkillManager):
         """(installed marketplace agents, the user's own agents, notes)."""
         installed, own, notes = [], [], []
         for item in self.store.list_current(USER, self.owner):
-            agent, _ = parse_agent_md(item.files[AGENT_FILE], "yours", self.known_tools)
+            agent, problems = parse_agent_md(item.files[AGENT_FILE], "yours", self.known_tools)
             if agent:
                 own.append(agent)
+            else:
+                notes.append(f"your agent {item.name!r} can't be loaded: {_note(problems[0])}")
         for name in self.store.installed(self.owner):
             listed = self._live(name, MARKETPLACE)
             if listed is None:
                 notes.append(f"installed agent {name!r} was removed from the marketplace")
                 continue
-            agent, _ = parse_agent_md(listed.files[AGENT_FILE], "marketplace", self.known_tools)
+            agent, problems = parse_agent_md(listed.files[AGENT_FILE], "marketplace", self.known_tools)
             if agent:
                 installed.append(agent)
+            else:
+                notes.append(f"installed agent {name!r} can't be loaded: {_note(problems[0])}")
         return installed, own, notes
