@@ -204,7 +204,7 @@ def reply(text):
     return AIMessage(content=text)
 
 
-class RunnerTests(Workspace):
+class RunnerBase(Workspace):
     def runner(self, *responses, features=(), answers=(), approvals=(), interactive=True, agents=()):
         from deep_agents_demo.orchestration import PlanRunner
         model = Model(responses=[*responses, reply("UNEXPECTED EXTRA CALL")])
@@ -228,6 +228,8 @@ class RunnerTests(Workspace):
         return [next(str(m.content) for m in msgs if m.type == "human")
                 for kind, msgs in SEEN if kind == "messages"]
 
+
+class RunnerTests(RunnerBase):
     def test_parse_verdict(self):
         from deep_agents_demo.orchestration import parse_verdict
         self.assertEqual(parse_verdict("PASS\nok"), (True, "ok"))
@@ -301,6 +303,39 @@ class RunnerTests(Workspace):
         outcome = self.plan(runner, ("remove notes", "general-purpose"))
         self.assertTrue((self.root / "notes.md").exists())
         self.assertEqual(self.statuses(outcome), ["passed"])
+
+
+class BudgetPauseTests(RunnerBase):
+    def ls(self, n):
+        return [call("ls", {"path": "/"}, f"l{i}") for i in range(n)]
+
+    def test_budget_wraps_up_when_not_interactive(self):
+        runner = self.runner(*self.ls(10), interactive=False)
+        runner.budget_size = 3
+        outcome = self.plan(runner, ("one", "general-purpose"), ("two", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["stopped", "stopped"])
+        self.assertTrue(all("budget used up" in s["notes"] for s in outcome["steps"]))
+        self.assertLessEqual(len([k for k, _ in SEEN if k == "messages"]), 3)
+
+    def test_budget_continue_when_asked(self):
+        runner = self.runner(*self.ls(3), reply("done"), reply("PASS\nok"), answers=["c"])
+        runner.budget_size = 3
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["passed"])
+        self.assertGreater(runner.budget.used, 3)
+
+    def test_pause_note_reaches_the_next_worker(self):
+        runner = self.runner(reply("done"), reply("PASS\nok"), answers=["use pytest"])
+        runner.pause_requested = True
+        self.plan(runner, ("one", "general-purpose"))
+        self.assertIn("Note from the user: use pytest", self.inputs()[0])
+
+    def test_pause_stop(self):
+        runner = self.runner(answers=["/stop"])
+        runner.pause_requested = True
+        outcome = self.plan(runner, ("one", "general-purpose"), ("two", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["stopped", "stopped"])
+        self.assertEqual([k for k, _ in SEEN if k == "messages"], [])
 
 
 if __name__ == "__main__":

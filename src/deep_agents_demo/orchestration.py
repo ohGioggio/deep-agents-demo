@@ -7,10 +7,12 @@
   resumes the tool with the outcome.
 """
 import json
+import signal
 import threading
 from dataclasses import dataclass
 
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, hook_config
+from langchain_core.messages import AIMessage
 from langgraph.types import interrupt
 
 PLAN_PROMPT = (
@@ -39,6 +41,52 @@ def run_plan(goal: str, steps: list[dict]) -> str:
     outcome = interrupt({"type": "run_plan", "goal": goal,
                          "steps": [{"task": s.task, "agent": s.agent} for s in plan]})
     return json.dumps(outcome)
+
+
+class Budget:
+    """Model calls one plan may make, shared by all its workers and reviewers."""
+
+    def __init__(self, size: int):
+        self.size, self.used = size, 0
+        self.lock = threading.Lock()
+        self.limit = size
+
+    @property
+    def left(self) -> int:
+        return max(0, self.limit - self.used)
+
+    def spend(self) -> bool:
+        """Count one call; False if the budget was already used up."""
+        with self.lock:
+            if self.used >= self.limit:
+                return False
+            self.used += 1
+            return True
+
+    def extend(self) -> None:
+        with self.lock:
+            self.limit += self.size
+
+
+BUDGET_STOP = "[Stopped: the plan's request budget is used up.]"
+
+
+class BudgetCap(AgentMiddleware):
+    """Ends a worker or reviewer run when its plan's budget is used up."""
+
+    def __init__(self, budget: Budget):
+        super().__init__()
+        self.budget = budget
+
+    @hook_config(can_jump_to=["end"])
+    def before_model(self, state, runtime):
+        if self.budget.spend():
+            return None
+        return {"messages": [AIMessage(content=BUDGET_STOP)], "jump_to": "end"}
+
+
+class _WrapUp(Exception):
+    """The budget is used up and the plan wraps up."""
 
 
 RESULT_LIMIT = 1500   # characters of each step's result in the outcome
@@ -89,6 +137,8 @@ class PlanRunner:
         self.make, self.approver, self.thread = make, approver, thread
         self.max_attempts, self.budget_size = max_attempts, budget
         self.interactive, self.ask, self.say = interactive, ask, say
+        self.budget = Budget(budget)
+        self.pause_requested = False  # set by Ctrl+C; checked before each step
 
     # one run of one agent -------------------------------------------------------------
     def _invoke(self, graph, text: str, thread_id: str) -> str:
@@ -96,6 +146,39 @@ class PlanRunner:
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 80}
         stream_turn(graph, text, config, reload_skills=True, approver=self.approver)
         return _last_text(graph, config)
+
+    def _run_agent(self, name: str, text: str, thread_id: str) -> str:
+        """Run one agent within the budget; when it runs out, ask to continue or wrap up."""
+        while True:
+            result = self._invoke(self.make(name, (BudgetCap(self.budget),)), text, thread_id)
+            if self.budget.left > 0:
+                return result
+            if not self._continue_after_budget():
+                raise _WrapUp
+            self.budget.extend()
+            thread_id += "+"  # run the interrupted attempt again, from a fresh start
+
+    def _continue_after_budget(self) -> bool:
+        message = (f"[plan] The request budget ({self.budget.size} model calls) is used up.")
+        self.say(message)
+        if not self.interactive:
+            return False
+        try:
+            answer = self.ask(f"[c]ontinue with another {self.budget.size} or [w]rap up > ")
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return answer.strip().lower().startswith("c")
+
+    def _pause(self) -> str | None:
+        """Ctrl+C was pressed: a note for the next worker, "" to go on, None to stop."""
+        self.pause_requested = False
+        if not self.interactive:
+            return ""
+        try:
+            answer = self.ask("[plan] You: (a note for the next step, /stop, or Enter to go on) ")
+        except (EOFError, KeyboardInterrupt):
+            return None
+        return None if answer.strip().lower() == "/stop" else answer.strip()
 
     def _worker_input(self, goal, step, number, total, done, review_notes, user_note) -> str:
         parts = [f"Goal: {goal}", f"Step {number} of {total}: {step.task}"]
@@ -123,12 +206,10 @@ class PlanRunner:
         for attempt in range(1, self.max_attempts + 1):
             self.say(f"{label} · {step.agent}")
             base = f"{self.thread}:plan:{number}:{attempt}"
-            result = self._invoke(self.make(step.agent),
-                                  self._worker_input(goal, step, number, total, done, notes, user_note),
-                                  f"{base}:worker")
-            reviewer = self.make("reviewer")
-            verdict = self._invoke(reviewer, self._review_input(goal, step, number, total, result),
-                                   f"{base}:review")
+            result = self._run_agent(step.agent, self._worker_input(goal, step, number, total, done,
+                                                                    notes, user_note), f"{base}:worker")
+            verdict = self._run_agent("reviewer", self._review_input(goal, step, number, total, result),
+                                      f"{base}:review")
             passed, notes = parse_verdict(verdict)
             if passed:
                 self.say(f"{label} ✓ reviewed")
@@ -149,6 +230,21 @@ class PlanRunner:
 
     # the plan ------------------------------------------------------------------------------
     def run(self, request: dict) -> dict:
+        # Ctrl+C pauses after the current step instead of aborting the turn.
+        previous = None
+        if threading.current_thread() is threading.main_thread():
+            def pause(_signum, _frame):
+                self.pause_requested = True
+                self.say("[plan] Pausing after this step...")
+            previous = signal.signal(signal.SIGINT, pause)
+        try:
+            return self._run(request)
+        finally:
+            if previous is not None:
+                signal.signal(signal.SIGINT, previous)
+
+    def _run(self, request: dict) -> dict:
+        self.budget = Budget(self.budget_size)  # one budget per plan
         goal = str(request.get("goal", ""))
         steps = [Step(str(s["task"]), str(s.get("agent") or "general-purpose"))
                  for s in request.get("steps", [])]
@@ -157,7 +253,20 @@ class PlanRunner:
         number = 0
         while number < len(steps):
             step = steps[number]
-            outcome = self._attempts(goal, step, number + 1, len(steps), done, user_note)
+            if self.pause_requested:
+                note = self._pause()
+                if note is None:
+                    done += [StepResult(rest, "stopped", notes="stopped by the user")
+                             for rest in steps[number:]]
+                    break
+                user_note = note or user_note
+            try:
+                outcome = self._attempts(goal, step, number + 1, len(steps), done, user_note)
+            except _WrapUp:
+                done += [StepResult(rest, "stopped",
+                                    notes="budget used up: the plan's request budget ran out")
+                         for rest in steps[number:]]
+                break
             user_note = ""
             if outcome.status == "failed":
                 choice = self._decide(outcome, number + 1, len(steps))
