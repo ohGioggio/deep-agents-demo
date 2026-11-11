@@ -3,9 +3,22 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from deepagents.backends import FilesystemBackend
+from langchain.agents.middleware import ModelCallLimitMiddleware
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage
+from langgraph.checkpoint.memory import InMemorySaver
+
+from deep_agents_demo import agent as agent_module
+from deep_agents_demo.agent import build_agent
 from deep_agents_demo.agent_files import parse_agent_md, render_agent_md, resolve_model, translate_tools
 from deep_agents_demo.agent_registry import AgentRegistry
+from deep_agents_demo.approvals import Approver
+from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.guardrails import Guardrails
+from deep_agents_demo.tools import BUILTIN, tool_name
 from deep_agents_demo.workspace import SEED_DIR
 
 KNOWN = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute",
@@ -144,6 +157,136 @@ class RegistryTests(unittest.TestCase):
         agent, notes = parse_agent_md(text, "seed", KNOWN)
         self.assertIsNotNone(agent, notes)
         self.assertEqual(notes, [])
+
+
+SEEN = []  # every model call: ("tools", [names]) then ("messages", [...])
+
+
+class Model(FakeMessagesListChatModel):
+    def bind_tools(self, tools, **kwargs):
+        SEEN.append(("tools", [tool_name(t) for t in tools]))
+        return self
+
+    def _generate(self, messages, *args, **kwargs):
+        SEEN.append(("messages", list(messages)))
+        return super()._generate(messages, *args, **kwargs)
+
+
+def call(name, args, call_id):
+    return AIMessage(content="", tool_calls=[{"name": name, "id": call_id, "args": args}])
+
+
+def delegate(agent, call_id="t1"):
+    return call("task", {"description": "do the job", "subagent_type": agent}, call_id)
+
+
+def agent_from(text):
+    agent, notes = parse_agent_md(text, "test", frozenset(BUILTIN) | {"search_assets", "triangle_budget"})
+    assert agent is not None, notes
+    return agent
+
+
+ALL_AGENT = "---\nname: helper\ndescription: Helps.\n---\nHelp."
+READ_ONLY_AGENT = "---\nname: planner\ndescription: Plans.\npermissionMode: plan\n---\nPlan."
+
+
+class SubagentTests(unittest.TestCase):
+    def setUp(self):
+        SEEN.clear()
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        shutil.copytree(SEED_DIR / "skills", self.root / "skills")
+
+    def kwargs(self, agents, **options):
+        with patch.object(agent_module, "create_deep_agent") as create:
+            agent_module.build_agent("main-model", None, object(), [], agents=agents, **options)
+        return create.call_args.kwargs
+
+    def spec(self, kwargs, name):
+        return next(s for s in kwargs["subagents"] if s["name"] == name)
+
+    def run_turn(self, *responses, agents=(), features=(), approver=None, **options):
+        model = Model(responses=[*responses, AIMessage(content="done")])
+        backend = FilesystemBackend(root_dir=str(self.root), virtual_mode=True)
+        agent = build_agent(model, InMemorySaver(), backend, features, agents=agents, **options)
+        with patch("builtins.print"):
+            stream_turn(agent, "go", {"configurable": {"thread_id": "t"}},
+                        approver=approver or Approver(interactive=False))
+
+    def subagent_tools(self):
+        """Tool names bound for the subagent's first model call (the main agent's is first)."""
+        return [names for kind, names in SEEN if kind == "tools"][1]
+
+    def test_a_user_agent_is_offered_to_the_main_agent(self):
+        critic = agent_from(CRITIC)
+        spec = self.spec(self.kwargs([critic]), "critic")
+        self.assertEqual((spec["description"], spec["system_prompt"]), ("Finds weaknesses.", "You are a critic."))
+
+    def test_agent_sees_only_its_tools(self):
+        self.run_turn(delegate("critic"), call("write_file", {"file_path": "/x.md", "content": "x"}, "w"),
+                      AIMessage(content="sub done"), agents=[agent_from(CRITIC)])
+        self.assertLessEqual(set(self.subagent_tools()), {"read_file", "grep", "glob", "ls"})
+        self.assertFalse((self.root / "x.md").exists())
+
+    def test_read_only_agent_cannot_write(self):
+        self.run_turn(delegate("planner"), call("write_file", {"file_path": "/x.md", "content": "x"}, "w"),
+                      AIMessage(content="sub done"), agents=[agent_from(READ_ONLY_AGENT)])
+        self.assertNotIn("write_file", self.subagent_tools())
+        self.assertFalse((self.root / "x.md").exists())
+
+    def test_disabled_tools_apply_inside_agents(self):
+        self.run_turn(delegate("helper"), call("write_file", {"file_path": "/x.md", "content": "x"}, "w"),
+                      AIMessage(content="sub done"), agents=[agent_from(ALL_AGENT)], disabled_tools=("write_file",))
+        self.assertNotIn("write_file", self.subagent_tools())
+        self.assertFalse((self.root / "x.md").exists())
+
+    def test_approvals_apply_inside_agents_even_with_bypass(self):
+        bypass = agent_from(ALL_AGENT.replace("description: Helps.", "description: Helps.\npermissionMode: bypassPermissions"))
+        (self.root / "notes.md").write_text("keep")
+
+        def ask(_prompt):
+            raise AssertionError("asked")
+        with self.assertRaisesRegex(AssertionError, "asked"):
+            self.run_turn(delegate("helper"), call("delete", {"file_path": "/notes.md"}, "d"),
+                          AIMessage(content="sub done"), agents=[bypass], features=[Guardrails.feature()],
+                          approver=Approver(ask=ask, say=lambda *_: None))
+        self.assertTrue((self.root / "notes.md").exists())
+
+    def test_overriding_general_purpose_keeps_limits(self):
+        mine = agent_from(ALL_AGENT.replace("name: helper", "name: general-purpose"))
+        names = [s["name"] for s in self.kwargs([mine])["subagents"]]
+        self.assertEqual(names.count("general-purpose"), 1)
+        self.assertEqual(self.spec(self.kwargs([mine]), "general-purpose")["system_prompt"], "Help.")
+        self.run_turn(delegate("general-purpose"), call("write_file", {"file_path": "/x.md", "content": "x"}, "w"),
+                      AIMessage(content="sub done"), agents=[mine], disabled_tools=("write_file",))
+        self.assertFalse((self.root / "x.md").exists())
+
+    def test_call_cap(self):
+        ls = lambda i: call("ls", {"path": "/"}, f"l{i}")
+        self.run_turn(delegate("helper"), ls(1), ls(2), agents=[agent_from(ALL_AGENT)], max_calls=2)
+        calls = [kind for kind, _ in SEEN if kind == "messages"]
+        self.assertEqual(len(calls), 4, "main, two subagent calls (then capped), main")
+
+    def test_max_turns_lowers_cap(self):
+        agent = agent_from(ALL_AGENT.replace("description: Helps.", "description: Helps.\nmaxTurns: 1"))
+        spec = self.spec(self.kwargs([agent], max_calls=25), "helper")
+        caps = [m.run_limit for m in spec["middleware"] if isinstance(m, ModelCallLimitMiddleware)]
+        self.assertEqual(caps, [1])
+        general = self.spec(self.kwargs([agent], max_calls=25), "general-purpose")
+        self.assertEqual([m.run_limit for m in general["middleware"] if isinstance(m, ModelCallLimitMiddleware)], [25])
+
+    def test_skills_are_pinned(self):
+        agent = agent_from(ALL_AGENT.replace("description: Helps.", "description: Helps.\nskills: [scene-planning]"))
+        self.run_turn(delegate("helper"), AIMessage(content="sub done"), agents=[agent])
+        first_sub_call = [m for kind, m in SEEN if kind == "messages"][1]
+        self.assertTrue(any('<skill name="scene-planning"' in str(m.content) for m in first_sub_call))
+
+    def test_model_for_is_used_for_explicit_models(self):
+        explicit = agent_from(ALL_AGENT.replace("description: Helps.", "description: Helps.\nmodel: nvidia/other"))
+        inherit = agent_from(CRITIC)
+        kwargs = self.kwargs([explicit, inherit], model_for=lambda name: f"model:{name}")
+        self.assertEqual(self.spec(kwargs, "helper")["model"], "model:nvidia/other")
+        self.assertEqual(self.spec(kwargs, "critic")["model"], "main-model")
 
 
 if __name__ == "__main__":

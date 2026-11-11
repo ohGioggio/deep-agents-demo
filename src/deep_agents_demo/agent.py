@@ -12,8 +12,10 @@ from dataclasses import dataclass, field
 from deepagents import create_deep_agent
 from deepagents.middleware.filesystem import FilesystemPermission
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import ModelCallLimitMiddleware, TodoListMiddleware
 
+from deep_agents_demo.agent_files import READ_ONLY
+from deep_agents_demo.agent_registry import PinSkills
 from deep_agents_demo.tools import ToolAccess, ToolRegistry, shell_block, tool_name
 
 IDENTITY = (
@@ -97,7 +99,30 @@ def _skip_blocked(config, off):
     return {**config, "when": ask}
 
 
-def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", disabled_tools=()):
+def _spec(agent, *, model, model_for, tools, skill_sources, access, max_calls) -> dict:
+    """A Deep Agents subagent spec for one agent definition.
+
+    Its own limits (tools, read-only, denylist) come on top of everything the main
+    agent has: DISABLED_TOOLS, skill gates and, since ``interrupt_on`` isn't set
+    here, the main agent's approvals. ``permissionMode`` can't loosen any of that.
+    """
+    allowed = (frozenset(READ_ONLY) if agent.read_only
+               else None if agent.tools is None else frozenset(agent.tools))
+    middleware = [ToolAccess(*access, allowed=allowed, denied=frozenset(agent.disallowed)),
+                  ModelCallLimitMiddleware(run_limit=min(max_calls, agent.max_turns or max_calls),
+                                           exit_behavior="end")]
+    if agent.skills:
+        middleware.append(PinSkills(agent.skills))
+    spec = {"name": agent.name, "description": agent.description, "system_prompt": agent.prompt,
+            "model": model_for(agent.model) if agent.model and model_for else model,
+            "skills": skill_sources, "middleware": middleware}
+    if allowed is not None:  # otherwise it inherits the main agent's tools
+        spec["tools"] = [tool for tool in tools if tool_name(tool) in allowed]
+    return spec
+
+
+def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", disabled_tools=(),
+                agents=(), model_for=None, max_calls=25):
     """Assemble a deep agent from features.
 
     ``backend`` is where the file tools act (local files or a sandbox);
@@ -105,6 +130,11 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
     "/instructions" when a sandbox is the default backend). ``disabled_tools``
     are hidden and refused everywhere, subagents included (unknown and core
     names are ignored; ``ToolRegistry.problems`` explains why).
+
+    ``agents`` are ``AgentDefinition``s the main agent can delegate to with ``task``;
+    one named ``general-purpose`` or ``researcher`` replaces the demo's own.
+    ``model_for(model_id)`` builds the model for agents that name one. Every subagent
+    makes at most ``max_calls`` model calls per run.
     """
     features = tuple(features)
     registry = ToolRegistry(features)
@@ -122,9 +152,10 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
     # Our own general-purpose subagent: the default one is built without caller
     # middleware, so it would see disabled and skill-only tools. It inherits the main
     # agent's tools, permissions and approvals.
+    access = (off, registry.skill_only(), registry.requirements())
+    cap = ModelCallLimitMiddleware(run_limit=max_calls, exit_behavior="end")
     general_purpose = {**GENERAL_PURPOSE_SUBAGENT, "model": model, "skills": skill_sources,
-                       "middleware": [ToolAccess(off, registry.skill_only(),
-                                                 registry.requirements())]}
+                       "middleware": [ToolAccess(*access), cap]}
     researcher = [{
         "name": "researcher",
         "description": ("Read-only research helper: looks things up with the available "
@@ -135,13 +166,19 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
         "tools": lookups,
         "model": model,
         # Its lookups are its purpose, so only disabled tools are kept from it.
-        "middleware": [ToolAccess(off)],
+        "middleware": [ToolAccess(off), ModelCallLimitMiddleware(run_limit=max_calls,
+                                                                 exit_behavior="end")],
     }] if lookups else []
-    subagents = [general_purpose, *researcher]
+    own = [_spec(agent, model=model, model_for=model_for, tools=tools, skill_sources=skill_sources,
+                 access=access, max_calls=max_calls) for agent in agents]
+    replaced = {spec["name"] for spec in own}
+    subagents = [spec for spec in (general_purpose, *researcher) if spec["name"] not in replaced]
+    subagents = [*subagents, *own]
     return create_deep_agent(
         model=model,
         tools=tools,
-        system_prompt=system_prompt(features, has_researcher=bool(researcher)),
+        system_prompt=system_prompt(features, has_researcher=any(
+            spec["name"] == "researcher" for spec in subagents)),
         backend=backend,
         # None, not []: any list (even empty) adds Deep Agents' file-memory middleware,
         # whose prompt tells the agent to save memories to files, competing with Mem0.
