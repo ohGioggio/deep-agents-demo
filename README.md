@@ -512,10 +512,40 @@ its description. `/agents` lists them all.
   sandbox skill rule apply inside every subagent; `permissionMode` can't loosen
   them. Each run makes at most `SUBAGENT_MAX_CALLS` model calls (25), counted across
   approval pauses; then it hands back what it has, marked partial.
-- **Built-ins for what comes next:** `reviewer` (checks a step's result, read-only)
-  and `moderator` (runs a discussion between agents) are ready for plans with
-  review and discussion rooms, which are being built
-  ([design](design/specs/2026-11-11-subagents-registry-design.md)).
+- **Built-ins:** `reviewer` (checks a step's result, read-only; used by plans below)
+  and `moderator` (runs a discussion between agents, for the discussion rooms being
+  built next; [design](design/specs/2026-11-11-subagents-registry-design.md)).
+- **At most `SUBAGENT_MAX_PARALLEL` (3) subagents run at once;** extra hand-offs
+  wait. They all share the request limit, so on NVIDIA's free tier parallel work
+  overlaps rather than multiplies speed.
+
+### Plans with a reviewer on every step
+
+For a long task, ask for subagent-driven execution ("do this with subagents, step
+by step"). The agent writes the steps, each with the agent that should do it, and
+hands them to `run_plan`. Then, one step at a time:
+
+```text
+[plan] step 1/3 · general-purpose      the worker does the step (fresh context)
+[plan] step 1/3 passed review          the reviewer replied PASS
+[plan] step 2/3 · tester
+[plan] step 2/3 failed review (attempt 1/2): no test for empty input
+[plan] step 2/3 · tester               the worker tries again, with the notes
+[plan] step 2/3 passed review
+```
+
+- **Every step is reviewed** by the built-in `reviewer` (or your own agent named
+  `reviewer`). A reply without a clear PASS counts as a fail.
+- **A step that fails `PLAN_MAX_ATTEMPTS` (2) reviews stops the plan** and asks
+  `[r]etry  [s]kip  [x] stop`. With `--prompt` it stops.
+- **Ctrl+C pauses after the current step:** type a note for the next step, `/stop`,
+  or press Enter to go on.
+- **A budget:** one plan may make `ORCHESTRATION_MAX_CALLS` (150) model calls; then
+  you're asked to continue (another 150) or wrap up.
+- **The same rules as everywhere:** workers and reviewers have their agent's tools,
+  your approvals, guardrails and `DISABLED_TOOLS`, and can't start plans of their own.
+- **The outcome** lists each step as passed, skipped, failed or stopped, with the
+  reviewer's notes; the agent reports it to you.
 
 ### Agents the agent writes, with your approval
 
@@ -798,6 +828,7 @@ src/deep_agents_demo/
 ├── agent_files.py  # subagent files in Claude Code's format: parse, translate, write
 ├── agent_registry.py  # built-in and folder subagents, precedence, /agents overview
 ├── agent_manager.py   # agents written through the chat: approval, versions, marketplace
+├── orchestration.py   # run_plan and the plan runner (review, retries, budget), parallel cap
 ├── approvals.py    # the approval prompt for paused tool calls
 ├── guardrails.py   # risky actions (dangerous commands, delete, forget) ask first
 ├── images.py       # attached PNG/JPG images, and the agent checking images it renders

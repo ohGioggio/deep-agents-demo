@@ -99,6 +99,17 @@ def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runner
         payload = Command(resume={item.id: answer(item.value) for item in paused})
 
 
+def runners_for(runtime, settings, thread: str, approver, interactive: bool) -> dict:
+    """What answers non-approval pauses in a turn: run_plan's plan runner."""
+    from deep_agents_demo.orchestration import PlanRunner
+    if runtime.make_worker is None:
+        return {}
+    runner = PlanRunner(runtime.make_worker, approver, thread=thread,
+                        max_attempts=settings.plan_max_attempts,
+                        budget=settings.orchestration_max_calls, interactive=interactive)
+    return {"run_plan": runner.run}
+
+
 def command(*names, usage, summary):
     """Register a ChatSession method as a slash command: /name, any aliases, and its help line."""
     def register(method):
@@ -281,8 +292,10 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
                 continue
             # Skills reload every turn (local files, cheap), so an approved change is
             # visible from the next message.
+            runners = runners_for(runtime, settings, thread_id(runtime.chats.user, session.current),
+                                  approver, interactive=prompt is None)
             stream_turn(runtime.agent, session.content(line), session.config, reload_skills=True,
-                        approver=approver)
+                        approver=approver, runners=runners)
             if runtime.refresh():  # an approved agent change: available from the next message
                 session.agents = runtime.agents
                 say("Agents updated.")

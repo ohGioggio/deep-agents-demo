@@ -212,9 +212,9 @@ class PlanRunner:
                                       f"{base}:review")
             passed, notes = parse_verdict(verdict)
             if passed:
-                self.say(f"{label} ✓ reviewed")
+                self.say(f"{label} passed review")
                 return StepResult(step, "passed", result, notes)
-            self.say(f"{label} ✗ attempt {attempt}/{self.max_attempts}: {notes}")
+            self.say(f"{label} failed review (attempt {attempt}/{self.max_attempts}): {notes}")
         return StepResult(step, "failed", result, notes)
 
     def _decide(self, outcome: StepResult, number: int, total: int) -> str:

@@ -246,14 +246,14 @@ class RunnerTests(RunnerBase):
         self.assertIn("result one", self.inputs()[2])
         self.assertIn("Earlier steps:", self.inputs()[2])
         self.assertIn("[plan] step 1/2 · general-purpose", self.said)
-        self.assertTrue(any("✓ reviewed" in s for s in self.said), self.said)
+        self.assertTrue(any("step 1/2 passed review" in s for s in self.said), self.said)
 
     def test_retry_after_fail_then_pass(self):
         runner = self.runner(reply("v1"), reply("FAIL\nadd tests"), reply("v2"), reply("PASS\ngood"))
         outcome = self.plan(runner, ("do it", "general-purpose"))
         self.assertEqual(self.statuses(outcome), ["passed"])
         self.assertIn("add tests", self.inputs()[2])
-        self.assertTrue(any("✗ attempt 1/2: add tests" in s for s in self.said), self.said)
+        self.assertTrue(any("failed review (attempt 1/2): add tests" in s for s in self.said), self.said)
 
     def test_failed_step_asks_and_skip_continues(self):
         runner = self.runner(reply("a"), reply("FAIL\nno"), reply("b"), reply("FAIL\nstill no"),
@@ -336,6 +336,35 @@ class BudgetPauseTests(RunnerBase):
         outcome = self.plan(runner, ("one", "general-purpose"), ("two", "general-purpose"))
         self.assertEqual(self.statuses(outcome), ["stopped", "stopped"])
         self.assertEqual([k for k, _ in SEEN if k == "messages"], [])
+
+
+class WiringTests(Workspace):
+    def test_plan_through_the_runtime(self):
+        from contextlib import ExitStack
+
+        from deep_agents_demo import app
+        from deep_agents_demo.chat import runners_for
+        from deep_agents_demo.config import ChatSettings, MemorySettings, Paths, Settings
+        settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
+                            memory=MemorySettings(enabled=False), rag_enabled=False,
+                            paths=Paths(data=self.root / "data", workspace=self.root / "ws",
+                                        checkpoints=self.root / "data" / "checkpoints.sqlite"))
+        app.prepare_workspace(settings)
+        model = Model(responses=[call("run_plan", {"goal": "greet", "steps": [{"task": "say hi"}]}, "p"),
+                                 reply("hi"), reply("PASS\nfine"), reply("all done")])
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        with patch.object(app, "chat_model", return_value=model):
+            runtime = app.build_runtime(settings, "alice", stack, say=lambda *_: None)
+            approver = Approver(interactive=False)
+            config = {"configurable": {"thread_id": "alice:t"}}
+            with patch("builtins.print"):
+                stream_turn(runtime.agent, "go", config, approver=approver,
+                            runners=runners_for(runtime, settings, "alice:t", approver, interactive=False))
+        last_main_call = [m for kind, m in SEEN if kind == "messages"][-1]
+        result = json.loads([m for m in last_main_call if m.type == "tool"][-1].content)
+        self.assertEqual([s["status"] for s in result["steps"]], ["passed"])
+        self.assertEqual(result["steps"][0]["result"], "hi")
 
 
 if __name__ == "__main__":

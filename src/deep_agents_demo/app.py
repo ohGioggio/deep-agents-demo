@@ -11,13 +11,14 @@ from deepagents.backends import FilesystemBackend
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from deep_agents_demo.agent import build_agent
+from deep_agents_demo.agent import build_agent, worker_factory
 from deep_agents_demo.agent_manager import AgentManager
 from deep_agents_demo.agent_registry import AgentRegistry
 from deep_agents_demo.config import Settings, rate_limiter
 from deep_agents_demo.embeddings import CompatibleEmbeddings
 from deep_agents_demo.guardrails import Guardrails
 from deep_agents_demo.images import Uploads, images_feature
+from deep_agents_demo.orchestration import orchestration_feature
 from deep_agents_demo.catalog import catalog_feature
 from deep_agents_demo.memory import (MemoryService, close_memory, file_memory_feature, make_memory,
                                      memory_feature)
@@ -66,15 +67,16 @@ class Runtime:
     uploads: object = None  # saves images the user attaches
     agents: object = None   # the AgentRegistry the agent was built from
     agent_manager: object = None  # the user's agents; set ``changed`` after an approved change
-    rebuild: object = None  # () -> (agent, AgentRegistry), with the same settings
+    rebuild: object = None  # () -> (agent, AgentRegistry, make_worker), with the same settings
     say: object = print
+    make_worker: object = None  # (name, extra_middleware) -> a standalone agent, for plan runners
 
     def refresh(self) -> bool:
         """After an approved agent change, rebuild so it's available from the next message."""
         if self.agent_manager is None or not self.agent_manager.changed or self.rebuild is None:
             return False
         try:
-            self.agent, self.agents = self.rebuild()
+            self.agent, self.agents, self.make_worker = self.rebuild()
         except Exception as error:  # keep chatting with the agents that worked
             self.say(f"Couldn't rebuild the agents ({error}); the previous ones stay in use. "
                      "It will be tried again after your next message.")
@@ -107,6 +109,7 @@ def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None
         yield skills.feature()
     if agents is not None:
         yield agents.feature()
+    yield orchestration_feature()  # run_plan: subagent-driven execution with review
     if settings.memory.enabled:
         memory = make_memory(settings.paths.data, settings.memory, settings.embeddings,
                              embeddings(settings))
@@ -157,14 +160,16 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
 
     def make_agent():
         agents = load_agents()
+        shared = dict(skills_prefix=setup.skills_prefix, disabled_tools=settings.disabled_tools,
+                      agents=agents.agents(), model_for=lambda name: chat_model(settings, name),
+                      max_calls=settings.subagent_max_calls)
         agent = build_agent(chat_model(settings), saver, setup.backend, enabled,
-                            skills_prefix=setup.skills_prefix,
-                            disabled_tools=settings.disabled_tools, agents=agents.agents(),
-                            model_for=lambda name: chat_model(settings, name),
-                            max_calls=settings.subagent_max_calls)
-        return agent, agents
+                            max_parallel=settings.subagent_max_parallel, **shared)
+        # Plan workers and reviewers: the same agents and limits, run by the chat loop.
+        make = worker_factory(chat_model(settings), saver, setup.backend, enabled, **shared)
+        return agent, agents, make
 
-    agent, agents = make_agent()
+    agent, agents, make = make_agent()
     for warning in agents.warnings:
         say(f"Agents: {warning}")
 
@@ -173,7 +178,8 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
 
     return Runtime(agent=agent, chats=Chats(saver, agent, user), preview=preview,
                    uploads=Uploads(settings.paths.workspace, user, setup.skills_prefix),
-                   agents=agents, agent_manager=my_agents, rebuild=make_agent, say=say)
+                   agents=agents, agent_manager=my_agents, rebuild=make_agent, say=say,
+                   make_worker=make)
 
 
 def history_runtime(settings: Settings, user: str, stack: ExitStack) -> Runtime:
