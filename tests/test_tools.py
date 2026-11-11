@@ -19,7 +19,7 @@ from deep_agents_demo.catalog import catalog_feature
 from deep_agents_demo.config import Settings
 from deep_agents_demo.skill_manager import SkillManager, split_skill_md, warnings
 from deep_agents_demo.skill_store import SkillStore
-from deep_agents_demo.tools import CORE, ToolRegistry, shell_block, tool_name
+from deep_agents_demo.tools import CORE, ToolAccess, ToolRegistry, shell_block, tool_name
 from deep_agents_demo.workspace import SEED_DIR
 from test_guardrails import FakeSandbox
 from test_memory import FakeMemory
@@ -258,6 +258,55 @@ class AccessTests(unittest.TestCase):
     def test_agent_is_told_which_skills_need_a_disabled_tool(self):
         self.run_turn(disabled=("triangle_budget",))
         self.assertIn("scene-planning (needs triangle_budget)", self.prompts()[0])
+
+
+class FakeRequest:
+    """Just enough of a model or tool-call request for ToolAccess."""
+
+    def __init__(self, tools=(), call=None, state=None):
+        self.tools, self.messages, self.system_message = list(tools), [], None
+        self.state = state or {"messages": []}
+        self.tool_call = {"name": call, "id": "c1", "args": {}}
+
+    def override(self, **changes):
+        clone = FakeRequest(self.tools, self.tool_call["name"], self.state)
+        for key, value in changes.items():
+            setattr(clone, key, value)
+        return clone
+
+
+def visible(access, names):
+    return [tool_name(t) for t in access._request(FakeRequest([{"name": n} for n in names])).tools]
+
+
+def refusal(access, name):
+    message = access.refusal(FakeRequest(call=name))
+    return message.content if message else None
+
+
+class PerAgentAccessTests(unittest.TestCase):
+    ALL = ["ls", "read_file", "write_file", "execute", "search_assets"]
+
+    def test_allowlist_hides_and_refuses_other_tools(self):
+        access = ToolAccess(allowed=frozenset({"read_file"}))
+        self.assertEqual(visible(access, self.ALL), ["read_file"])
+        self.assertIn("isn't available to this agent", refusal(access, "write_file"))
+        self.assertIsNone(refusal(access, "read_file"))
+
+    def test_denylist(self):
+        access = ToolAccess(denied=frozenset({"execute"}))
+        self.assertNotIn("execute", visible(access, self.ALL))
+        self.assertIn("isn't available to this agent", refusal(access, "execute"))
+        self.assertIsNone(refusal(access, "read_file"))
+
+    def test_disabled_beats_allowlist(self):
+        access = ToolAccess(disabled=frozenset({"read_file"}), allowed=frozenset({"read_file"}))
+        self.assertIn("turned off", refusal(access, "read_file"))
+
+    def test_listed_skill_only_tool_is_visible_at_once(self):
+        access = ToolAccess(skill_only=frozenset({"search_assets"}), allowed=frozenset({"search_assets"}))
+        self.assertEqual(visible(access, self.ALL), ["search_assets"])
+        self.assertIsNone(refusal(access, "search_assets"))
 
 
 class SkillToolsTests(unittest.TestCase):

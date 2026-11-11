@@ -141,11 +141,19 @@ class ToolAccess(AgentMiddleware):
     until the agent has read that skill, and the refusal says which file to read.
     """
 
-    def __init__(self, disabled=frozenset(), skill_only=frozenset(), requires=None):
+    def __init__(self, disabled=frozenset(), skill_only=frozenset(), requires=None,
+                 allowed=None, denied=frozenset()):
         super().__init__()
         self.disabled = frozenset(disabled)
-        self.skill_only = frozenset(skill_only) - self.disabled
+        # One agent's own limits: only ``allowed`` (None = no limit), never ``denied``.
+        self.allowed = None if allowed is None else frozenset(allowed)
+        self.denied = frozenset(denied)
+        # A skill-only tool an agent lists explicitly is its job: visible from the start.
+        self.skill_only = frozenset(skill_only) - self.disabled - (self.allowed or frozenset())
         self.requires = dict(requires or {})  # tool -> skill to read before its first use
+
+    def _not_for_this_agent(self, name) -> bool:
+        return name in self.denied or (self.allowed is not None and name not in self.allowed)
 
     @staticmethod
     def _skills(state) -> list:
@@ -199,7 +207,8 @@ class ToolAccess(AgentMiddleware):
 
     def _request(self, request):
         hidden = self.hidden(request.state, request.messages)
-        tools = [tool for tool in request.tools if tool_name(tool) not in hidden]
+        tools = [tool for tool in request.tools
+                 if tool_name(tool) not in hidden and not self._not_for_this_agent(tool_name(tool))]
         note = self._note(request.state)
         if not note:
             return request.override(tools=tools)
@@ -219,6 +228,8 @@ class ToolAccess(AgentMiddleware):
         if name in self.disabled:
             reason = (f"Error: {name} is turned off in this setup. Don't retry it or work around it; "
                       f"tell the user it can be turned back on in DISABLED_TOOLS (.env).")
+        elif self._not_for_this_agent(name):
+            reason = f"Error: {name} isn't available to this agent."
         elif tool:
             reason = (f"Error: this command does what {tool} does, and {tool} is turned off in this "
                       "setup. Don't retry it another way; tell the user it can be turned back on in "
