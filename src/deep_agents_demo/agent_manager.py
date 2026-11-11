@@ -6,9 +6,11 @@ each version is one file, ``agent.md``, in Claude Code's agent format. Nothing i
 written to folders; after an approved change ``changed`` is set and the runtime
 rebuilds the agent, so the change is available from the user's next message.
 """
+import json
 import threading
 from pathlib import Path
 
+from deep_agents_demo.agent import Feature
 from deep_agents_demo.agent_files import _names, parse_agent_md, render_agent_md, translate_tools
 from deep_agents_demo.memory_policy import find_secrets, split_findings
 from deep_agents_demo.skill_manager import MARKETPLACE, USER, SkillChange, SkillManager, split_skill_md
@@ -47,6 +49,7 @@ class AgentManager(SkillManager):
         self.known_tools = frozenset(known_tools)
         self.lock = threading.RLock()
         self.changed = False  # set after an approved change; the runtime rebuilds and clears it
+        self.registry = None  # the AgentRegistry in use, for list_agents (set by the runtime)
 
     # hooks ------------------------------------------------------------------------
     def validate(self, name, files) -> list[str]:
@@ -141,6 +144,90 @@ class AgentManager(SkillManager):
         if agent is None:
             return self.change_type("import", str(path), self.owner, scope, errors=[_note(notes[0])])
         return self._change("import", agent.name, {AGENT_FILE: text}, scope=scope)
+
+    # the agent's tools ----------------------------------------------------------------
+    def tools(self):
+        def done(plan, *args, **kwargs):
+            # Plan and apply under one lock, so parallel calls see each other's results.
+            with self.lock:
+                return json.dumps(self._apply(plan(*args, **kwargs)), default=str)
+
+        def create_agent(name: str, description: str, prompt: str, tools: list[str] | None = None,
+                         model: str | None = None, skills: list[str] | None = None,
+                         scope: str = "user") -> str:
+            """Create a subagent (only when the user asks). name: letters, digits, '-' or '_'.
+            description: what it does and when to use it. prompt: its instructions.
+            tools: existing tool names it may use (omit for all tools). model: a model id
+            (omit to use the configured model). skills: skill names to give it at start.
+            scope: "user" (default) or "marketplace" (only if asked). Needs approval."""
+            return done(self.plan_create, name, description, prompt, tools, model, skills, scope)
+
+        def update_agent(name: str, description: str | None = None, prompt: str | None = None,
+                         tools: list[str] | None = None, model: str | None = None,
+                         skills: list[str] | None = None, scope: str = "user") -> str:
+            """Update a subagent (only when asked). Give only what changes; tools=[] means all
+            tools again. scope: "user" (default) or "marketplace". Needs approval."""
+            return done(self.plan_update, name, description, prompt, tools, model, skills, scope)
+
+        def remove_agent(name: str, scope: str = "user") -> str:
+            """Remove a subagent (only when asked); its history is kept. Needs approval."""
+            return done(self.plan_remove, name, scope)
+
+        def import_agent(path: str, scope: str = "user") -> str:
+            """Import one agent file (Claude Code format, e.g. from .claude/agents) on the
+            user's machine (only when asked). Needs approval."""
+            return done(self.plan_import, path, scope)
+
+        def restore_agent(name: str, version: int, scope: str = "user") -> str:
+            """Restore an earlier version of a subagent (see agent_history). Needs approval."""
+            return done(self.plan_restore, name, version, scope)
+
+        def publish_agent(name: str) -> str:
+            """Publish one of the user's agents to the marketplace (only when asked). Needs approval."""
+            return done(self.plan_publish, name)
+
+        def install_agent(name: str) -> str:
+            """Install a marketplace agent for this user (only when asked; see browse_agents).
+            Needs approval."""
+            return done(self.plan_install, name)
+
+        def uninstall_agent(name: str) -> str:
+            """Uninstall a marketplace agent for this user (only when asked). Needs approval."""
+            return done(self.plan_uninstall, name)
+
+        def list_agents() -> str:
+            """Every subagent you can hand work to: built-in, folders, installed, the user's own."""
+            rows = self.registry.overview() if self.registry is not None else self.overview()
+            return json.dumps(rows)
+
+        def agent_history(name: str, scope: str = "user") -> str:
+            """The saved versions of one of the user's agents. scope: "user" or "marketplace"."""
+            try:
+                versions = self.store.history(scope, self._owner(scope), name)
+            except ValueError as error:
+                return json.dumps({"error": str(error)})
+            if not versions:
+                return json.dumps({"error": f"no {scope} agent named {name!r}"})
+            return json.dumps([{"version": v.version, "action": v.action, "saved": v.created_at}
+                               for v in versions])
+
+        def browse_agents(query: str = "") -> str:
+            """Search the agent marketplace (empty query lists everything)."""
+            return json.dumps(self.browse(query))
+
+        return [create_agent, update_agent, remove_agent, import_agent, restore_agent, publish_agent,
+                install_agent, uninstall_agent, list_agents, agent_history, browse_agents]
+
+    def feature(self) -> Feature:
+        prompt = ("Subagents are agents you can hand work to with task. The user can have their "
+                  "own, in Claude Code's agent format, and install shared ones from a marketplace. "
+                  "Change them only when the user asks: create_agent, update_agent, remove_agent, "
+                  "import_agent, restore_agent, publish_agent, install_agent, uninstall_agent. "
+                  "Their tools must be existing tool names. Each change is shown to the user for "
+                  "approval and is available from the next message. list_agents shows every "
+                  "agent and where it comes from. ")
+        return Feature(name="agents", prompt=prompt, tools=tuple(self.tools()),
+                       approvals=GATED_AGENT_TOOLS)
 
     # what the registry loads ---------------------------------------------------------
     def definitions(self):

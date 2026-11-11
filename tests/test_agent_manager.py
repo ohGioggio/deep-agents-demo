@@ -3,6 +3,20 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from deepagents.backends import FilesystemBackend
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage
+from langgraph.checkpoint.memory import InMemorySaver
+
+from deep_agents_demo import app
+from deep_agents_demo.agent import build_agent
+from deep_agents_demo.agent_registry import AgentRegistry
+from deep_agents_demo.app import prepare_workspace
+from deep_agents_demo.approvals import Approver
+from deep_agents_demo.chat import stream_turn
+from deep_agents_demo.config import ChatSettings, MemorySettings, Paths, Settings
 
 from deep_agents_demo.agent_files import parse_agent_md
 from deep_agents_demo.agent_manager import AGENT_FILE, AgentManager
@@ -151,6 +165,106 @@ class MarketplaceTests(Workspace):
         self.assertEqual([(r["name"], r["installed"]) for r in self.bob.browse("weak")], [("critic", True)])
         self.assertEqual(self.bob.browse("nothing-like-this"), [])
         self.assertEqual(self.bob.browse()[0]["description"], "Finds weaknesses.")
+
+
+SEEN = []  # the messages of every model call
+
+
+class Model(FakeMessagesListChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    def _generate(self, messages, *args, **kwargs):
+        SEEN.append(list(messages))
+        return super()._generate(messages, *args, **kwargs)
+
+
+def call(name, args, call_id):
+    return AIMessage(content="", tool_calls=[{"name": name, "id": call_id, "args": args}])
+
+
+CREATE_HELPER = call("create_agent", {"name": "helper", "description": "Helps with files.",
+                                      "prompt": "You help with files."}, "c1")
+
+
+class ToolTests(Workspace):
+    def setUp(self):
+        super().setUp()
+        self.store = SkillStore(self.root / "agents.sqlite", AGENT_TABLES)
+        self.addCleanup(self.store.close)
+        self.manager = AgentManager(self.store, "alice", KNOWN)
+        (self.root / "skills").mkdir()
+
+    def run_turn(self, *responses, answers=(), interactive=True):
+        model = Model(responses=[*responses, AIMessage(content="done")])
+        backend = FilesystemBackend(root_dir=str(self.root), virtual_mode=True)
+        agent = build_agent(model, InMemorySaver(), backend, [self.manager.feature()])
+        replies = iter(answers)
+        approver = Approver(self.manager.plan, ask=lambda _: next(replies), say=lambda *_: None,
+                            interactive=interactive)
+        with patch("builtins.print"):
+            stream_turn(agent, "go", {"configurable": {"thread_id": "t"}}, approver=approver)
+
+    def test_agent_tools_need_approval(self):
+        self.run_turn(CREATE_HELPER, answers=["r", ""])
+        self.assertIsNone(self.store.get("user", "alice", "helper"))
+        self.run_turn(CREATE_HELPER, interactive=False)
+        self.assertIsNone(self.store.get("user", "alice", "helper"))
+        self.run_turn(CREATE_HELPER, answers=["a"])
+        self.assertIsNotNone(self.store.get("user", "alice", "helper"))
+
+    def test_registry_precedence_with_database(self):
+        folder = self.root / "agents"
+        folder.mkdir()
+        (folder / "critic.md").write_text("---\nname: critic\ndescription: From a file.\n---\nx", encoding="utf-8")
+        self.manager.apply(self.manager.plan_create("critic", "Mine.", "You are a critic."))
+        installed, own, _ = self.manager.definitions()
+        registry = AgentRegistry.load([folder], KNOWN, installed=installed, own=own)
+        self.assertEqual((registry.get("critic").source, registry.get("critic").description), ("yours", "Mine."))
+        row = next(r for r in registry.overview() if r["name"] == "critic")
+        self.assertEqual(row["overrides"], str(folder / "critic.md"))
+
+
+class RuntimeTests(Workspace):
+    def settings(self):
+        return Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
+                        memory=MemorySettings(enabled=False), rag_enabled=False,
+                        paths=Paths(data=self.root / "data", workspace=self.root / "ws",
+                                    checkpoints=self.root / "data" / "checkpoints.sqlite"))
+
+    def runtime(self, model):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        settings = self.settings()
+        prepare_workspace(settings)
+        with patch.object(app, "chat_model", return_value=model):
+            return app.build_runtime(settings, "alice", stack, say=lambda *_: None), settings
+
+    def turn(self, runtime, answer="a"):
+        with patch("builtins.print"), patch.object(app, "chat_model", return_value=self.model):
+            stream_turn(runtime.agent, "go", {"configurable": {"thread_id": "t"}},
+                        approver=Approver(runtime.preview, ask=lambda _: answer, say=lambda *_: None))
+            return runtime.refresh()
+
+    def test_new_agent_is_used_from_the_next_message(self):
+        SEEN.clear()
+        self.model = Model(responses=[CREATE_HELPER, AIMessage(content="created"),
+                                      call("task", {"description": "go", "subagent_type": "helper"}, "t1"),
+                                      AIMessage(content="sub done"), AIMessage(content="done")])
+        runtime, _ = self.runtime(self.model)
+        self.assertTrue(self.turn(runtime))
+        self.assertIsNotNone(runtime.agents.get("helper"))
+        self.turn(runtime)
+        self.assertTrue(any(m and m[0].type == "system" and "You help with files." in str(m[0].content)
+                            for m in SEEN), "the new agent ran")
+
+    def test_rejected_change_does_not_rebuild(self):
+        self.model = Model(responses=[CREATE_HELPER, AIMessage(content="ok")])
+        runtime, _ = self.runtime(self.model)
+        before = runtime.agent
+        self.assertFalse(self.turn(runtime, answer="r"))
+        self.assertIs(runtime.agent, before)
 
 
 if __name__ == "__main__":

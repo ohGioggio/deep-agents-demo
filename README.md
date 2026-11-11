@@ -517,6 +517,43 @@ its description. `/agents` lists them all.
   review and discussion rooms, which are being built
   ([design](design/specs/2026-11-11-subagents-registry-design.md)).
 
+### Agents the agent writes, with your approval
+
+Ask for a new agent ("create an agent called tester that writes unit tests, with
+read and write tools only") or a change to one, and the agent uses an agent tool.
+Like skill changes, each one pauses for your decision with a summary, `[d]iff` and
+`[f]ull file`:
+
+```text
+Agent change requested: CREATE 'tester' (user: demo-user), new, v1
+  Writes unit tests for a module.
+  Tools it uses: read_file, write_file
+  Changes: +7 lines, -0 lines · files: agent.md
+  Checks: format OK · no credentials found
+[a]pprove  [r]eject (with a reason)  [d]iff  [f]ull file >
+```
+
+| Tool | What it does |
+| --- | --- |
+| `create_agent` / `update_agent` | Name, description, instructions, and optionally tools, model and skills; an update changes only what you ask |
+| `remove_agent` / `restore_agent` | Remove (history kept) or bring back an earlier version |
+| `import_agent` | Import one Claude Code agent file from your machine (a folder: one file at a time, each approved) |
+| `publish_agent` / `install_agent` / `uninstall_agent` | Share in the agent marketplace, or activate one for you |
+| `list_agents`, `agent_history`, `browse_agents` | Read-only views |
+
+- **Saved as versions** in `data/agents.sqlite`, one Claude Code–format file per
+  version; remove and restore add versions. Your agents are scope `user`; the
+  marketplace is scope `marketplace`, and an installed agent follows its latest
+  version.
+- **Checked before you're asked:** the file must load, every tool must exist (the
+  agent can't create tools), and no credentials. Unusable changes are rejected
+  with the reasons.
+- **Available from your next message:** after an approved change the agent is
+  rebuilt ("Agents updated."), no restart needed.
+- **Precedence:** your own agents win over installed marketplace agents, which win
+  over folder files, which win over the built-ins. `/agents` shows what overrides
+  what.
+
 ## Images: show the agent a picture, let it check its own
 
 The chat model must accept images (the NVIDIA `...-vl-...` models do).
@@ -760,6 +797,7 @@ src/deep_agents_demo/
 ├── tools.py        # tools registry, DISABLED_TOOLS and skill-only tools
 ├── agent_files.py  # subagent files in Claude Code's format: parse, translate, write
 ├── agent_registry.py  # built-in and folder subagents, precedence, /agents overview
+├── agent_manager.py   # agents written through the chat: approval, versions, marketplace
 ├── approvals.py    # the approval prompt for paused tool calls
 ├── guardrails.py   # risky actions (dangerous commands, delete, forget) ask first
 ├── images.py       # attached PNG/JPG images, and the agent checking images it renders

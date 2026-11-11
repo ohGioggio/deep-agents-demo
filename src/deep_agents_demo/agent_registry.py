@@ -80,10 +80,13 @@ class AgentRegistry:
         self._overrides = dict(overrides or {})  # name -> source it replaced
 
     @classmethod
-    def load(cls, folders, known_tools) -> "AgentRegistry":
+    def load(cls, folders, known_tools, installed=(), own=()) -> "AgentRegistry":
+        """Built-ins, then ``folders`` in order, then ``installed`` marketplace agents, then
+        the user's ``own`` agents from the database: a later source wins on a name clash."""
         agents, warnings, overrides = dict(BUILTIN_AGENTS), [], {}
-        for folder in folders:
-            found, notes = load_folder(Path(folder), known_tools)
+        sources = [load_folder(Path(folder), known_tools) for folder in folders]
+        sources += [({a.name: a for a in installed}, []), ({a.name: a for a in own}, [])]
+        for found, notes in sources:
             warnings += notes
             for name, agent in found.items():
                 if name in agents:

@@ -12,6 +12,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from deep_agents_demo.agent import build_agent
+from deep_agents_demo.agent_manager import AgentManager
 from deep_agents_demo.agent_registry import AgentRegistry
 from deep_agents_demo.config import Settings, rate_limiter
 from deep_agents_demo.embeddings import CompatibleEmbeddings
@@ -23,7 +24,7 @@ from deep_agents_demo.memory import (MemoryService, close_memory, file_memory_fe
 from deep_agents_demo.rag import DocumentIndex, documents_feature
 from deep_agents_demo.sandbox import BackendSetup, make_backend
 from deep_agents_demo.skill_manager import SkillManager
-from deep_agents_demo.skill_store import SkillStore
+from deep_agents_demo.skill_store import AGENT_TABLES, SkillStore
 from deep_agents_demo.threads import Chats
 from deep_agents_demo.tools import ToolRegistry
 from deep_agents_demo.workspace import seed_files
@@ -64,6 +65,17 @@ class Runtime:
     preview: object = None  # describes a paused tool call for the approval prompt
     uploads: object = None  # saves images the user attaches
     agents: object = None   # the AgentRegistry the agent was built from
+    agent_manager: object = None  # the user's agents; set ``changed`` after an approved change
+    rebuild: object = None  # () -> (agent, AgentRegistry), with the same settings
+
+    def refresh(self) -> bool:
+        """After an approved agent change, rebuild so it's available from the next message."""
+        if self.agent_manager is None or not self.agent_manager.changed or self.rebuild is None:
+            return False
+        self.agent, self.agents = self.rebuild()
+        self.chats.agent = self.agent
+        self.agent_manager.changed = False
+        return True
 
 
 def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManager:
@@ -74,12 +86,21 @@ def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManag
     return manager
 
 
-def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None, guardrails=None):
+def agent_manager(settings: Settings, user: str, stack: ExitStack) -> AgentManager:
+    store = SkillStore(settings.paths.data / "agents.sqlite", AGENT_TABLES)
+    stack.callback(store.close)
+    return AgentManager(store, user, frozenset())  # known tools are set once features exist
+
+
+def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None, guardrails=None,
+             agents=None):
     """The features this configuration turns on, in prompt order."""
     yield catalog_feature()  # example tools, always available
     yield images_feature(setup.skills_prefix)  # attached images; check rendered ones
     if skills is not None:
         yield skills.feature()
+    if agents is not None:
+        yield agents.feature()
     if settings.memory.enabled:
         memory = make_memory(settings.paths.data, settings.memory, settings.embeddings,
                              embeddings(settings))
@@ -105,28 +126,44 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
     saver = stack.enter_context(SqliteSaver.from_conn_string(str(settings.paths.checkpoints)))
     setup = sandbox_backend(settings, stack, say)
     skills = skill_manager(settings, user, stack)
+    my_agents = agent_manager(settings, user, stack)
     guardrails = Guardrails()
-    enabled = list(features(settings, user, stack, setup, skills, guardrails))
+    enabled = list(features(settings, user, stack, setup, skills, guardrails, my_agents))
     registry = ToolRegistry(enabled)
     for problem in registry.problems(settings.disabled_tools):
         say(f"Warning: {problem}")
     skills.known_tools = registry.names()  # a skill may only declare tools that exist
-    # Agent folders: AGENT_DIRS in order, then the workspace's agents/ (later wins).
-    agents = AgentRegistry.load([*settings.agent_dirs, settings.paths.workspace / "agents"],
-                                registry.names())
+    my_agents.known_tools = registry.names()  # so may an agent
+
+    def load_agents():
+        # Folders (AGENT_DIRS, then the workspace's agents/), then installed, then the
+        # user's own: a later source wins on a name clash.
+        installed, own, notes = my_agents.definitions()
+        agents = AgentRegistry.load([*settings.agent_dirs, settings.paths.workspace / "agents"],
+                                    registry.names(), installed=installed, own=own)
+        agents.warnings += notes
+        my_agents.registry = agents
+        return agents
+
+    def make_agent():
+        agents = load_agents()
+        agent = build_agent(chat_model(settings), saver, setup.backend, enabled,
+                            skills_prefix=setup.skills_prefix,
+                            disabled_tools=settings.disabled_tools, agents=agents.agents(),
+                            model_for=lambda name: chat_model(settings, name),
+                            max_calls=settings.subagent_max_calls)
+        return agent, agents
+
+    agent, agents = make_agent()
     for warning in agents.warnings:
         say(f"Agents: {warning}")
-    agent = build_agent(chat_model(settings), saver, setup.backend, enabled,
-                        skills_prefix=setup.skills_prefix, disabled_tools=settings.disabled_tools,
-                        agents=agents.agents(), model_for=lambda name: chat_model(settings, name),
-                        max_calls=settings.subagent_max_calls)
 
     def preview(name, args):
-        return skills.plan(name, args) or guardrails.preview(name, args)
+        return skills.plan(name, args) or my_agents.plan(name, args) or guardrails.preview(name, args)
 
     return Runtime(agent=agent, chats=Chats(saver, agent, user), preview=preview,
                    uploads=Uploads(settings.paths.workspace, user, setup.skills_prefix),
-                   agents=agents)
+                   agents=agents, agent_manager=my_agents, rebuild=make_agent)
 
 
 def history_runtime(settings: Settings, user: str, stack: ExitStack) -> Runtime:
