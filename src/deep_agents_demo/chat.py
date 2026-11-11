@@ -222,6 +222,8 @@ class ChatSession:
             self.say(parsed)
             return
         names, question = parsed
+        # The demo's own general-purpose (and researcher, when it exists) aren't in the
+        # registry; the room runner checks every name before any model call.
         built_in = ("general-purpose", "researcher")
         unknown = [n for n in names if n not in built_in
                    and (self.agents is None or self.agents.get(n) is None)]
@@ -316,14 +318,14 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
             """/room: run it, then tell the agent the outcome as an ordinary turn."""
             runners = runners_for(runtime, settings, thread_id(runtime.chats.user, session.current),
                                   approver, interactive=prompt is None)
+            from deep_agents_demo.rooms import room_followup
             outcome = runners["start_room"]({"type": "start_room", "question": question,
                                              "participants": names})
-            stream_turn(runtime.agent,
-                        f"I ran a discussion room. Question: {question}. Participants: "
-                        f"{', '.join(names)}. Summary: {outcome['summary'] or '(none)'}. "
-                        f"Transcript: {outcome['transcript'] or '(not saved)'}. Keep this in mind; "
-                        "reply with one short line.",
-                        session.config, approver=approver, runners=runners)
+            if "summary" not in outcome:  # refused before it started, e.g. an unknown agent
+                say(f"Room not started: {outcome.get('error')}")
+                return
+            stream_turn(runtime.agent, room_followup(question, names, outcome), session.config,
+                        approver=approver, runners=runners)
         session.room = run_room
         approver = Approver(preview=runtime.preview,
                             interactive=prompt is None)

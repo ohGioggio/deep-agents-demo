@@ -166,6 +166,7 @@ class Runner:
         try:
             return fn(*args)
         finally:
+            self.pause_requested = False  # a late Ctrl+C must not pause the next run
             if self._previous_handler is not None:
                 signal.signal(signal.SIGINT, self._previous_handler)
 
