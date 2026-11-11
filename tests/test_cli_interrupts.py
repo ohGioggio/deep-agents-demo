@@ -68,6 +68,19 @@ class RunnersForTests(unittest.TestCase):
 
 
 class CtrlCControlsTests(unittest.TestCase):
+    def test_an_unknown_previous_handler_restores_the_default(self):
+        from unittest.mock import patch
+        calls = []
+
+        def fake_signal(signum, handler):
+            calls.append(handler)
+            return None  # the previous handler wasn't installed from Python
+        with patch("deep_agents_demo.ui.cli.interrupts.signal.signal", side_effect=fake_signal):
+            with ctrl_c_controls(Target(), interactive=True):
+                pass
+        self.assertIsNotNone(calls[-1])
+        self.assertIs(calls[-1], signal.default_int_handler)
+
     def test_a_handled_pause_lets_the_next_press_pause_again(self):
         target = Target()
         with ctrl_c_controls(target, interactive=True, label="[plan]"):

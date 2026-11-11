@@ -51,6 +51,22 @@ class StartupTests(unittest.TestCase):
         self.assertEqual([c.args for c in service.call_args_list],
                          [(self.memory, "alice"), (self.memory, "bob")])
 
+    def test_a_failed_open_closes_what_was_opened(self):
+        stores = []
+        real = resources_module.VersionedStore
+
+        def store(*args, **kwargs):
+            stores.append(real(*args, **kwargs))
+            return stores[-1]
+        with patch.object(resources_module, "VersionedStore", side_effect=store), \
+                patch.object(resources_module, "make_memory", side_effect=RuntimeError("qdrant locked")):
+            with self.assertRaisesRegex(RuntimeError, "qdrant locked"):
+                Resources.open(self.settings)
+        self.assertEqual(len(stores), 2)
+        for opened in stores:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                opened.db.execute("SELECT 1")
+
     def test_resources_close_everything(self):
         resources = Resources.open(self.settings)
         build_runtime(resources, "alice")

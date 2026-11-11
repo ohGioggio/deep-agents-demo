@@ -89,9 +89,12 @@ class ChatSession:
     adding a method.
     """
 
-    def __init__(self, chats: Chats, current: str, ask=input, say=print, uploads=None, agents=None,
+    def __init__(self, chats: Chats, current: str, ask=None, say=None, uploads=None, agents=None,
                  room=None):
-        self.chats, self.current, self.ask, self.say = chats, current, ask, say
+        self.chats, self.current = chats, current
+        # input/print are looked up at each call, not bound once (tests patch them).
+        self.ask = ask or (lambda prompt: input(prompt))
+        self.say = say or (lambda *args, **kwargs: print(*args, **kwargs))
         self.uploads, self.agents = uploads, agents
         self.room = room  # (participants, question) -> runs a room and tells the agent
         self.pending = []  # images attached with /image, sent with the next message

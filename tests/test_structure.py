@@ -113,9 +113,9 @@ class LayerTests(unittest.TestCase):
             if layer_of(module) is None or top == "ui" or module in IO_PENDING:
                 continue
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                        and node.func.id in ("print", "input")):
-                    wrong.append(f"{module}:{node.lineno} calls {node.func.id}()")
+                if isinstance(node, ast.Name) and node.id in ("print", "input"):
+                    # a call, or the function passed on (e.g. ``say=print`` as a default)
+                    wrong.append(f"{module}:{node.lineno} uses {node.id}")
                 elif (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
                         and node.value.id == "signal"):
                     wrong.append(f"{module}:{node.lineno} uses signal.{node.attr}")

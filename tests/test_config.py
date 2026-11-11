@@ -1,4 +1,6 @@
 """Settings, CLI dispatch and the chat entry point."""
+import contextlib
+import io
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -123,8 +125,10 @@ class RunChatTests(unittest.TestCase):
         with patch.object(chat, "build_runtime", return_value=runtime), patch.object(chat, "Resources"), \
                 patch.object(chat, "prepare_workspace"), \
                 patch.object(chat, "stream_turn") as stream, \
-                patch("builtins.print"):
+                patch("builtins.print") as printed, contextlib.redirect_stdout(io.StringIO()) as out:
             chat.run_chat(Settings.from_env({}), "alice", "t1", prompt="/threads")
+        self.assertEqual(out.getvalue(), "", "everything goes through print, which is patched")
+        printed.assert_called()
         stream.assert_not_called()
         runtime.chats.list.assert_called_once()
 

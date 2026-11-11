@@ -56,6 +56,11 @@ def clear_sandbox(backend, workdir, tmpdir="/tmp"):
 
 
 
+def _quiet(*_args, **_kwargs) -> None:
+    """The default for notes: say nothing (a front end passes where they go)."""
+    return None
+
+
 class LazySandbox(BaseSandbox):
     """Connects to the real sandbox on first use, not when the chat starts.
 
@@ -67,8 +72,8 @@ class LazySandbox(BaseSandbox):
     the chat crashing, and the next call tries to connect again.
     """
 
-    def __init__(self, connect, label, say=print):
-        self._connect, self._label, self._say = connect, label, say
+    def __init__(self, connect, label, say=None):
+        self._connect, self._label, self._say = connect, label, say or _quiet
         self._backend = None
 
     @property
@@ -167,7 +172,7 @@ class BackendSetup:
 
 
 
-def make_backend(settings, workspace, data, stack, say=print):
+def make_backend(settings, workspace, data, stack, say=None):
     """Return a ``BackendSetup`` for the configured provider.
 
     Without a sandbox: local files, no prefix, no feature. With one, normal paths
@@ -184,7 +189,7 @@ def make_backend(settings, workspace, data, stack, say=print):
         provider = SANDBOXES.get(settings.provider)
     except KeyError:
         raise ValueError(f"Unknown sandbox provider {settings.provider!r}") from None
-    remote = provider(settings, data, stack, say)
+    remote = provider(settings, data, stack, say or _quiet)
     backend = CompositeBackend(default=remote.backend, routes={"/instructions/": local})
     return BackendSetup(backend, "/instructions",
                         sandbox_feature(remote.workdir, remote.openshell_skill), remote.workdir)

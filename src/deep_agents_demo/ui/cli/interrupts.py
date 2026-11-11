@@ -42,4 +42,5 @@ def ctrl_c_controls(target: Interruptible, interactive: bool, label: str = ""):
     try:
         yield
     finally:
-        signal.signal(signal.SIGINT, previous)
+        # None: the old handler wasn't installed from Python (e.g. embedded); use the default.
+        signal.signal(signal.SIGINT, previous if previous is not None else signal.default_int_handler)

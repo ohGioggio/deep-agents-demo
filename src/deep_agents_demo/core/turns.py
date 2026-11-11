@@ -53,6 +53,7 @@ def stream_once(agent, payload, config, sink, shown=None, label=None) -> list:
     names who is speaking (e.g. "room / critic"; default "main").
     """
     paused, shown = {}, shown if shown is not None else set()
+    silent = isinstance(sink, _Silent)  # build nothing nobody will see
     # Include child updates so delegation/tool calls are observable.
     for namespace, update in agent.stream(payload, config=config, stream_mode="updates",
                                           subgraphs=True):
@@ -70,8 +71,9 @@ def stream_once(agent, payload, config, sink, shown=None, label=None) -> list:
                 if key in shown:
                     continue
                 shown.add(key)
-                sink.emit(message_event(who, node, message))
-            if "todos" in state:
+                if not silent:
+                    sink.emit(message_event(who, node, message))
+            if "todos" in state and not silent:
                 sink.emit(TodosEvent(tuple(state["todos"])))
     return list(paused.values())
 

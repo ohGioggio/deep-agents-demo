@@ -52,6 +52,14 @@ class RenderTests(unittest.TestCase):
     def test_show_false_prints_nothing(self):
         self.assertEqual(printed(show=False), "")
 
+    def test_a_silent_turn_builds_no_events(self):
+        from unittest.mock import patch
+
+        from deep_agents_demo.core import turns
+        with patch.object(turns, "message_event", wraps=turns.message_event) as made:
+            self.assertEqual(printed(show=False), "")
+        made.assert_not_called()
+
     def test_images_show_as_a_note(self):
         message = HumanMessage(content=[{"type": "text", "text": "look"},
                                         {"type": "image", "base64": "QUJD", "mime_type": "image/png"}])
