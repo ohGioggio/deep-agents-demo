@@ -10,16 +10,16 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deep_agents_demo import app
-from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.app import prepare_workspace
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.config import ChatSettings, MemorySettings, Paths, Settings
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.features.agents.files import parse_agent_md
 from deep_agents_demo.features.agents.manager import AGENT_FILE, AgentManager
 from deep_agents_demo.features.agents.registry import AgentRegistry
 from deep_agents_demo.persistence.versioned_store import AGENT_TABLES, VersionedStore
+from deep_agents_demo.startup import runtime as app
+from deep_agents_demo.startup.workspace import prepare_workspace
 
 
 class Workspace(unittest.TestCase):
@@ -315,7 +315,7 @@ class RuntimeTests(Workspace):
         settings = self.settings()
         prepare_workspace(settings)
         with patch.object(app, "chat_model", return_value=model):
-            return app.build_runtime(settings, "alice", stack, say=lambda *_: None), settings
+            return app.build_runtime(stack.enter_context(app.Resources.open(settings)), "alice"), settings
 
     def turn(self, runtime, answer="a"):
         with patch("builtins.print"), patch.object(app, "chat_model", return_value=self.model):

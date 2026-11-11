@@ -26,7 +26,7 @@ from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.features.memory.service import MemoryService
 from deep_agents_demo.features.memory.feature import memory_feature
 from deep_agents_demo.persistence.versioned_store import VersionedStore
-from deep_agents_demo.workspace import SEED_DIR
+from deep_agents_demo.startup.workspace import SEED_DIR
 
 SEEN = []  # (tool names bound, system prompt) for every model call
 

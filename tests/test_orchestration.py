@@ -20,7 +20,7 @@ from deep_agents_demo.core.assembly import build_agent, worker_factory
 from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
 from deep_agents_demo.features.guardrails.feature import Guardrails
-from deep_agents_demo.workspace import SEED_DIR
+from deep_agents_demo.startup.workspace import SEED_DIR
 
 BUILTINS = tuple(BUILTIN_AGENTS.values())  # what the composition root passes
 
@@ -470,7 +470,6 @@ class WiringTests(Workspace):
     def test_plan_through_the_runtime(self):
         from contextlib import ExitStack
 
-        from deep_agents_demo import app
         from deep_agents_demo.chat import runners_for
         from deep_agents_demo.config import (
             ChatSettings,
@@ -478,17 +477,19 @@ class WiringTests(Workspace):
             Paths,
             Settings,
         )
+        from deep_agents_demo.startup import runtime as app
         settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
                             memory=MemorySettings(enabled=False), rag_enabled=False,
                             paths=Paths(data=self.root / "data", workspace=self.root / "ws",
                                         checkpoints=self.root / "data" / "checkpoints.sqlite"))
-        app.prepare_workspace(settings)
+        from deep_agents_demo.startup.workspace import prepare_workspace
+        prepare_workspace(settings)
         model = Model(responses=[call("run_plan", {"goal": "greet", "steps": [{"task": "say hi"}]}, "p"),
                                  reply("hi"), reply("PASS\nfine"), reply("all done")])
         stack = ExitStack()
         self.addCleanup(stack.close)
         with patch.object(app, "chat_model", return_value=model):
-            runtime = app.build_runtime(settings, "alice", stack, say=lambda *_: None)
+            runtime = app.build_runtime(stack.enter_context(app.Resources.open(settings)), "alice")
             approver = Approver(interactive=False)
             config = {"configurable": {"thread_id": "alice:t"}}
             with patch("builtins.print"):

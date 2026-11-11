@@ -1,10 +1,10 @@
-"""Seed the local agent workspace with starter memory and skills."""
+"""The local agent workspace: seeded with starter memory, skills and agents."""
 import hashlib
 import shutil
 from pathlib import Path
 
 # Files under seed/ are copied into the workspace with the same relative paths.
-SEED_DIR = Path(__file__).resolve().parent / "seed"
+SEED_DIR = Path(__file__).resolve().parents[1] / "seed"
 
 # Seed files that moved. Each old copy is removed only if it is still identical
 # to its replacement, so a user's edits are never deleted.
@@ -47,3 +47,9 @@ def seed_files(workspace: Path) -> None:
         if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
+
+
+def prepare_workspace(settings) -> None:
+    """Seed the workspace and make sure the data folder exists (before opening anything)."""
+    seed_files(settings.paths.workspace)
+    settings.paths.data.mkdir(exist_ok=True)

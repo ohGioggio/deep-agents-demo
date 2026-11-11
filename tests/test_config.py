@@ -118,7 +118,7 @@ class RunChatTests(unittest.TestCase):
         runtime = MagicMock()
         runtime.chats.exists.return_value = False
         runtime.chats.list.return_value = []
-        with patch.object(chat, "build_runtime", return_value=runtime), \
+        with patch.object(chat, "build_runtime", return_value=runtime), patch.object(chat, "Resources"), \
                 patch.object(chat, "prepare_workspace"), \
                 patch.object(chat, "stream_turn") as stream, \
                 patch("builtins.print"):
@@ -129,7 +129,7 @@ class RunChatTests(unittest.TestCase):
     def test_a_prompt_streams_one_turn(self):
         runtime = MagicMock()
         runtime.chats.user = "alice"
-        with patch.object(chat, "build_runtime", return_value=runtime), \
+        with patch.object(chat, "build_runtime", return_value=runtime), patch.object(chat, "Resources"), \
                 patch.object(chat, "prepare_workspace"), \
                 patch.object(chat, "stream_turn") as stream:
             chat.run_chat(Settings.from_env({}), "alice", "t1", prompt="hello")

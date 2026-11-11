@@ -4,13 +4,27 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import deep_agents_demo
+from deep_agents_demo.config import ChatSettings, Paths, Settings
 from deep_agents_demo.core.assembly import system_prompt
-from deep_agents_demo.workspace import SEED_DIR, seed_files
+from deep_agents_demo.startup.workspace import SEED_DIR, prepare_workspace, seed_files
 
 OLD_MEMORY = b"# User preferences\nUse metres. Prefer realistic assets.\n"
 
 
 class SeedTests(unittest.TestCase):
+    def test_seed_dir_is_the_package_seed(self):
+        self.assertEqual(SEED_DIR, Path(deep_agents_demo.__file__).resolve().parent / "seed")
+        for folder in ("skills", "agents", "memories"):
+            self.assertTrue((SEED_DIR / folder).is_dir(), folder)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prepare_workspace(Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None), paths=Paths(data=root / "data", workspace=root / "ws",
+                                                   checkpoints=root / "data" / "c.sqlite")))
+            self.assertTrue(list((root / "ws" / "skills").glob("*/SKILL.md")))
+            self.assertTrue((root / "ws" / "agents" / "critic.md").is_file())
+            self.assertTrue((root / "data").is_dir())
+
     def test_seeds_memory_and_every_skill(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
@@ -104,8 +118,8 @@ class FeatureAssemblyTests(unittest.TestCase):
             self.assertEqual(kwargs["skills"], expected)
 
     def test_tools_middleware_and_researcher_come_from_features(self):
-        from deep_agents_demo.features.catalog.feature import catalog_feature
         from deep_agents_demo.core.feature import Feature
+        from deep_agents_demo.features.catalog.feature import catalog_feature
         search_docs, remember, marker = _tool("search_docs"), _tool("remember"), object()
         kwargs = self.build([catalog_feature(),
                              Feature("memory", tools=(remember,), middleware=(marker,)),

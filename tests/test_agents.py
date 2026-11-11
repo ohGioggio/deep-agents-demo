@@ -24,7 +24,7 @@ from deep_agents_demo.features.agents.files import (
 )
 from deep_agents_demo.features.agents.registry import AgentRegistry
 from deep_agents_demo.features.guardrails.feature import Guardrails
-from deep_agents_demo.workspace import SEED_DIR
+from deep_agents_demo.startup.workspace import SEED_DIR
 
 KNOWN = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute",
                    "write_todos", "task", "search_assets"})

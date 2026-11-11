@@ -1,10 +1,9 @@
 """The interactive chat: the input loop, slash commands and streamed output."""
 import json
-from contextlib import ExitStack
+import sys
 
 from langgraph.types import Command
 
-from deep_agents_demo.app import build_runtime, prepare_workspace
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.config import Settings
 from deep_agents_demo.features.images.uploads import (
@@ -15,6 +14,9 @@ from deep_agents_demo.features.images.uploads import (
 from deep_agents_demo.features.images.window import without_images
 from deep_agents_demo.persistence.chats import Chats, new_name, thread_id, valid_name
 from deep_agents_demo.persistence.files import safe_folder_name
+from deep_agents_demo.startup.resources import Resources
+from deep_agents_demo.startup.runtime import build_runtime
+from deep_agents_demo.startup.workspace import prepare_workspace
 from deep_agents_demo.ui.cli.render import format_table, format_transcript
 
 GREETING = ("Ask anything. Ideas: a question about your indexed documents, "
@@ -331,6 +333,11 @@ HELP = "Chat commands:\n" + "\n".join(
 ) + f"\n  {'exit':<15} quit"
 
 
+def _warn(message: str) -> None:
+    """Warnings (embedding retries) go to stderr, also in one-shot runs."""
+    print(message, file=sys.stderr)
+
+
 def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = None,
              verbose: bool = False) -> None:
     """Interactive chat, or a single ``prompt`` that prints only the answer (every step
@@ -340,8 +347,8 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
     say = print if prompt is None else (lambda *_args, **_kwargs: None)
     prepare_workspace(settings)
     say(GREETING)
-    with ExitStack() as stack:
-        runtime = build_runtime(settings, user, stack, say)
+    with Resources.open(settings, notify=say, warn=_warn) as resources:
+        runtime = build_runtime(resources, user, notify=say)
         session = ChatSession(runtime.chats, thread, uploads=runtime.uploads, agents=runtime.agents)
 
         def run_room(names, question):

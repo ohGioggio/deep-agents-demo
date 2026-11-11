@@ -328,7 +328,6 @@ class WiringTests(Workspace):
     def test_start_room_through_the_runtime(self):
         from contextlib import ExitStack
 
-        from deep_agents_demo import app
         from deep_agents_demo.chat import runners_for
         from deep_agents_demo.config import (
             ChatSettings,
@@ -336,18 +335,20 @@ class WiringTests(Workspace):
             Paths,
             Settings,
         )
+        from deep_agents_demo.startup import runtime as app
         settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
                             memory=MemorySettings(enabled=False), rag_enabled=False,
                             paths=Paths(data=self.root / "data", workspace=self.root / "ws",
                                         checkpoints=self.root / "data" / "checkpoints.sqlite"))
-        app.prepare_workspace(settings)
+        from deep_agents_demo.startup.workspace import prepare_workspace
+        prepare_workspace(settings)
         model = Model(responses=[
             call("start_room", {"question": "Ship?", "participants": ["critic", "general-purpose"]}, "r"),
             reply("NEXT: critic\nRisks?"), reply("One risk."), reply("END\nAgreed: ship."), reply("done")])
         stack = ExitStack()
         self.addCleanup(stack.close)
         with patch.object(app, "chat_model", return_value=model):
-            runtime = app.build_runtime(settings, "alice", stack, say=lambda *_: None)
+            runtime = app.build_runtime(stack.enter_context(app.Resources.open(settings)), "alice")
             approver = Approver(interactive=False)
             with patch("builtins.print"):
                 stream_turn(runtime.agent, "go", {"configurable": {"thread_id": "alice:t"}}, approver=approver,

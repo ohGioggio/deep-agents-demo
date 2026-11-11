@@ -3,18 +3,16 @@
 They report bad input by raising ``UsageError``; the CLI turns that into its
 usual error message, so these functions don't depend on argparse.
 """
+import sys
 from contextlib import ExitStack
 from pathlib import Path
 
-from deep_agents_demo.app import (
-    document_index,
-    history_runtime,
-    prepare_workspace,
-    sandbox_backend,
-)
 from deep_agents_demo.chat import confirm
 from deep_agents_demo.config import Settings
 from deep_agents_demo.features.sandbox.providers import clear_sandbox
+from deep_agents_demo.startup.resources import document_index, sandbox_backend
+from deep_agents_demo.startup.runtime import history_runtime
+from deep_agents_demo.startup.workspace import prepare_workspace
 from deep_agents_demo.ui.cli.render import format_table, format_transcript
 
 
@@ -27,7 +25,7 @@ def index_docs(settings: Settings, folder: Path) -> None:
     if not folder.is_dir():
         raise UsageError("--index-docs must name an existing directory")
     prepare_workspace(settings)
-    index = document_index(settings)
+    index = document_index(settings, warn=lambda message: print(message, file=sys.stderr))
     try:
         print(f"Indexed {index.index(folder)} chunks from {folder}")
     finally:
@@ -38,7 +36,7 @@ def clear_openshell_sandbox(settings: Settings) -> None:
     if settings.sandbox.provider != "openshell":
         raise UsageError("--clear-sandbox needs SANDBOX_PROVIDER=openshell")
     with ExitStack() as stack:
-        setup = sandbox_backend(settings, stack)
+        setup = sandbox_backend(settings, stack, notify=print)
         workdir = setup.workdir
         work, tmp = clear_sandbox(setup.backend, workdir)
     print(f"Cleared {work} entries from {workdir} and {tmp} from /tmp. "

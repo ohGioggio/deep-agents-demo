@@ -1,10 +1,10 @@
-"""Composition root: the one place that turns Settings into working objects.
+"""Composition root, per user: the agent and everything a chat session needs.
 
 Everything else receives what it needs as arguments. To see how the demo is
 wired (which model, memory, documents and sandbox an agent gets), read this
-module; to change the wiring, change it here.
+module and ``resources.py`` (what is shared by every user); to change the wiring,
+change it here. A new feature is one more line in ``features()``.
 """
-import sys
 from contextlib import ExitStack
 from dataclasses import dataclass
 
@@ -20,45 +20,22 @@ from deep_agents_demo.features.agents.manager import AgentManager
 from deep_agents_demo.features.agents.registry import AgentRegistry
 from deep_agents_demo.features.catalog.feature import catalog_feature
 from deep_agents_demo.features.documents.feature import documents_feature
-from deep_agents_demo.features.documents.index import DocumentIndex
 from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.features.images.feature import images_feature
 from deep_agents_demo.features.images.uploads import Uploads
 from deep_agents_demo.features.memory.feature import file_memory_feature, memory_feature
 from deep_agents_demo.features.memory.service import (
     MemoryService,
-    close_memory,
-    make_memory,
 )
 from deep_agents_demo.features.orchestration.feature import orchestration_feature
-from deep_agents_demo.features.sandbox.providers import BackendSetup, make_backend
 from deep_agents_demo.features.skills.manager import SkillManager
 from deep_agents_demo.persistence.chats import Chats
-from deep_agents_demo.persistence.versioned_store import AGENT_TABLES, VersionedStore
 from deep_agents_demo.providers.chat import chat_model
-from deep_agents_demo.providers.embeddings import CompatibleEmbeddings
-from deep_agents_demo.providers.rate_limit import rate_limiter
-from deep_agents_demo.workspace import seed_files
+from deep_agents_demo.startup.resources import Resources
 
 
-def embeddings(settings: Settings) -> CompatibleEmbeddings:
-    return CompatibleEmbeddings.from_settings(settings.embeddings,
-                                              rate_limiter(settings.requests_per_minute),
-                                              notify=lambda message: print(message, file=sys.stderr))
-
-
-def document_index(settings: Settings) -> DocumentIndex:
-    return DocumentIndex(settings.paths.data, embeddings(settings))
-
-
-def sandbox_backend(settings: Settings, stack: ExitStack, say=print) -> BackendSetup:
-    """Local files or the configured sandbox (which connects lazily)."""
-    return make_backend(settings.sandbox, settings.paths.workspace, settings.paths.data, stack, say)
-
-
-def prepare_workspace(settings: Settings) -> None:
-    seed_files(settings.paths.workspace)
-    settings.paths.data.mkdir(exist_ok=True)
+def _quiet(*_args, **_kwargs) -> None:
+    return None
 
 
 @dataclass
@@ -71,7 +48,7 @@ class Runtime:
     agents: object = None   # the AgentRegistry the agent was built from
     agent_manager: object = None  # the user's agents; set ``changed`` after an approved change
     rebuild: object = None  # () -> (agent, AgentRegistry, make_worker), with the same settings
-    say: object = print
+    say: object = _quiet    # notes for the user outside a turn
     make_worker: object = None  # (name, extra_middleware) -> a standalone agent, for plan runners
 
     def refresh(self) -> bool:
@@ -89,23 +66,19 @@ class Runtime:
         return True
 
 
-def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManager:
-    store = VersionedStore(settings.paths.data / "skills.sqlite")
-    stack.callback(store.close)
-    manager = SkillManager(store, user, settings.paths.workspace)
+def skill_manager(resources: Resources, user: str) -> SkillManager:
+    manager = SkillManager(resources.skill_store, user, resources.settings.paths.workspace)
     manager.sync_folder()  # the database is the source of truth
     return manager
 
 
-def agent_manager(settings: Settings, user: str, stack: ExitStack) -> AgentManager:
-    store = VersionedStore(settings.paths.data / "agents.sqlite", AGENT_TABLES)
-    stack.callback(store.close)
-    return AgentManager(store, user, frozenset())  # known tools are set once features exist
+def agent_manager(resources: Resources, user: str) -> AgentManager:
+    return AgentManager(resources.agent_store, user, frozenset())  # known tools are set once features exist
 
 
-def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None, guardrails=None,
-             agents=None):
+def features(resources: Resources, user: str, skills=None, guardrails=None, agents=None):
     """The features this configuration turns on, in prompt order."""
+    settings, setup = resources.settings, resources.sandbox
     yield catalog_feature()  # example tools, always available
     yield images_feature(setup.skills_prefix)  # attached images; check rendered ones
     if skills is not None:
@@ -113,34 +86,30 @@ def features(settings: Settings, user: str, stack: ExitStack, setup, skills=None
     if agents is not None:
         yield agents.feature()
     yield orchestration_feature()  # run_plan: subagent-driven execution with review
-    if settings.memory.enabled:
-        memory = make_memory(settings.paths.data, settings.memory, settings.embeddings,
-                             embeddings(settings))
-        stack.callback(close_memory, memory)
-        service = MemoryService(memory, user)
+    if resources.memory is not None:
+        service = MemoryService(resources.memory, user)  # this user's id, on the shared store
         if guardrails is not None:
             guardrails.describe_memory = service.describe  # show what `forget` would remove
         yield memory_feature(service, settings.memory.recall_mode)
     else:
         yield file_memory_feature(setup.skills_prefix)
-    if settings.rag_enabled:
-        index = document_index(settings)
-        stack.callback(index.close)
-        yield documents_feature(index)
+    if resources.documents is not None:
+        yield documents_feature(resources.documents)
     if setup.feature is not None:
         yield setup.feature  # how to work in the sandbox
     if guardrails is not None:
         yield guardrails.feature()  # risky actions pause for the user
 
 
-def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) -> Runtime:
-    """The full agent for one user: model, features, sandbox, checkpoints."""
-    saver = stack.enter_context(SqliteSaver.from_conn_string(str(settings.paths.checkpoints)))
-    setup = sandbox_backend(settings, stack, say)
-    skills = skill_manager(settings, user, stack)
-    my_agents = agent_manager(settings, user, stack)
+def build_runtime(resources: Resources, user: str, notify=None) -> Runtime:
+    """The full agent for one user, on the process's shared ``resources``. ``notify``
+    gets notes for the user (warnings about tools and agents); default: silence."""
+    say = notify or _quiet
+    settings, saver, setup = resources.settings, resources.checkpointer, resources.sandbox
+    skills = skill_manager(resources, user)
+    my_agents = agent_manager(resources, user)
     guardrails = Guardrails()
-    enabled = list(features(settings, user, stack, setup, skills, guardrails, my_agents))
+    enabled = list(features(resources, user, skills, guardrails, my_agents))
     registry = ToolRegistry(enabled)
     for problem in registry.problems(settings.disabled_tools):
         say(f"Warning: {problem}")

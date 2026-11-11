@@ -32,13 +32,14 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from deepagents.backends import FilesystemBackend  # noqa: E402
 
-from deep_agents_demo import app  # noqa: E402
+from deep_agents_demo.providers.chat import chat_model  # noqa: E402
+from deep_agents_demo.startup.resources import embeddings  # noqa: E402
 from deep_agents_demo.core.assembly import build_agent  # noqa: E402
 from deep_agents_demo.config import RECALL_MODES, Settings  # noqa: E402
 from deep_agents_demo.features.catalog.feature import catalog_feature  # noqa: E402
 from deep_agents_demo.features.memory.service import MemoryService, close_memory, make_memory
 from deep_agents_demo.features.memory.feature import memory_feature  # noqa: E402
-from deep_agents_demo.workspace import seed_files  # noqa: E402
+from deep_agents_demo.startup.workspace import seed_files  # noqa: E402
 
 USER = "eval-user"
 SECRET = "sk-proj-EvalOnly1234567890abcdefXYZ"
@@ -104,7 +105,7 @@ def run_mode(mode, settings, model, run_index):
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         tmp = Path(tmp)
         os.environ["MEM0_DIR"] = str(tmp / "mem0_internal")
-        memory = make_memory(tmp, settings.memory, settings.embeddings, app.embeddings(settings))
+        memory = make_memory(tmp, settings.memory, settings.embeddings, embeddings(settings, warn=lambda message: print(message, file=sys.stderr)))
         try:
             for fact in SEED:
                 memory.add([{"role": "user", "content": fact}], user_id=USER, infer=False)
@@ -161,7 +162,7 @@ def main():
     parser.add_argument("--runs", type=int, default=1)
     args = parser.parse_args()
     settings = settings_from_env()
-    model = app.chat_model(settings)
+    model = chat_model(settings)
     rows = []
     for run_index in range(1, args.runs + 1):
         for mode in args.modes:
