@@ -180,6 +180,34 @@ class AccessTests(unittest.TestCase):
                 self.assertIsNone(shell_block(command, {"delete"}))
         self.assertIsNone(shell_block("rm a", {"execute"}))
 
+    def run_openshell(self, *responses, openshell=True):
+        """A turn on a fake sandbox with the OpenShell sandbox feature (and its skill)."""
+        from deep_agents_demo.sandbox import sandbox_feature
+        shutil.copytree(SEED_DIR / "sandbox-skills", self.root / "sandbox-skills", dirs_exist_ok=True)
+        sandbox = FakeSandbox()
+        backend = CompositeBackend(default=sandbox, routes={
+            "/instructions/": FilesystemBackend(root_dir=str(self.root), virtual_mode=True)})
+        model = Model(responses=[*responses, AIMessage(content="done")])
+        agent = build_agent(model, InMemorySaver(), backend, [sandbox_feature("/sandbox", openshell)],
+                            skills_prefix="/instructions")
+        with patch("builtins.print"):
+            out = agent.invoke({"messages": [{"role": "user", "content": "go"}]},
+                               {"configurable": {"thread_id": "t"}})
+        return sandbox.ran, [str(m.content) for m in out["messages"] if m.type == "tool"]
+
+    def test_execute_waits_until_the_sandbox_skill_is_read(self):
+        """Live finding: the agent skipped the skill and tried pip, apt and get-pip first."""
+        skill = "/instructions/sandbox-skills/sandbox/SKILL.md"
+        ran, results = self.run_openshell(call("execute", {"command": "pip install x"}, "e1"),
+                                          call("read_file", {"file_path": skill}, "r1"),
+                                          call("execute", {"command": "uv pip install x"}, "e2"))
+        self.assertEqual(ran, ["uv pip install x"])
+        self.assertIn(f"read the sandbox skill: read_file {skill}", results[0])
+
+    def test_no_skill_gate_without_openshell(self):
+        ran, _ = self.run_openshell(call("execute", {"command": "ls"}, "e1"), openshell=False)
+        self.assertEqual(ran, ["ls"])
+
     def test_no_researcher_mentioned_when_its_lookups_are_disabled(self):
         self.run_turn(disabled=("search_assets",))
         self.assertNotIn("researcher", self.prompts()[0])

@@ -54,6 +54,7 @@ class Feature:
     memory_sources: tuple = ()       # files for Deep Agents' file-based memory
     approvals: tuple = ()            # tools that pause for approval: name, or (name, when)
     skill_only: tuple = ()           # tools hidden until a skill listing them is read
+    needs_skill: tuple = ()          # (tool, skill): the skill must be read before the tool runs
 
 
 def approval_configs(features) -> dict:
@@ -122,7 +123,8 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
     # middleware, so it would see disabled and skill-only tools. It inherits the main
     # agent's tools, permissions and approvals.
     general_purpose = {**GENERAL_PURPOSE_SUBAGENT, "model": model, "skills": skill_sources,
-                       "middleware": [ToolAccess(off, registry.skill_only())]}
+                       "middleware": [ToolAccess(off, registry.skill_only(),
+                                                 registry.requirements())]}
     researcher = [{
         "name": "researcher",
         "description": ("Read-only research helper: looks things up with the available "
@@ -152,7 +154,7 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
         # Paused for the user's decision before they run; subagents inherit this.
         interrupt_on=interrupt_on or None,
         middleware=[TodoListMiddleware(), *(m for f in features for m in f.middleware),
-                    ToolAccess(off, registry.skill_only())],
+                    ToolAccess(off, registry.skill_only(), registry.requirements())],
         subagents=subagents,
         checkpointer=checkpointer,
         # Deep Agents supplies summarization and large-output offloading.

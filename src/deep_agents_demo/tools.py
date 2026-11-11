@@ -63,6 +63,7 @@ class ToolRegistry:
 
     def __init__(self, features=()):
         self._entries = {name: ToolEntry(name, group, text) for name, (group, text) in BUILTIN.items()}
+        self._requires = {tool: skill for feature in features for tool, skill in feature.needs_skill}
         for feature in features:
             names = {tool_name(tool): tool for tool in (*feature.tools, *feature.lookups)}
             unknown = set(feature.skill_only) - set(names)
@@ -81,6 +82,10 @@ class ToolRegistry:
 
     def skill_only(self) -> frozenset:
         return frozenset(entry.name for entry in self._entries.values() if entry.skill_only)
+
+    def requirements(self) -> dict:
+        """Tool -> the skill the agent must read before the tool's first use."""
+        return dict(self._requires)
 
     def disabled(self, requested) -> frozenset:
         """The requested names that can actually be disabled (known, not core)."""
@@ -103,7 +108,8 @@ class ToolRegistry:
 # Shell commands that do what a disabled tool does: with that tool off, ``execute``
 # refuses them too, so the agent can't do through the shell what was turned off.
 SHELL_EQUIVALENTS = {
-    "delete": (r"(?:^|[\s;&|(`])(?:sudo\s+)?(?:rm|rmdir|unlink|shred)(?=\s|$)",r"\bfind\b.*\s-(?:delete\b|exec\s+rm\b)",
+    "delete": (r"(?:^|[\s;&|(`])(?:sudo\s+)?(?:rm|rmdir|unlink|shred)(?=\s|$)",
+               r"\bfind\b.*\s-(?:delete\b|exec\s+rm\b)",
                r"\bgit\s+(?:rm|clean)\b", r"\b(?:os\.(?:remove|unlink|rmdir)|shutil\.rmtree)\b",
                r"\.unlink\(", r"\bmv\b.*\s/dev/null\b"),
 }
@@ -131,25 +137,41 @@ class ToolAccess(AgentMiddleware):
     SKILL.md whose ``allowed-tools`` lists it. If summarisation drops that read, the
     model stops seeing the tool (a call already made still runs). The agent is also
     told which skills need a disabled tool, so it can say so instead of working
-    around it.
+    around it. A tool with a required skill (``Feature.needs_skill``) is refused
+    until the agent has read that skill, and the refusal says which file to read.
     """
 
-    def __init__(self, disabled=frozenset(), skill_only=frozenset()):
+    def __init__(self, disabled=frozenset(), skill_only=frozenset(), requires=None):
         super().__init__()
         self.disabled = frozenset(disabled)
         self.skill_only = frozenset(skill_only) - self.disabled
+        self.requires = dict(requires or {})  # tool -> skill to read before its first use
 
     @staticmethod
     def _skills(state) -> list:
         return list((state or {}).get("skills_metadata") or [])
 
+    @staticmethod
+    def _read(messages) -> set:
+        """Paths the agent has called read_file on in ``messages``."""
+        return {_path(call.get("args", {}).get("file_path"))
+                for message in messages if isinstance(message, AIMessage)
+                for call in message.tool_calls if call.get("name") == "read_file"}
+
+    def missing_skill(self, name, state) -> dict | None:
+        """The skill ``name`` needs that the agent hasn't read yet (None if loaded and read,
+        or if that skill isn't loaded at all)."""
+        wanted = self.requires.get(name)
+        skill = next((s for s in self._skills(state) if s.get("name") == wanted), None) if wanted else None
+        if skill is None or _path(skill.get("path")) in self._read((state or {}).get("messages", [])):
+            return None
+        return skill
+
     def unlocked(self, state, messages) -> frozenset:
         """Skill-only tools listed by a skill the agent has read in ``messages``."""
         if not self.skill_only:
             return frozenset()
-        read = {_path(call.get("args", {}).get("file_path"))
-                for message in messages if isinstance(message, AIMessage)
-                for call in message.tool_calls if call.get("name") == "read_file"}
+        read = self._read(messages)
         listed = {tool for skill in self._skills(state) if _path(skill.get("path")) in read
                   for tool in skill.get("allowed_tools") or []}
         return frozenset(listed) & self.skill_only
@@ -205,6 +227,9 @@ class ToolAccess(AgentMiddleware):
                 request.state, (request.state or {}).get("messages", [])):
             reason = (f"Error: {name} is only available after reading a skill that lists it under "
                       "'Allowed tools'. Read that skill's SKILL.md first.")
+        elif skill := self.missing_skill(name, request.state):
+            reason = (f"Error: before using {name}, read the {skill['name']} skill: read_file "
+                      f"{skill['path']}. It explains how this environment works. Then retry.")
         else:
             return None
         return ToolMessage(content=reason, tool_call_id=request.tool_call.get("id") or "",

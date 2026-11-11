@@ -194,5 +194,8 @@ def sandbox_feature(workdir, openshell_skill=False) -> Feature:
         prompt += ("Before your first shell command (execute), read the sandbox skill and "
                    "follow it for installing packages and handling blocked network access; "
                    "other tools don't need it. ")
+    # Asking was not enough: the agent skipped the skill and tried pip, apt and
+    # get-pip before finding uv. So execute is refused until the skill is read.
     return Feature(name="sandbox", prompt=prompt,
-                   skill_dirs=("sandbox-skills/",) if openshell_skill else ())
+                   skill_dirs=("sandbox-skills/",) if openshell_skill else (),
+                   needs_skill=(("execute", "sandbox"),) if openshell_skill else ())
