@@ -353,9 +353,30 @@ class PlanRunner(Runner):
                          "they ask.")}
 
 
+ROOM_PROMPT = (
+    "start_room(question, participants) runs a moderated discussion between the named agents "
+    "(at least two) and returns its summary; use it only when the user asks for a discussion "
+    "or a room. ")
+
+
+def start_room(question: str, participants: list[str]) -> str:
+    """Run a moderated discussion: the named agents take turns on the question, a
+    moderator decides who speaks and ends it with a summary. participants: at least two
+    agent names (not "moderator"). Only when the user asks for a discussion."""
+    names = [str(p).strip() for p in participants] if isinstance(participants, list) else []
+    if (not str(question or "").strip() or len(set(names)) < 2 or len(set(names)) != len(names)
+            or "moderator" in names or not all(names)):
+        return json.dumps({"error": "participants must be at least two different agent names, "
+                                    "not 'moderator', and the question can't be empty"})
+    outcome = interrupt({"type": "start_room", "question": str(question).strip(),
+                         "participants": names})
+    return json.dumps(outcome)
+
+
 def orchestration_feature():
     from deep_agents_demo.agent import Feature  # agent.py imports this module
-    return Feature(name="orchestration", prompt=PLAN_PROMPT, tools=(run_plan,))
+    return Feature(name="orchestration", prompt=PLAN_PROMPT + ROOM_PROMPT,
+                   tools=(run_plan, start_room))
 
 
 class TaskLimiter(AgentMiddleware):

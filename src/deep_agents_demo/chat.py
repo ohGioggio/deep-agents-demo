@@ -90,6 +90,8 @@ def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runner
             return runners[kind](value)
         if kind == "run_plan":
             return {"error": "plans can't run here (nobody to run them); do the steps yourself"}
+        if kind == "start_room":
+            return {"error": "rooms can't run here (nobody to run them)"}
         return approver.decide(value)
 
     while True:

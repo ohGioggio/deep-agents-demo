@@ -39,5 +39,52 @@ class CleanupTests(Workspace):
         self.assertEqual(left, [])
 
 
+class StartRoomToolTests(Workspace):
+    def turn(self, *responses, runners=None, agents=()):
+        from deep_agents_demo.agent import build_agent
+        from deep_agents_demo.orchestration import orchestration_feature
+        model = Model(responses=[*responses, AIMessage(content="done")])
+        agent = build_agent(model, InMemorySaver(), self.backend(), [orchestration_feature()], agents=agents)
+        with patch("builtins.print"):
+            stream_turn(agent, "go", {"configurable": {"thread_id": "t"}},
+                        approver=Approver(interactive=False), runners=runners)
+        return [m for kind, m in SEEN if kind == "messages"]
+
+    def results(self, calls):
+        return [str(m.content) for m in calls[-1] if m.type == "tool"]
+
+    def test_start_room_pauses_and_returns_the_runner_answer(self):
+        asked = []
+
+        def runner(request):
+            asked.append(request)
+            return {"summary": "agreed"}
+        calls = self.turn(call("start_room", {"question": "q", "participants": ["critic", "helper"]}, "r"),
+                          runners={"start_room": runner})
+        self.assertEqual(asked, [{"type": "start_room", "question": "q", "participants": ["critic", "helper"]}])
+        self.assertEqual(self.results(calls), [json.dumps({"summary": "agreed"})])
+
+    def test_room_needs_two_participants_and_no_moderator(self):
+        asked = []
+        for participants in (["critic"], ["critic", "moderator"], ["critic", "critic"]):
+            with self.subTest(participants=participants):
+                SEEN.clear()
+                calls = self.turn(call("start_room", {"question": "q", "participants": participants}, "r"),
+                                  runners={"start_room": asked.append})
+                self.assertIn("participants", self.results(calls)[0])
+        self.assertEqual(asked, [])
+
+    def test_without_a_runner_the_room_is_refused(self):
+        calls = self.turn(call("start_room", {"question": "q", "participants": ["a", "b"]}, "r"))
+        self.assertIn("can't run here", self.results(calls)[0])
+
+    def test_subagents_cannot_start_rooms(self):
+        calls = self.turn(call("task", {"description": "go", "subagent_type": "helper"}, "t"),
+                          call("start_room", {"question": "q", "participants": ["a", "b"]}, "r"),
+                          AIMessage(content="sub done"), agents=[agent_from(ALL_AGENT)])
+        sub = [m for m in calls if "Help." in str(m[0].content)]
+        self.assertTrue(any("isn't available to this agent" in str(x.content) for x in sub[-1] if x.type == "tool"))
+
+
 if __name__ == "__main__":
     unittest.main()
