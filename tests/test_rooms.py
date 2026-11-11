@@ -86,5 +86,109 @@ class StartRoomToolTests(Workspace):
         self.assertTrue(any("isn't available to this agent" in str(x.content) for x in sub[-1] if x.type == "tool"))
 
 
+CRITIC = "---\nname: critic\ndescription: Finds weaknesses.\ntools: Read, Grep, Glob\n---\nYou are a critic.\n"
+
+
+class RoomBase(Workspace):
+    def runner(self, *responses, answers=(), approvals=(), interactive=True, max_turns=12,
+               features=(), transcripts=None):
+        from deep_agents_demo.rooms import RoomRunner
+        model = Model(responses=[*responses, reply("UNEXPECTED EXTRA CALL")])
+        make = worker_factory(model, InMemorySaver(), self.backend(), features,
+                              agents=[agent_from(CRITIC), agent_from(ALL_AGENT)])
+        replies, approve = iter(answers), iter(approvals)
+        self.said = []
+        return RoomRunner(make, Approver(ask=lambda _: next(approve), say=lambda *_: None),
+                          thread="t", max_turns=max_turns, interactive=interactive,
+                          ask=lambda _: next(replies), say=self.said.append, transcripts=transcripts,
+                          describe=lambda name: {"critic": "Finds weaknesses.", "helper": "Helps."}.get(name, ""))
+
+    def room(self, runner, question="Ship it?", participants=("critic", "helper")):
+        with patch("builtins.print"):
+            return runner.run({"type": "start_room", "question": question,
+                               "participants": list(participants)})
+
+    def inputs(self):
+        return [next(str(m.content) for m in msgs if m.type == "human")
+                for kind, msgs in SEEN if kind == "messages"]
+
+
+class RoomTests(RoomBase):
+    def test_parse_moderator(self):
+        from deep_agents_demo.rooms import parse_moderator
+        people = ["critic", "helper"]
+        self.assertEqual(parse_moderator("NEXT: critic\nWhat breaks?", people), ("next", "critic", "What breaks?"))
+        self.assertEqual(parse_moderator("**END**\nAgreed: ship.", people), ("end", "", "Agreed: ship."))
+        self.assertEqual(parse_moderator("NEXT: nobody\nx", people)[0], "unclear")
+        self.assertEqual(parse_moderator("NEXT: **Critic**\nok", people)[:2], ("next", "critic"))
+
+    def test_moderated_room_to_the_end(self):
+        runner = self.runner(reply("NEXT: critic\nWhat breaks?"), reply("The cache breaks."),
+                             reply("NEXT: helper\nCan you fix the cache?"), reply("Yes, add a TTL."),
+                             reply("END\nAgreed: add a TTL."))
+        outcome = self.room(runner)
+        self.assertEqual((outcome["turns"], outcome["ended_by"], outcome["summary"]),
+                         (2, "moderator", "Agreed: add a TTL."))
+        helper_input = self.inputs()[3]
+        self.assertIn("The cache breaks.", helper_input)
+        self.assertIn("The moderator asks you: Can you fix the cache?", helper_input)
+        self.assertIn("[room] moderator -> critic: What breaks?", self.said)
+
+    def test_unclear_moderator_falls_back_to_rotation(self):
+        runner = self.runner(reply("Let's hear from someone"), reply("I object."), reply("END\nDone."))
+        outcome = self.room(runner)
+        self.assertEqual(outcome["turns"], 1)
+        self.assertIn("I object.", runner.transcript_text())
+        self.assertIn("The moderator asks you: Let's hear from someone", self.inputs()[1])
+
+    def test_turn_limit_then_summary(self):
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("One point."), reply("Summary: one point made."),
+                             max_turns=1)
+        outcome = self.room(runner)
+        self.assertEqual((outcome["turns"], outcome["ended_by"]), (1, "turn limit"))
+        self.assertEqual(outcome["summary"], "Summary: one point made.")
+        self.assertIn("Write the summary now", self.inputs()[2])
+
+    def test_failed_participant_run_goes_on(self):
+        runner = self.runner(reply("NEXT: helper\nGo."), reply("END\nDone anyway."))
+        real = runner.make
+        runner.make = lambda name, extra=(): Boom() if name == "helper" else real(name, extra)
+        outcome = self.room(runner)
+        self.assertIn("helper could not answer", runner.transcript_text())
+        self.assertEqual(outcome["ended_by"], "moderator")
+
+    def test_long_transcripts_are_trimmed(self):
+        long = "x" * 4000
+        runner = self.runner(reply("NEXT: critic\nA"), reply(long), reply("NEXT: helper\nB"), reply(long),
+                             reply("NEXT: critic\nC"), reply(long), reply("NEXT: helper\nD"), reply("short"),
+                             reply("END\nok"))
+        self.room(runner)
+        last_turn_input = self.inputs()[7]
+        self.assertIn("(earlier turns omitted)", last_turn_input)
+        self.assertLess(len(last_turn_input), 6000 + 1000)
+
+    def test_transcript_file(self):
+        folder = self.root / "rooms"
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("A point."), reply("NEXT: helper\nAnd?"),
+                             reply("Another."), reply("END\nTwo points."), transcripts=folder)
+        outcome = self.room(runner, question="Ship it now?")
+        files = list(folder.glob("*.md"))
+        self.assertEqual(len(files), 1)
+        self.assertTrue(files[0].name.endswith("-ship-it-now.md"), files[0].name)
+        text = files[0].read_text(encoding="utf-8")
+        for expected in ("# Room: Ship it now?", "A point.", "Another.", "## Summary", "Two points."):
+            self.assertIn(expected, text)
+        self.assertEqual(outcome["transcript"], str(files[0]))
+
+    def test_participant_approvals(self):
+        from deep_agents_demo.guardrails import Guardrails
+        (self.root / "notes.md").write_text("x")
+        runner = self.runner(reply("NEXT: helper\nClean up."), call("delete", {"file_path": "/notes.md"}, "d"),
+                             reply("Deleted."), reply("END\nCleaned."), features=[Guardrails.feature()],
+                             approvals=["a"])
+        self.room(runner)
+        self.assertFalse((self.root / "notes.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
