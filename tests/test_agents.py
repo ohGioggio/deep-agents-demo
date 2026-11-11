@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from deepagents.backends import FilesystemBackend
-from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -14,7 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from deep_agents_demo import agent as agent_module
 from deep_agents_demo.agent import build_agent
 from deep_agents_demo.agent_files import parse_agent_md, render_agent_md, resolve_model, translate_tools
-from deep_agents_demo.agent_registry import AgentRegistry
+from deep_agents_demo.agent_registry import AgentRegistry, SubagentCallCap
 from deep_agents_demo.approvals import Approver
 from deep_agents_demo.chat import stream_turn
 from deep_agents_demo.guardrails import Guardrails
@@ -49,6 +48,14 @@ class FormatTests(unittest.TestCase):
     def test_omitted_tools_means_all(self):
         agent, _ = parse_agent_md("---\nname: a\ndescription: d\n---\nx", "f", KNOWN)
         self.assertIsNone(agent.tools)
+
+    def test_blank_tools_means_all_too(self):
+        """Review finding: a blank 'tools:' line silently gave the agent no tools."""
+        for line in ("tools:", "tools: ''", "tools: []"):
+            with self.subTest(line=line):
+                agent, notes = parse_agent_md(f"---\nname: a\ndescription: d\n{line}\n---\nx", "f", KNOWN)
+                self.assertIsNone(agent.tools)
+                self.assertTrue(any("all tools" in n for n in notes), notes)
 
     def test_unknown_and_spawn_tools_are_warnings(self):
         names, notes = translate_tools(["Read", "NotebookEdit", "Agent", "mcp__github__x"], KNOWN)
@@ -267,13 +274,55 @@ class SubagentTests(unittest.TestCase):
         calls = [kind for kind, _ in SEEN if kind == "messages"]
         self.assertEqual(len(calls), 4, "main, two subagent calls (then capped), main")
 
+    def sub_calls(self, prompt="Help."):
+        """Model calls made by the subagent, recognised by its system prompt."""
+        return sum(1 for kind, messages in SEEN if kind == "messages"
+                   and messages and messages[0].type == "system" and prompt in str(messages[0].content))
+
+    def test_cap_survives_approval_pauses(self):
+        """Review finding: each approve-and-resume started the count again."""
+        notes = [self.root / f"n{i}.md" for i in range(4)]
+        for note in notes:
+            note.write_text("x")
+        deletes = [call("delete", {"file_path": f"/n{i}.md"}, f"d{i}") for i in range(4)]
+        self.run_turn(delegate("helper"), *deletes, AIMessage(content="sub done"),
+                      agents=[agent_from(ALL_AGENT)], features=[Guardrails.feature()], max_calls=2,
+                      approver=Approver(ask=lambda _: "a", say=lambda *_: None))
+        self.assertLessEqual(self.sub_calls(), 2)
+
+    def test_cap_survives_rejections_in_one_shot_runs(self):
+        deletes = [call("delete", {"file_path": f"/n{i}.md"}, f"d{i}") for i in range(5)]
+        self.run_turn(delegate("helper"), *deletes, AIMessage(content="sub done"),
+                      agents=[agent_from(ALL_AGENT)], features=[Guardrails.feature()], max_calls=2)
+        self.assertLessEqual(self.sub_calls(), 2)
+
+    def test_each_delegation_gets_a_fresh_count(self):
+        self.run_turn(delegate("helper", "t1"), AIMessage(content="first done"),
+                      delegate("helper", "t2"), AIMessage(content="second done"),
+                      agents=[agent_from(ALL_AGENT)], max_calls=1)
+        main_last_call = [m for kind, m in SEEN if kind == "messages"][-1]
+        results = [str(m.content) for m in main_last_call if m.type == "tool"]
+        self.assertEqual(results, ["first done", "second done"])
+
+    def test_a_capped_run_returns_a_partial_result(self):
+        """Review finding: the main agent only got 'Model call limits exceeded'."""
+        progress = AIMessage(content="Found three issues so far.",
+                             tool_calls=[{"name": "ls", "id": "l1", "args": {"path": "/"}}])
+        self.run_turn(delegate("helper"), progress, call("ls", {"path": "/"}, "l2"),
+                      agents=[agent_from(ALL_AGENT)], max_calls=2)
+        main_last_call = [m for kind, m in SEEN if kind == "messages"][-1]
+        result = str([m for m in main_last_call if m.type == "tool"][-1].content)
+        self.assertIn("partial", result.lower())
+        self.assertIn("Found three issues so far.", result)
+        self.assertIn("2 model calls", result)
+
     def test_max_turns_lowers_cap(self):
         agent = agent_from(ALL_AGENT.replace("description: Helps.", "description: Helps.\nmaxTurns: 1"))
         spec = self.spec(self.kwargs([agent], max_calls=25), "helper")
-        caps = [m.run_limit for m in spec["middleware"] if isinstance(m, ModelCallLimitMiddleware)]
+        caps = [m.limit for m in spec["middleware"] if isinstance(m, SubagentCallCap)]
         self.assertEqual(caps, [1])
         general = self.spec(self.kwargs([agent], max_calls=25), "general-purpose")
-        self.assertEqual([m.run_limit for m in general["middleware"] if isinstance(m, ModelCallLimitMiddleware)], [25])
+        self.assertEqual([m.limit for m in general["middleware"] if isinstance(m, SubagentCallCap)], [25])
 
     def test_skills_are_pinned(self):
         agent = agent_from(ALL_AGENT.replace("description: Helps.", "description: Helps.\nskills: [scene-planning]"))

@@ -10,8 +10,11 @@ Sources, lowest to highest (a higher one wins on a name clash):
 (Installed marketplace agents and the user's agents in SQLite come later.)
 """
 from pathlib import Path
+from typing import Annotated, NotRequired
 
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, AgentState, hook_config
+from langchain.agents.middleware.types import PrivateStateAttr
+from langchain_core.messages import AIMessage, ToolMessage
 
 from deep_agents_demo.agent_files import READ_ONLY, AgentDefinition, parse_agent_md
 
@@ -102,6 +105,41 @@ class AgentRegistry:
                          "model": agent.model or "configured",
                          "overrides": self._overrides.get(agent.name, "")})
         return rows
+
+
+class CallCapState(AgentState):
+    # Checkpointed (unlike ModelCallLimitMiddleware's count), so approve-and-resume
+    # doesn't start it again; private, so it never leaks into the main agent's state.
+    subagent_model_calls: Annotated[NotRequired[int], PrivateStateAttr]
+
+
+def partial_result(messages, calls: int) -> str:
+    """What a subagent cut off by the call cap hands back: what it had, marked partial."""
+    texts = [m.text if isinstance(m.text, str) else str(m.content) for m in messages
+             if isinstance(m, AIMessage) and str(m.content).strip()]
+    tools = sum(1 for m in messages if isinstance(m, ToolMessage))
+    found = texts[-1].strip() if texts else f"No answer yet ({tools} tool calls made)."
+    return (f"[Partial result: stopped after {calls} model calls, the limit for one subagent "
+            f"run.]\n\n{found}\n\n[Don't hand the same task over again unchanged; tell the user "
+            "it was cut short, or split it into smaller tasks.]")
+
+
+class SubagentCallCap(AgentMiddleware):
+    """At most ``limit`` model calls per subagent run; then end with a partial result."""
+
+    state_schema = CallCapState
+
+    def __init__(self, limit: int):
+        super().__init__()
+        self.limit = limit
+
+    @hook_config(can_jump_to=["end"])
+    def before_model(self, state, runtime):
+        calls = state.get("subagent_model_calls", 0)
+        if calls >= self.limit:
+            return {"messages": [AIMessage(content=partial_result(state["messages"], calls))],
+                    "jump_to": "end"}
+        return {"subagent_model_calls": calls + 1}
 
 
 class PinSkills(AgentMiddleware):

@@ -12,10 +12,10 @@ from dataclasses import dataclass, field
 from deepagents import create_deep_agent
 from deepagents.middleware.filesystem import FilesystemPermission
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
-from langchain.agents.middleware import ModelCallLimitMiddleware, TodoListMiddleware
+from langchain.agents.middleware import TodoListMiddleware
 
 from deep_agents_demo.agent_files import READ_ONLY
-from deep_agents_demo.agent_registry import PinSkills
+from deep_agents_demo.agent_registry import PinSkills, SubagentCallCap
 from deep_agents_demo.tools import ToolAccess, ToolRegistry, shell_block, tool_name
 
 IDENTITY = (
@@ -109,8 +109,7 @@ def _spec(agent, *, model, model_for, tools, skill_sources, access, max_calls) -
     allowed = (frozenset(READ_ONLY) if agent.read_only
                else None if agent.tools is None else frozenset(agent.tools))
     middleware = [ToolAccess(*access, allowed=allowed, denied=frozenset(agent.disallowed)),
-                  ModelCallLimitMiddleware(run_limit=min(max_calls, agent.max_turns or max_calls),
-                                           exit_behavior="end")]
+                  SubagentCallCap(min(max_calls, agent.max_turns or max_calls))]
     if agent.skills:
         middleware.append(PinSkills(agent.skills))
     spec = {"name": agent.name, "description": agent.description, "system_prompt": agent.prompt,
@@ -153,9 +152,8 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
     # middleware, so it would see disabled and skill-only tools. It inherits the main
     # agent's tools, permissions and approvals.
     access = (off, registry.skill_only(), registry.requirements())
-    cap = ModelCallLimitMiddleware(run_limit=max_calls, exit_behavior="end")
     general_purpose = {**GENERAL_PURPOSE_SUBAGENT, "model": model, "skills": skill_sources,
-                       "middleware": [ToolAccess(*access), cap]}
+                       "middleware": [ToolAccess(*access), SubagentCallCap(max_calls)]}
     researcher = [{
         "name": "researcher",
         "description": ("Read-only research helper: looks things up with the available "
@@ -166,8 +164,7 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
         "tools": lookups,
         "model": model,
         # Its lookups are its purpose, so only disabled tools are kept from it.
-        "middleware": [ToolAccess(off), ModelCallLimitMiddleware(run_limit=max_calls,
-                                                                 exit_behavior="end")],
+        "middleware": [ToolAccess(off), SubagentCallCap(max_calls)],
     }] if lookups else []
     own = [_spec(agent, model=model, model_for=model_for, tools=tools, skill_sources=skill_sources,
                  access=access, max_calls=max_calls) for agent in agents]

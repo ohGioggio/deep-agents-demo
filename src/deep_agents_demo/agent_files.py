@@ -110,11 +110,14 @@ def parse_agent_md(text: str, source: str, known_tools) -> tuple[AgentDefinition
 
     notes = []
     tools = None
-    if "tools" in front:
+    if "tools" in front and not _names(front["tools"]):
+        # A blank line reads like "not set"; giving the agent no tools would surprise.
+        notes.append("'tools' is blank, so the agent gets all tools (as when it's left out)")
+    elif "tools" in front:
         raw = _names(front["tools"])
         tools, tool_notes = translate_tools(raw, known_tools)
         notes += tool_notes
-        if raw and not tools:
+        if not tools:
             return None, [f"{source}: skipped: none of {name!r}'s tools exist here", *notes]
     disallowed, deny_notes = translate_tools(_names(front.get("disallowedTools")), known_tools)
     notes += [n for n in deny_notes if "dropped" not in n]

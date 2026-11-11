@@ -510,7 +510,8 @@ its description. `/agents` lists them all.
   the file but ignored, with a note.
 - **Same rules as the main agent.** Approvals, guardrails, `DISABLED_TOOLS` and the
   sandbox skill rule apply inside every subagent; `permissionMode` can't loosen
-  them. Each run makes at most `SUBAGENT_MAX_CALLS` model calls (25).
+  them. Each run makes at most `SUBAGENT_MAX_CALLS` model calls (25), counted across
+  approval pauses; then it hands back what it has, marked partial.
 - **Built-ins for what comes next:** `reviewer` (checks a step's result, read-only)
   and `moderator` (runs a discussion between agents) are ready for plans with
   review and discussion rooms, which are being built
