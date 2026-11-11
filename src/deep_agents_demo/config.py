@@ -85,6 +85,8 @@ class Settings:
     rag_enabled: bool = True
     requests_per_minute: float = 0.0  # 0 = no cap
     disabled_tools: tuple = ()        # tool names hidden from the agent and refused
+    agent_dirs: tuple = ()            # extra folders of agent files (before demo_workspace/agents)
+    subagent_max_calls: int = 25      # model calls per subagent run
     paths: Paths = field(default_factory=Paths)
 
     @classmethod
@@ -117,6 +119,9 @@ class Settings:
         batch_size = number("EMBEDDING_BATCH_SIZE", 16)
         if batch_size < 1:
             raise ValueError("EMBEDDING_BATCH_SIZE must be at least 1")
+        max_calls = number("SUBAGENT_MAX_CALLS", 25)
+        if max_calls < 1:
+            raise ValueError("SUBAGENT_MAX_CALLS must be at least 1")
         return cls(
             chat=chat,
             embeddings=EmbeddingSettings(
@@ -146,6 +151,9 @@ class Settings:
             requests_per_minute=number("API_REQUESTS_PER_MINUTE", 0, float),
             disabled_tools=tuple(dict.fromkeys(
                 name for name in re.split(r"[\s,]+", get("DISABLED_TOOLS", "")) if name)),
+            agent_dirs=tuple(Path(part.strip()).expanduser()
+                             for part in get("AGENT_DIRS", "").split(os.pathsep) if part.strip()),
+            subagent_max_calls=max_calls,
         )
 
 

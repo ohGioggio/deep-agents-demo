@@ -457,6 +457,7 @@ Switched to 'park-ideas' (3 turns).
 | `/rename NAME` | Rename this chat |
 | `/delete NAME` | Delete a chat and its history, after asking |
 | `/image PATH` | Attach a PNG or JPG to your next message (or just write its path in the message) |
+| `/agents` | List the subagents the agent can hand work to, with their tools, model and source |
 | `/help` | Show these commands |
 
 The same operations work from the shell without starting a chat or calling the
@@ -468,6 +469,52 @@ model: `--list-threads`, `--show-thread`, `--rename-thread` and
   conversation, not what the agent remembers about you; use `forget` for that.
 - **A new chat is saved on its first message,** so an empty `/new` leaves nothing behind.
 - **Names** use letters, digits, `.`, `_` and `-` (up to 64 characters).
+
+## Subagents: your own agents, in Claude Code's format
+
+The agent can hand work to subagents with `task`. Besides `general-purpose` and
+`researcher`, you can define your own as Markdown files, in the same format as
+Claude Code's `.claude/agents/`, so files move both ways:
+
+```markdown
+---
+name: critic
+description: Finds weaknesses in a plan, design or piece of writing.
+tools: Read, Grep, Glob
+model: inherit
+---
+You are a sharp, fair critic. ...
+```
+
+Ask for one by name ("have the critic review this plan") or let the agent pick by
+its description. `/agents` lists them all.
+
+- **Where they live.** `demo_workspace/agents/` (seeded with this `critic`), plus
+  any folders in `AGENT_DIRS`, for example your `~/.claude/agents`. Subfolders are
+  scanned; `README.md` files are skipped. On a name clash `demo_workspace/agents/`
+  wins over `AGENT_DIRS`, which win over the built-ins, so you can replace
+  `general-purpose`, `researcher`, `reviewer` or `moderator` with your own. Files are
+  loaded at start; the agent can read the folder but not change it.
+- **Tools.** Claude Code names are translated: `Read` to `read_file`, `Write` to
+  `write_file`, `Edit` to `edit_file`, `Bash` to `execute`, `Grep`, `Glob` (also gives
+  `ls`), `TodoWrite` to `write_todos`. This agent's own tool names work too. No
+  `tools` means all of the main agent's tools; `disallowedTools` removes some.
+  Tools that don't exist here are reported at start, and `Agent`/`Task` are dropped
+  (subagents can't start subagents).
+- **Model.** `inherit` or none uses your model; `sonnet`, `opus`, `haiku`, `fable`
+  or a `claude-...` id also falls back to it (with a note); any other id is used on
+  the same endpoint and key.
+- **Also honoured:** `skills` (pinned into the agent's context when it starts),
+  `maxTurns` (lowers the call limit), `permissionMode: plan` (read-only). Other
+  Claude Code fields (`hooks`, `mcpServers`, `memory`, `isolation`, ...) are kept in
+  the file but ignored, with a note.
+- **Same rules as the main agent.** Approvals, guardrails, `DISABLED_TOOLS` and the
+  sandbox skill rule apply inside every subagent; `permissionMode` can't loosen
+  them. Each run makes at most `SUBAGENT_MAX_CALLS` model calls (25).
+- **Built-ins for what comes next:** `reviewer` (checks a step's result, read-only)
+  and `moderator` (runs a discussion between agents) are ready for plans with
+  review and discussion rooms, which are being built
+  ([design](design/specs/2026-11-11-subagents-registry-design.md)).
 
 ## Images: show the agent a picture, let it check its own
 
@@ -710,6 +757,8 @@ src/deep_agents_demo/
 ├── skill_manager.py  # agent-written skills: plan, validate, approve, save, tools
 ├── skill_store.py  # versioned skill storage in SQLite
 ├── tools.py        # tools registry, DISABLED_TOOLS and skill-only tools
+├── agent_files.py  # subagent files in Claude Code's format: parse, translate, write
+├── agent_registry.py  # built-in and folder subagents, precedence, /agents overview
 ├── approvals.py    # the approval prompt for paused tool calls
 ├── guardrails.py   # risky actions (dangerous commands, delete, forget) ask first
 ├── images.py       # attached PNG/JPG images, and the agent checking images it renders

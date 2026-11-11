@@ -49,6 +49,17 @@ class SettingsTests(unittest.TestCase):
                                ("key", "your-model-id")):
             self.assertIn("OPENAI_API_KEY", ChatSettings(api_key, model, None).problem())
 
+    def test_agent_settings(self):
+        import os
+        from pathlib import Path
+        base = {"OPENAI_API_KEY": "k", "AGENT_MODEL": "m"}
+        settings = Settings.from_env({**base, "AGENT_DIRS": f"one{os.pathsep}~/two"})
+        self.assertEqual(settings.agent_dirs, (Path("one"), Path("~/two").expanduser()))
+        self.assertEqual(Settings.from_env(base).subagent_max_calls, 25)
+        self.assertEqual(Settings.from_env(base).agent_dirs, ())
+        with self.assertRaisesRegex(ValueError, "SUBAGENT_MAX_CALLS"):
+            Settings.from_env({**base, "SUBAGENT_MAX_CALLS": "0"})
+
     def test_settings_are_immutable(self):
         with self.assertRaises(Exception):
             Settings.from_env({}).rag_enabled = False

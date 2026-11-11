@@ -186,8 +186,10 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
         skills=skill_sources,
         # Skills change only through approved tools: the file tools may read skill
         # folders but never write, edit or delete in them.
+        # Agent files likewise: the agents folder is the user's.
         permissions=[FilesystemPermission(operations=["write"], mode="deny",
-                                          paths=[f"{source}**" for source in skill_sources])],
+                                          paths=[*(f"{source}**" for source in skill_sources),
+                                                 f"{skills_prefix}/agents/**"])],
         # Paused for the user's decision before they run; subagents inherit this.
         interrupt_on=interrupt_on or None,
         middleware=[TodoListMiddleware(), *(m for f in features for m in f.middleware),

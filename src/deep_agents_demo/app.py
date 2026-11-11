@@ -12,6 +12,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from deep_agents_demo.agent import build_agent
+from deep_agents_demo.agent_registry import AgentRegistry
 from deep_agents_demo.config import Settings, rate_limiter
 from deep_agents_demo.embeddings import CompatibleEmbeddings
 from deep_agents_demo.guardrails import Guardrails
@@ -28,9 +29,10 @@ from deep_agents_demo.tools import ToolRegistry
 from deep_agents_demo.workspace import seed_files
 
 
-def chat_model(settings: Settings) -> ChatOpenAI:
+def chat_model(settings: Settings, model: str | None = None) -> ChatOpenAI:
+    """The configured chat model, or another ``model`` id on the same endpoint and key."""
     # Shares the request cap with the embeddings; retries ride out transient errors.
-    return ChatOpenAI(model=settings.chat.model, api_key=settings.chat.api_key,
+    return ChatOpenAI(model=model or settings.chat.model, api_key=settings.chat.api_key,
                       base_url=settings.chat.base_url,
                       rate_limiter=rate_limiter(settings.requests_per_minute), max_retries=6)
 
@@ -61,6 +63,7 @@ class Runtime:
     chats: Chats
     preview: object = None  # describes a paused tool call for the approval prompt
     uploads: object = None  # saves images the user attaches
+    agents: object = None   # the AgentRegistry the agent was built from
 
 
 def skill_manager(settings: Settings, user: str, stack: ExitStack) -> SkillManager:
@@ -108,14 +111,22 @@ def build_runtime(settings: Settings, user: str, stack: ExitStack, say=print) ->
     for problem in registry.problems(settings.disabled_tools):
         say(f"Warning: {problem}")
     skills.known_tools = registry.names()  # a skill may only declare tools that exist
+    # Agent folders: AGENT_DIRS in order, then the workspace's agents/ (later wins).
+    agents = AgentRegistry.load([*settings.agent_dirs, settings.paths.workspace / "agents"],
+                                registry.names())
+    for warning in agents.warnings:
+        say(f"Agents: {warning}")
     agent = build_agent(chat_model(settings), saver, setup.backend, enabled,
-                        skills_prefix=setup.skills_prefix, disabled_tools=settings.disabled_tools)
+                        skills_prefix=setup.skills_prefix, disabled_tools=settings.disabled_tools,
+                        agents=agents.agents(), model_for=lambda name: chat_model(settings, name),
+                        max_calls=settings.subagent_max_calls)
 
     def preview(name, args):
         return skills.plan(name, args) or guardrails.preview(name, args)
 
     return Runtime(agent=agent, chats=Chats(saver, agent, user), preview=preview,
-                   uploads=Uploads(settings.paths.workspace, user, setup.skills_prefix))
+                   uploads=Uploads(settings.paths.workspace, user, setup.skills_prefix),
+                   agents=agents)
 
 
 def history_runtime(settings: Settings, user: str, stack: ExitStack) -> Runtime:

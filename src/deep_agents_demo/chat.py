@@ -104,9 +104,9 @@ class ChatSession:
     adding a method.
     """
 
-    def __init__(self, chats: Chats, current: str, ask=input, say=print, uploads=None):
+    def __init__(self, chats: Chats, current: str, ask=input, say=print, uploads=None, agents=None):
         self.chats, self.current, self.ask, self.say = chats, current, ask, say
-        self.uploads = uploads
+        self.uploads, self.agents = uploads, agents
         self.pending = []  # images attached with /image, sent with the next message
         self.reload_skills = True  # reload once per chat, on its first turn this session
 
@@ -159,6 +159,21 @@ class ChatSession:
             self.say("Usage: /image PATH (or just write the image's path in your message)")
         elif self.attach(path):
             self.say("It will be sent with your next message.")
+
+    @command("agents", usage="/agents", summary="list the subagents the agent can hand work to")
+    def list_agents(self, arg):
+        if self.agents is None:
+            self.say("No agents here.")
+            return
+        rows = self.agents.overview()
+        width = max(len(r["name"]) for r in rows)
+        lines = [f"  {'NAME':<{width}}  TOOLS / MODEL / SOURCE"]
+        for r in rows:
+            note = f" (overrides {r['overrides']})" if r["overrides"] else ""
+            lines.append(f"  {r['name']:<{width}}  tools: {r['tools']}; model: {r['model']}; "
+                         f"source: {r['source']}{note}")
+        lines.append("  general-purpose and researcher are always there unless an agent replaces them.")
+        self.say("Subagents:\n" + "\n".join(lines))
 
     @command("help", usage="/help", summary="show this help")
     def help(self, arg):
@@ -238,7 +253,7 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
     say(GREETING)
     with ExitStack() as stack:
         runtime = build_runtime(settings, user, stack, say)
-        session = ChatSession(runtime.chats, thread, uploads=runtime.uploads)
+        session = ChatSession(runtime.chats, thread, uploads=runtime.uploads, agents=runtime.agents)
         approver = Approver(preview=runtime.preview,
                             interactive=prompt is None)
         while True:

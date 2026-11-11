@@ -289,5 +289,32 @@ class SubagentTests(unittest.TestCase):
         self.assertEqual(self.spec(kwargs, "critic")["model"], "main-model")
 
 
+class WiringTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def test_agents_command_lists_sources(self):
+        from deep_agents_demo.chat import ChatSession
+        write(self.root / "agents" / "critic.md", CRITIC)
+        registry = AgentRegistry.load([self.root / "agents"], KNOWN)
+        said = []
+        ChatSession(chats=None, current="c", say=said.append, agents=registry).handle("/agents")
+        text = "\n".join(said)
+        for expected in ("critic", "reviewer", "moderator", "built-in", "read_file", "critic.md"):
+            self.assertIn(expected, text)
+
+    def test_agent_folder_is_read_only_to_the_agent(self):
+        (self.root / "skills").mkdir()
+        (self.root / "agents").mkdir()
+        model = Model(responses=[call("write_file", {"file_path": "/agents/evil.md", "content": "x"}, "w"),
+                                 AIMessage(content="done")])
+        agent = build_agent(model, InMemorySaver(), FilesystemBackend(root_dir=str(self.root), virtual_mode=True))
+        out = agent.invoke({"messages": [{"role": "user", "content": "x"}]}, {"configurable": {"thread_id": "t"}})
+        results = [str(m.content) for m in out["messages"] if m.type == "tool"]
+        self.assertTrue(any("permission denied" in r for r in results), results)
+        self.assertFalse((self.root / "agents" / "evil.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
