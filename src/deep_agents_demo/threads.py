@@ -47,6 +47,10 @@ class ChatInfo:
     last: str
 
 
+# Agent runs of a chat's plans and rooms live on threads named "<chat thread><marker>...".
+ORCHESTRATION_THREADS = (":plan:", ":room:")
+
+
 class Chats:
     """List, show, rename and delete one user's chats."""
 
@@ -99,16 +103,20 @@ class Chats:
     def delete(self, name: str) -> None:
         chat = thread_id(self.user, name)
         self.saver.delete_thread(chat)
-        for plan_thread in self._plan_threads(chat):  # the workers and reviewers of its plans
-            self.saver.delete_thread(plan_thread)
+        for extra in self._orchestration_threads(chat):  # its plans' and rooms' agent runs
+            self.saver.delete_thread(extra)
 
-    def _plan_threads(self, chat: str) -> list[str]:
-        """Threads of the plans run in a chat: "<chat thread>:plan:..." (see orchestration)."""
-        prefix = f"{chat}:plan:"
+    def _orchestration_threads(self, chat: str) -> list[str]:
+        """Threads of the plans and rooms run in a chat: "<chat thread>:plan:..." and
+        "<chat thread>:room:..." (see orchestration and rooms)."""
+        found = []
         with self.saver.cursor() as cur:
-            cur.execute("SELECT DISTINCT thread_id FROM checkpoints WHERE substr(thread_id, 1, ?) = ?",
-                        (len(prefix), prefix))
-            return [row[0] for row in cur.fetchall()]
+            for marker in ORCHESTRATION_THREADS:
+                prefix = f"{chat}{marker}"
+                cur.execute("SELECT DISTINCT thread_id FROM checkpoints "
+                            "WHERE substr(thread_id, 1, ?) = ?", (len(prefix), prefix))
+                found += [row[0] for row in cur.fetchall()]
+        return found
 
     def rename(self, old: str, new: str) -> None:
         if not self.exists(old):
@@ -124,11 +132,12 @@ class Chats:
         with self.saver.cursor(transaction=True) as cur:
             for table in ("checkpoints", "writes"):
                 cur.execute(f"UPDATE {table} SET thread_id = ? WHERE thread_id = ?", (target, source))
-                # Its plans' worker and reviewer threads move with it.
-                prefix = f"{source}:plan:"
-                cur.execute(f"UPDATE {table} SET thread_id = ? || substr(thread_id, ?) "
-                            "WHERE substr(thread_id, 1, ?) = ?",
-                            (target, len(source) + 1, len(prefix), prefix))
+                # Its plans' and rooms' agent threads move with it.
+                for marker in ORCHESTRATION_THREADS:
+                    prefix = f"{source}{marker}"
+                    cur.execute(f"UPDATE {table} SET thread_id = ? || substr(thread_id, ?) "
+                                "WHERE substr(thread_id, 1, ?) = ?",
+                                (target, len(source) + 1, len(prefix), prefix))
 
 
 def format_table(chats: list[ChatInfo], current: str | None = None, width: int = 48) -> str:

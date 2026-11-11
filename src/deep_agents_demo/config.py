@@ -90,6 +90,7 @@ class Settings:
     plan_max_attempts: int = 2        # reviews a plan step may fail before the user is asked
     orchestration_max_calls: int = 150  # model calls one plan (or room) may use before asking
     subagent_max_parallel: int = 3    # subagents running at the same time
+    room_max_turns: int = 12          # participant turns in a moderated room
     paths: Paths = field(default_factory=Paths)
 
     @classmethod
@@ -168,6 +169,7 @@ class Settings:
             plan_max_attempts=at_least_one("PLAN_MAX_ATTEMPTS", 2),
             orchestration_max_calls=at_least_one("ORCHESTRATION_MAX_CALLS", 150),
             subagent_max_parallel=at_least_one("SUBAGENT_MAX_PARALLEL", 3),
+            room_max_turns=at_least_one("ROOM_MAX_TURNS", 12),
         )
 
 

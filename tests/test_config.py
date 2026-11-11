@@ -74,6 +74,12 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, name):
                 Settings.from_env({**base, name: "0"})
 
+    def test_room_max_turns(self):
+        base = {"OPENAI_API_KEY": "k", "AGENT_MODEL": "m"}
+        self.assertEqual(Settings.from_env(base).room_max_turns, 12)
+        with self.assertRaisesRegex(ValueError, "ROOM_MAX_TURNS"):
+            Settings.from_env({**base, "ROOM_MAX_TURNS": "0"})
+
     def test_settings_are_immutable(self):
         with self.assertRaises(Exception):
             Settings.from_env({}).rag_enabled = False

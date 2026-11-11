@@ -142,23 +142,32 @@ class _RunFailed(Exception):
 RECURSION_LIMIT = 9_999
 
 
-class PlanRunner:
-    """Runs a plan on the chat loop's thread: per step a worker, then the reviewer;
-    a failed review is retried with its notes; after ``max_attempts`` failures the
-    user decides (retry, skip, stop). Approvals inside workers use ``approver``.
+class Runner:
+    """What plan and room runners share: runs agents on the chat loop's thread (so
+    approvals work), within a request budget, with Ctrl+C pausing between turns.
+    ``make(name, extra_middleware)`` builds an agent (``worker_factory``)."""
 
-    Every run gets its own thread (plan id, step, round, attempt), so a later plan or
-    a retry never sees earlier messages or an already used-up call cap."""
+    label = "[run]"
 
-    def __init__(self, make, approver, *, thread: str, max_attempts: int = 2, budget: int = 150,
-                 interactive: bool = True, ask=input, say=print):
+    def __init__(self, make, approver, *, thread: str, budget: int = 150, interactive: bool = True,
+                 ask=input, say=print):
         self.make, self.approver, self.thread = make, approver, thread
-        self.max_attempts, self.budget_size = max_attempts, budget
+        self.budget_size, self.budget = budget, Budget(budget)
         self.interactive, self.ask, self.say = interactive, ask, say
-        self.budget = Budget(budget)
-        self.pause_requested = False  # set by Ctrl+C; checked before each step
-        self.plan_id = ""
+        self.pause_requested = False  # set by Ctrl+C; checked between turns or steps
         self._previous_handler = None
+
+    def _with_ctrl_c(self, fn, *args):
+        """Interactive: Ctrl+C pauses after the current turn (twice: stop now). In one-shot
+        runs nobody can answer a pause, so Ctrl+C keeps its usual meaning."""
+        self._previous_handler = None
+        if self.interactive and threading.current_thread() is threading.main_thread():
+            self._previous_handler = signal.signal(signal.SIGINT, self._on_sigint)
+        try:
+            return fn(*args)
+        finally:
+            if self._previous_handler is not None:
+                signal.signal(signal.SIGINT, self._previous_handler)
 
     # Ctrl+C -----------------------------------------------------------------------------
     def _on_sigint(self, _signum, _frame):
@@ -170,7 +179,7 @@ class PlanRunner:
         self.pause_requested = True
         try:
             os.write(sys.stderr.fileno(),
-                     b"\n[plan] Pausing after this step (Ctrl+C again to stop now).\n")
+                     f"\n{self.label} Pausing after this one (Ctrl+C again to stop now).\n".encode())
         except (OSError, ValueError, AttributeError):
             pass
 
@@ -186,8 +195,11 @@ class PlanRunner:
         except Exception as error:  # a provider error or a bug: this attempt fails, not the chat
             raise _RunFailed(f"the run failed: {type(error).__name__}: {error}") from error
 
-    def _run_agent(self, name: str, text: str, thread_id: str) -> str:
-        """Run one agent within the budget; when it runs out, ask to continue or wrap up."""
+    def _run_agent(self, name: str, text: str, thread_id: str, capped: bool = True) -> str:
+        """Run one agent within the budget; when it runs out, ask to continue or wrap up.
+        ``capped=False`` runs outside the budget (a room's final summary)."""
+        if not capped:
+            return self._invoke(self.make(name), text, thread_id)
         while True:
             cap = BudgetCap(self.budget)
             result = self._invoke(self.make(name, (cap,)), text, thread_id)
@@ -199,7 +211,7 @@ class PlanRunner:
             thread_id += "+"  # run the interrupted attempt again, from a fresh start
 
     def _continue_after_budget(self) -> bool:
-        self.say(f"[plan] The request budget ({self.budget.size} model calls) is used up.")
+        self.say(f"{self.label} The request budget ({self.budget.size} model calls) is used up.")
         if not self.interactive:
             return False
         try:
@@ -207,6 +219,25 @@ class PlanRunner:
         except (EOFError, KeyboardInterrupt):
             return False
         return answer.strip().lower().startswith("c")
+
+
+
+class PlanRunner(Runner):
+    """Runs a plan on the chat loop's thread: per step a worker, then the reviewer;
+    a failed review is retried with its notes; after ``max_attempts`` failures the
+    user decides (retry, skip, stop). Approvals inside workers use ``approver``.
+
+    Every run gets its own thread (plan id, step, round, attempt), so a later plan or
+    a retry never sees earlier messages or an already used-up call cap."""
+
+    label = "[plan]"
+
+    def __init__(self, make, approver, *, thread: str, max_attempts: int = 2, budget: int = 150,
+                 interactive: bool = True, ask=input, say=print):
+        super().__init__(make, approver, thread=thread, budget=budget, interactive=interactive,
+                         ask=ask, say=say)
+        self.max_attempts = max_attempts
+        self.plan_id = ""
 
     def _pause(self) -> str | None:
         """Ctrl+C was pressed: a note for the next worker, "" to go on, None to stop."""
@@ -271,16 +302,7 @@ class PlanRunner:
 
     # the plan ------------------------------------------------------------------------------
     def run(self, request: dict) -> dict:
-        # Interactive: Ctrl+C pauses after the current step (twice: stop now). In one-shot
-        # runs nobody can answer a pause, so Ctrl+C keeps its usual meaning.
-        self._previous_handler = None
-        if self.interactive and threading.current_thread() is threading.main_thread():
-            self._previous_handler = signal.signal(signal.SIGINT, self._on_sigint)
-        try:
-            return self._run(request)
-        finally:
-            if self._previous_handler is not None:
-                signal.signal(signal.SIGINT, self._previous_handler)
+        return self._with_ctrl_c(self._run, request)
 
     def _run(self, request: dict) -> dict:
         self.budget = Budget(self.budget_size)  # one budget per plan
