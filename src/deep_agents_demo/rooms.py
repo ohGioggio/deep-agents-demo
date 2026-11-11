@@ -129,9 +129,13 @@ class RoomRunner(Runner):
                     ended_by = "turn limit"
                     break
                 decisions += 1
-                decision = self._run_agent("moderator",
-                                           self._moderator_input(question, participants, turns),
-                                           f"{base}:{decisions}:moderator")
+                try:
+                    decision = self._run_agent("moderator",
+                                               self._moderator_input(question, participants, turns),
+                                               f"{base}:{decisions}:moderator")
+                except _RunFailed as error:  # the room goes on, in rotation
+                    self.lines.append(f"*(the moderator could not answer: {error})*")
+                    decision = ""
                 self.user_said = ""
                 kind, name, text = parse_moderator(decision, participants)
                 if kind == "end":
@@ -163,6 +167,19 @@ class RoomRunner(Runner):
                 "note": "Tell the user the outcome; the transcript has every turn."}
 
     def _step_in(self) -> str:
-        """Ctrl+C was pressed (see Task 4): "go", "user" (/end) or "stopped" (/stop)."""
+        """Ctrl+C was pressed: the user's turn. Returns "go", "user" (/end: summarise now)
+        or "stopped" (/stop: end without a summary)."""
         self.pause_requested = False
+        try:
+            answer = self.ask(f"{self.label} You: (your turn, /end for the summary now, "
+                              "/stop to end without one, Enter to go on) ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return "stopped"
+        if answer.lower() == "/end":
+            return "user"
+        if answer.lower() == "/stop":
+            return "stopped"
+        if answer:
+            self.lines.append(f"**You:** {answer}")
+            self.user_said = answer
         return "go"

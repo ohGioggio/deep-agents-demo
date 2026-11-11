@@ -190,5 +190,43 @@ class RoomTests(RoomBase):
         self.assertFalse((self.root / "notes.md").exists())
 
 
+class SteppingInTests(RoomBase):
+    def test_user_turn_reaches_the_moderator(self):
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("Point."), reply("END\nok"),
+                             answers=["focus on cost"])
+        runner.pause_requested = True
+        self.room(runner)
+        self.assertIn("**You:** focus on cost", runner.transcript_text())
+        self.assertIn("The user just said: focus on cost", self.inputs()[0])
+
+    def test_end_now(self):
+        runner = self.runner(reply("Summary after the user ended it."), answers=["/end"])
+        runner.pause_requested = True
+        outcome = self.room(runner)
+        self.assertEqual((outcome["ended_by"], outcome["summary"]), ("user", "Summary after the user ended it."))
+
+    def test_stop_without_summary(self):
+        runner = self.runner(answers=["/stop"])
+        runner.pause_requested = True
+        outcome = self.room(runner)
+        self.assertEqual((outcome["ended_by"], outcome["summary"]), ("stopped", ""))
+        self.assertEqual([k for k, _ in SEEN if k == "messages"], [])
+
+    def test_budget_wrap_up_still_summarises(self):
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("Point one."), reply("The summary."),
+                             interactive=False)
+        runner.budget_size = 2
+        outcome = self.room(runner)
+        self.assertEqual((outcome["ended_by"], outcome["summary"]), ("budget", "The summary."))
+
+    def test_one_shot_ignores_ctrl_c(self):
+        import signal
+        seen = []
+        runner = self.runner(interactive=False)
+        runner.make = lambda name, extra=(): seen.append(signal.getsignal(signal.SIGINT)) or Boom()
+        self.room(runner)
+        self.assertIs(seen[0], signal.getsignal(signal.SIGINT))
+
+
 if __name__ == "__main__":
     unittest.main()
