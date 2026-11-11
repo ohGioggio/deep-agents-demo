@@ -111,5 +111,47 @@ class ManagerTests(Workspace):
         self.assertEqual((own[0].name, own[0].source), ("critic", "yours"))
 
 
+class MarketplaceTests(Workspace):
+    def setUp(self):
+        super().setUp()
+        self.store = SkillStore(self.root / "agents.sqlite", AGENT_TABLES)
+        self.addCleanup(self.store.close)
+        self.alice = AgentManager(self.store, "alice", KNOWN)
+        self.bob = AgentManager(self.store, "bob", KNOWN)
+        self.alice.apply(self.alice.plan_create("critic", "Finds weaknesses.", "You are a critic."))
+        self.alice.apply(self.alice.plan_publish("critic"))
+
+    def test_publish_install_follow_latest(self):
+        self.bob.apply(self.bob.plan_install("critic"))
+        installed, own, _ = self.bob.definitions()
+        self.assertEqual(([a.name for a in installed], own), (["critic"], []))
+        self.assertEqual(installed[0].source, "marketplace")
+        self.alice.apply(self.alice.plan_update("critic", description="Sharper critic."))
+        self.alice.apply(self.alice.plan_publish("critic"))
+        self.assertEqual(self.bob.definitions()[0][0].description, "Sharper critic.")
+
+    def test_install_is_refused_twice_and_for_unknown_names(self):
+        self.bob.apply(self.bob.plan_install("critic"))
+        self.assertIn("already installed", self.bob.plan_install("critic").errors[0])
+        unknown = self.bob.plan_install("nope").errors[0]
+        self.assertIn("no agent named 'nope'", unknown)
+        self.assertIn("browse_agents", unknown)
+
+    def test_removed_from_marketplace(self):
+        self.bob.apply(self.bob.plan_install("critic"))
+        self.alice.apply(self.alice.plan_remove("critic", scope="marketplace"))
+        installed, _own, notes = self.bob.definitions()
+        self.assertEqual(installed, [])
+        self.assertTrue(any("removed from the marketplace" in n for n in notes), notes)
+        row = next(r for r in self.bob.overview() if r["name"] == "critic")
+        self.assertIn("removed from the marketplace", row["note"])
+
+    def test_browse_filters_and_marks_installed(self):
+        self.bob.apply(self.bob.plan_install("critic"))
+        self.assertEqual([(r["name"], r["installed"]) for r in self.bob.browse("weak")], [("critic", True)])
+        self.assertEqual(self.bob.browse("nothing-like-this"), [])
+        self.assertEqual(self.bob.browse()[0]["description"], "Finds weaknesses.")
+
+
 if __name__ == "__main__":
     unittest.main()
