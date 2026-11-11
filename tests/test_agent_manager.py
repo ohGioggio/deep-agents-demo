@@ -213,6 +213,11 @@ class ToolTests(Workspace):
         self.run_turn(CREATE_HELPER, answers=["a"])
         self.assertIsNotNone(self.store.get("user", "alice", "helper"))
 
+    def test_prompt_routes_named_agents_to_themselves(self):
+        """Live finding: right after creating 'tester', the model asked general-purpose to
+        talk to it instead of delegating to tester."""
+        self.assertIn("subagent_type is its name", self.manager.feature().prompt)
+
     def test_registry_precedence_with_database(self):
         folder = self.root / "agents"
         folder.mkdir()

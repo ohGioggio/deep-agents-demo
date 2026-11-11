@@ -225,7 +225,8 @@ class AgentManager(SkillManager):
                   "import_agent, restore_agent, publish_agent, install_agent, uninstall_agent. "
                   "Their tools must be existing tool names. Each change is shown to the user for "
                   "approval and is available from the next message. list_agents shows every "
-                  "agent and where it comes from. ")
+                  "agent and where it comes from. When the user names an agent, hand the work "
+                  "to that agent with task (subagent_type is its name), not to another one. ")
         return Feature(name="agents", prompt=prompt, tools=tuple(self.tools()),
                        approvals=GATED_AGENT_TOOLS)
 
