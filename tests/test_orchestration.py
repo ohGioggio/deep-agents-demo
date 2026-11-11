@@ -200,5 +200,108 @@ class RunPlanToolTests(Workspace):
         self.assertTrue((self.root / "notes.md").exists())
 
 
+def reply(text):
+    return AIMessage(content=text)
+
+
+class RunnerTests(Workspace):
+    def runner(self, *responses, features=(), answers=(), approvals=(), interactive=True, agents=()):
+        from deep_agents_demo.orchestration import PlanRunner
+        model = Model(responses=[*responses, reply("UNEXPECTED EXTRA CALL")])
+        make = worker_factory(model, InMemorySaver(), self.backend(), features, agents=agents)
+        replies, approve = iter(answers), iter(approvals)
+        self.said = []
+        approver = Approver(ask=lambda _: next(approve), say=lambda *_: None)
+        return PlanRunner(make, approver, thread="t", max_attempts=2, interactive=interactive,
+                          ask=lambda _: next(replies), say=self.said.append)
+
+    def plan(self, runner, *tasks, goal="g"):
+        with patch("builtins.print"):
+            return runner.run({"type": "run_plan", "goal": goal,
+                               "steps": [{"task": t, "agent": a} for t, a in tasks]})
+
+    def statuses(self, outcome):
+        return [s["status"] for s in outcome["steps"]]
+
+    def inputs(self):
+        """The human message each model call started from (worker or reviewer)."""
+        return [next(str(m.content) for m in msgs if m.type == "human")
+                for kind, msgs in SEEN if kind == "messages"]
+
+    def test_parse_verdict(self):
+        from deep_agents_demo.orchestration import parse_verdict
+        self.assertEqual(parse_verdict("PASS\nok"), (True, "ok"))
+        self.assertEqual(parse_verdict("**FAIL**\nfix x"), (False, "fix x"))
+        ok, notes = parse_verdict("Looks fine overall")
+        self.assertFalse(ok)
+        self.assertIn("no clear verdict", notes)
+
+    def test_two_steps_pass(self):
+        runner = self.runner(reply("result one"), reply("PASS\nok"), reply("result two"), reply("PASS\nfine"))
+        outcome = self.plan(runner, ("write it", "general-purpose"), ("check it", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["passed", "passed"])
+        self.assertEqual(outcome["steps"][0]["result"], "result one")
+        self.assertIn("result one", self.inputs()[2])
+        self.assertIn("Earlier steps:", self.inputs()[2])
+        self.assertIn("[plan] step 1/2 · general-purpose", self.said)
+        self.assertTrue(any("✓ reviewed" in s for s in self.said), self.said)
+
+    def test_retry_after_fail_then_pass(self):
+        runner = self.runner(reply("v1"), reply("FAIL\nadd tests"), reply("v2"), reply("PASS\ngood"))
+        outcome = self.plan(runner, ("do it", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["passed"])
+        self.assertIn("add tests", self.inputs()[2])
+        self.assertTrue(any("✗ attempt 1/2: add tests" in s for s in self.said), self.said)
+
+    def test_failed_step_asks_and_skip_continues(self):
+        runner = self.runner(reply("a"), reply("FAIL\nno"), reply("b"), reply("FAIL\nstill no"),
+                             reply("c"), reply("PASS\nok"), answers=["s"])
+        outcome = self.plan(runner, ("one", "general-purpose"), ("two", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["skipped", "passed"])
+        self.assertEqual(outcome["steps"][0]["notes"], "still no")
+
+    def test_retry_runs_the_step_again(self):
+        runner = self.runner(reply("a"), reply("FAIL\nno"), reply("b"), reply("FAIL\nno"),
+                             reply("c"), reply("PASS\nok"), answers=["r"])
+        self.assertEqual(self.statuses(self.plan(runner, ("one", "general-purpose"))), ["passed"])
+
+    def test_stop_marks_the_rest_stopped(self):
+        runner = self.runner(reply("a"), reply("FAIL\nno"), reply("b"), reply("FAIL\nno"), answers=["x"])
+        outcome = self.plan(runner, ("one", "general-purpose"), ("two", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["failed", "stopped"])
+
+    def test_non_interactive_stops(self):
+        runner = self.runner(reply("a"), reply("FAIL\nno"), reply("b"), reply("FAIL\nno"), interactive=False)
+        outcome = self.plan(runner, ("one", "general-purpose"), ("two", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["failed", "stopped"])
+
+    def test_unknown_agent_fails_without_model_calls(self):
+        runner = self.runner(answers=["x"])
+        outcome = self.plan(runner, ("one", "nobody"))
+        self.assertEqual(self.statuses(outcome), ["failed"])
+        self.assertIn("no agent named 'nobody'", outcome["steps"][0]["notes"])
+        self.assertEqual([k for k, _ in SEEN if k == "messages"], [])
+
+    def test_worker_approval_mid_plan(self):
+        (self.root / "notes.md").write_text("old")
+        runner = self.runner(call("delete", {"file_path": "/notes.md"}, "d"), reply("deleted it"),
+                             reply("PASS\nok"), features=[Guardrails.feature()], approvals=["a"])
+        outcome = self.plan(runner, ("remove notes", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["passed"])
+        self.assertFalse((self.root / "notes.md").exists())
+        worker_calls = [i for i in self.inputs() if i.startswith("Goal:") and "Step 1 of 1" in i
+                        and "Reply PASS or FAIL" not in i]
+        self.assertEqual(len(worker_calls), 2, "two worker model calls in one attempt: no re-run")
+
+    def test_rejected_approval_inside_worker(self):
+        (self.root / "notes.md").write_text("old")
+        runner = self.runner(call("delete", {"file_path": "/notes.md"}, "d"), reply("could not delete"),
+                             reply("FAIL\nnot deleted"), reply("tried again, refused"), reply("PASS\nok"),
+                             features=[Guardrails.feature()], approvals=["r", "keep it", "r", "keep it"])
+        outcome = self.plan(runner, ("remove notes", "general-purpose"))
+        self.assertTrue((self.root / "notes.md").exists())
+        self.assertEqual(self.statuses(outcome), ["passed"])
+
+
 if __name__ == "__main__":
     unittest.main()
