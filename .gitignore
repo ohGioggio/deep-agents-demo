@@ -17,3 +17,6 @@ assets/diagrams/
 # Local research notes and reports
 research_notes/
 reports/
+
+# superpowers workspaces (plans in progress, brainstorm mockups)
+.superpowers/
