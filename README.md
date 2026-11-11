@@ -526,11 +526,11 @@ by step"). The agent writes the steps, each with the agent that should do it, an
 hands them to `run_plan`. Then, one step at a time:
 
 ```text
-[plan] step 1/3 · general-purpose      the worker does the step (fresh context)
+[plan] step 1/3 - general-purpose      the worker does the step (fresh context)
 [plan] step 1/3 passed review          the reviewer replied PASS
-[plan] step 2/3 · tester
+[plan] step 2/3 - tester
 [plan] step 2/3 failed review (attempt 1/2): no test for empty input
-[plan] step 2/3 · tester               the worker tries again, with the notes
+[plan] step 2/3 - tester               the worker tries again, with the notes
 [plan] step 2/3 passed review
 ```
 
@@ -539,7 +539,7 @@ hands them to `run_plan`. Then, one step at a time:
 - **A step that fails `PLAN_MAX_ATTEMPTS` (2) reviews stops the plan** and asks
   `[r]etry  [s]kip  [x] stop`. With `--prompt` it stops.
 - **Ctrl+C pauses after the current step:** type a note for the next step, `/stop`,
-  or press Enter to go on.
+  or press Enter to go on. Press Ctrl+C again to stop at once.
 - **A budget:** one plan may make `ORCHESTRATION_MAX_CALLS` (150) model calls; then
   you're asked to continue (another 150) or wrap up.
 - **The same rules as everywhere:** workers and reviewers have their agent's tools,

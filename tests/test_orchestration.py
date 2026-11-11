@@ -246,7 +246,7 @@ class RunnerTests(RunnerBase):
         self.assertIn("result one", self.inputs()[2])
         self.assertIn("Earlier steps:", self.inputs()[2])
         self.assertIn("Do only this step", self.inputs()[0], "live finding: step 1 did step 2 too")
-        self.assertIn("[plan] step 1/2 · general-purpose", self.said)
+        self.assertIn("[plan] step 1/2 - general-purpose", self.said)
         self.assertTrue(any("step 1/2 passed review" in s for s in self.said), self.said)
 
     def test_retry_after_fail_then_pass(self):
@@ -338,6 +338,126 @@ class BudgetPauseTests(RunnerBase):
         outcome = self.plan(runner, ("one", "general-purpose"), ("two", "general-purpose"))
         self.assertEqual(self.statuses(outcome), ["stopped", "stopped"])
         self.assertEqual([k for k, _ in SEEN if k == "messages"], [])
+
+
+class Boom:
+    """A graph whose run fails, like a provider error."""
+
+    def stream(self, *args, **kwargs):
+        raise RuntimeError("provider down")
+
+
+class ReviewFixTests(RunnerBase):
+    def test_long_step_does_not_hit_the_recursion_limit(self):
+        """Review finding: a worker crashed with GraphRecursionError after ~11 calls."""
+        steps = [call("ls", {"path": "/"}, f"l{i}") for i in range(15)]
+        runner = self.runner(*steps, reply("done"), reply("PASS\nok"))
+        self.assertEqual(self.statuses(self.plan(runner, ("long job", "general-purpose"))), ["passed"])
+
+    def test_a_crashing_run_is_a_failed_attempt(self):
+        runner = self.runner(interactive=False)
+        runner.make = lambda name, extra=(): Boom()
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["failed"])
+        self.assertIn("provider down", outcome["steps"][0]["notes"])
+
+    def test_a_second_plan_starts_fresh(self):
+        """Review finding: plan 2's worker saw plan 1's messages and its used-up call cap."""
+        runner = self.runner(reply("one"), reply("PASS\nok"), reply("two"), reply("PASS\nok"))
+        self.plan(runner, ("first", "general-purpose"))
+        self.plan(runner, ("second", "general-purpose"))
+        calls = [m for kind, m in SEEN if kind == "messages"]
+        self.assertEqual(len([m for m in calls[2] if m.type == "human"]), 1)
+
+    def test_retry_starts_fresh_and_keeps_the_notes(self):
+        runner = self.runner(reply("a"), reply("FAIL\nno1"), reply("b"), reply("FAIL\nno2"),
+                             reply("c"), reply("PASS\nok"), answers=["r"])
+        self.assertEqual(self.statuses(self.plan(runner, ("one", "general-purpose"))), ["passed"])
+        retry = [m for kind, m in SEEN if kind == "messages"][4]
+        self.assertEqual(len([m for m in retry if m.type == "human"]), 1)
+        self.assertIn("no2", self.inputs()[4])
+
+    def test_finishing_on_the_last_budgeted_call_passes(self):
+        """Review finding: a step that used exactly the budget was reported stopped."""
+        runner = self.runner(reply("done"), reply("PASS\nok"), interactive=False)
+        runner.budget_size = 2
+        self.assertEqual(self.statuses(self.plan(runner, ("one", "general-purpose"))), ["passed"])
+
+    def test_wrap_up_keeps_the_partial_result(self):
+        halfway = AIMessage(content="halfway there", tool_calls=[{"name": "ls", "id": "l", "args": {"path": "/"}}])
+        runner = self.runner(halfway, *[call("ls", {"path": "/"}, f"l{i}") for i in range(5)], interactive=False)
+        runner.budget_size = 3
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["stopped"])
+        self.assertIn("halfway there", outcome["steps"][0]["result"])
+
+    def test_ctrl_c_is_left_alone_when_not_interactive(self):
+        import signal
+        seen = []
+        runner = self.runner(interactive=False)
+        runner.make = lambda name, extra=(): seen.append(signal.getsignal(signal.SIGINT)) or Boom()
+        self.plan(runner, ("one", "general-purpose"))
+        self.assertIs(seen[0], signal.getsignal(signal.SIGINT))
+
+    def test_second_ctrl_c_stops_now_and_nothing_prints_in_the_handler(self):
+        runner = self.runner()
+        runner._on_sigint(2, None)
+        self.assertTrue(runner.pause_requested)
+        self.assertEqual(self.said, [])
+        with self.assertRaises(KeyboardInterrupt):
+            runner._on_sigint(2, None)
+
+
+class WorkerStackTests(Workspace):
+    def test_workers_summarize_long_contexts(self):
+        """Review finding: workers lacked the summarization subagents get (it wraps model
+        calls, so it isn't a graph node: check it's built for the worker's model)."""
+        from deep_agents_demo import agent as agent_module
+        model = Model(responses=[reply("x")])
+        real = agent_module.create_summarization_middleware
+        with patch.object(agent_module, "create_summarization_middleware", side_effect=real) as made:
+            worker_factory(model, InMemorySaver(), self.backend())("general-purpose")
+        self.assertIs(made.call_args.args[0], model)
+
+
+class ChatCleanupTests(Workspace):
+    def test_deleting_a_chat_removes_its_plan_threads(self):
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        from langgraph.graph import END, START, MessagesState, StateGraph
+
+        from deep_agents_demo.threads import Chats, thread_id
+        graph = StateGraph(MessagesState)
+        graph.add_node("n", lambda state: {"messages": [reply("hi")]})
+        graph.add_edge(START, "n")
+        graph.add_edge("n", END)
+        with SqliteSaver.from_conn_string(str(self.root / "c.sqlite")) as saver:
+            compiled = graph.compile(checkpointer=saver)
+            chat = thread_id("alice", "c1")
+            for tid in (chat, f"{chat}:plan:abc:1:1:1:worker"):
+                compiled.invoke({"messages": [{"role": "user", "content": "x"}]},
+                                {"configurable": {"thread_id": tid}})
+            Chats(saver, compiled, "alice").delete("c1")
+            left = saver.conn.execute("SELECT DISTINCT thread_id FROM checkpoints").fetchall()
+        self.assertEqual(left, [])
+
+    def test_renaming_a_chat_moves_its_plan_threads(self):
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        from langgraph.graph import END, START, MessagesState, StateGraph
+
+        from deep_agents_demo.threads import Chats, thread_id
+        graph = StateGraph(MessagesState)
+        graph.add_node("n", lambda state: {"messages": [reply("hi")]})
+        graph.add_edge(START, "n")
+        graph.add_edge("n", END)
+        with SqliteSaver.from_conn_string(str(self.root / "c.sqlite")) as saver:
+            compiled = graph.compile(checkpointer=saver)
+            old, new = thread_id("alice", "c1"), thread_id("alice", "c2")
+            for tid in (old, f"{old}:plan:abc:1:1:1:worker"):
+                compiled.invoke({"messages": [{"role": "user", "content": "x"}]},
+                                {"configurable": {"thread_id": tid}})
+            Chats(saver, compiled, "alice").rename("c1", "c2")
+            left = sorted(r[0] for r in saver.conn.execute("SELECT DISTINCT thread_id FROM checkpoints"))
+        self.assertEqual(left, sorted([new, f"{new}:plan:abc:1:1:1:worker"]))
 
 
 class WiringTests(Workspace):

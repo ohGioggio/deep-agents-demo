@@ -14,8 +14,9 @@ from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPer
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents import create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, TodoListMiddleware
+from langchain.agents.middleware import HumanInTheLoopMiddleware, ModelRefusalMiddleware, TodoListMiddleware
 
 from deep_agents_demo.agent_files import READ_ONLY
 from deep_agents_demo.agent_registry import BUILTIN_AGENTS, PinSkills, SubagentCallCap
@@ -253,10 +254,14 @@ def worker_factory(model, checkpointer, backend, features=(), *, skills_prefix="
         spec = specs.get(name)
         if spec is None:
             return None
+        # The stack Deep Agents gives a subagent: files, summarizing long contexts, patched
+        # tool calls, the agent's own limits, skills, then refusal handling and approvals.
         middleware = [FilesystemMiddleware(backend=backend, permissions=a.permissions),
+                      create_summarization_middleware(spec["model"], backend),
                       PatchToolCallsMiddleware(),
+                      *spec["middleware"], *extra_middleware,
                       SkillsMiddleware(backend=backend, sources=a.skill_sources),
-                      *spec["middleware"], *extra_middleware]
+                      ModelRefusalMiddleware()]
         if a.interrupt_on:
             middleware.append(HumanInTheLoopMiddleware(interrupt_on=a.interrupt_on))
         return create_agent(model=spec["model"], tools=spec.get("tools", shared_tools),

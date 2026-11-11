@@ -97,7 +97,18 @@ class Chats:
         return lines
 
     def delete(self, name: str) -> None:
-        self.saver.delete_thread(thread_id(self.user, name))
+        chat = thread_id(self.user, name)
+        self.saver.delete_thread(chat)
+        for plan_thread in self._plan_threads(chat):  # the workers and reviewers of its plans
+            self.saver.delete_thread(plan_thread)
+
+    def _plan_threads(self, chat: str) -> list[str]:
+        """Threads of the plans run in a chat: "<chat thread>:plan:..." (see orchestration)."""
+        prefix = f"{chat}:plan:"
+        with self.saver.cursor() as cur:
+            cur.execute("SELECT DISTINCT thread_id FROM checkpoints WHERE substr(thread_id, 1, ?) = ?",
+                        (len(prefix), prefix))
+            return [row[0] for row in cur.fetchall()]
 
     def rename(self, old: str, new: str) -> None:
         if not self.exists(old):
@@ -113,6 +124,11 @@ class Chats:
         with self.saver.cursor(transaction=True) as cur:
             for table in ("checkpoints", "writes"):
                 cur.execute(f"UPDATE {table} SET thread_id = ? WHERE thread_id = ?", (target, source))
+                # Its plans' worker and reviewer threads move with it.
+                prefix = f"{source}:plan:"
+                cur.execute(f"UPDATE {table} SET thread_id = ? || substr(thread_id, ?) "
+                            "WHERE substr(thread_id, 1, ?) = ?",
+                            (target, len(source) + 1, len(prefix), prefix))
 
 
 def format_table(chats: list[ChatInfo], current: str | None = None, width: int = 48) -> str:

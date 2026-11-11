@@ -7,8 +7,11 @@
   resumes the tool with the outcome.
 """
 import json
+import os
 import signal
+import sys
 import threading
+import uuid
 from dataclasses import dataclass
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
@@ -77,11 +80,13 @@ class BudgetCap(AgentMiddleware):
     def __init__(self, budget: Budget):
         super().__init__()
         self.budget = budget
+        self.fired = False  # this run was stopped by the budget (not merely finished on it)
 
     @hook_config(can_jump_to=["end"])
     def before_model(self, state, runtime):
         if self.budget.spend():
             return None
+        self.fired = True
         return {"messages": [AIMessage(content=BUDGET_STOP)], "jump_to": "end"}
 
 
@@ -120,17 +125,30 @@ class StepResult:
 
 
 def _last_text(graph, config) -> str:
-    """The final answer of a finished run: the last AI message with text."""
+    """The final answer of a finished run: the last AI message with text (the budget's
+    stop message doesn't count: the work before it is what's worth keeping)."""
     for message in reversed(graph.get_state(config).values.get("messages", [])):
-        if message.type == "ai" and str(message.content).strip():
-            return message.text if isinstance(message.text, str) else str(message.content)
+        text = message.text if isinstance(getattr(message, "text", None), str) else str(message.content)
+        if message.type == "ai" and text.strip() and text.strip() != BUDGET_STOP:
+            return text
     return ""
+
+
+class _RunFailed(Exception):
+    """One agent run raised (e.g. a provider error): the attempt fails, the chat goes on."""
+
+
+# Deep Agents runs subagents with this limit; the call cap is what bounds a run.
+RECURSION_LIMIT = 9_999
 
 
 class PlanRunner:
     """Runs a plan on the chat loop's thread: per step a worker, then the reviewer;
     a failed review is retried with its notes; after ``max_attempts`` failures the
-    user decides (retry, skip, stop). Approvals inside workers use ``approver``."""
+    user decides (retry, skip, stop). Approvals inside workers use ``approver``.
+
+    Every run gets its own thread (plan id, step, round, attempt), so a later plan or
+    a retry never sees earlier messages or an already used-up call cap."""
 
     def __init__(self, make, approver, *, thread: str, max_attempts: int = 2, budget: int = 150,
                  interactive: bool = True, ask=input, say=print):
@@ -139,28 +157,49 @@ class PlanRunner:
         self.interactive, self.ask, self.say = interactive, ask, say
         self.budget = Budget(budget)
         self.pause_requested = False  # set by Ctrl+C; checked before each step
+        self.plan_id = ""
+        self._previous_handler = None
+
+    # Ctrl+C -----------------------------------------------------------------------------
+    def _on_sigint(self, _signum, _frame):
+        """First Ctrl+C: pause after this step. Second: stop now. Nothing is printed
+        through Python's stdout here: the handler can fire in the middle of a print."""
+        if self.pause_requested:
+            signal.signal(signal.SIGINT, self._previous_handler or signal.default_int_handler)
+            raise KeyboardInterrupt
+        self.pause_requested = True
+        try:
+            os.write(sys.stderr.fileno(),
+                     b"\n[plan] Pausing after this step (Ctrl+C again to stop now).\n")
+        except (OSError, ValueError, AttributeError):
+            pass
 
     # one run of one agent -------------------------------------------------------------
     def _invoke(self, graph, text: str, thread_id: str) -> str:
         from deep_agents_demo.chat import stream_turn  # chat.py imports the app, which imports us
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 80}
-        stream_turn(graph, text, config, reload_skills=True, approver=self.approver)
-        return _last_text(graph, config)
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
+        try:
+            stream_turn(graph, text, config, reload_skills=True, approver=self.approver)
+            return _last_text(graph, config)
+        except (KeyboardInterrupt, _WrapUp):
+            raise
+        except Exception as error:  # a provider error or a bug: this attempt fails, not the chat
+            raise _RunFailed(f"the run failed: {type(error).__name__}: {error}") from error
 
     def _run_agent(self, name: str, text: str, thread_id: str) -> str:
         """Run one agent within the budget; when it runs out, ask to continue or wrap up."""
         while True:
-            result = self._invoke(self.make(name, (BudgetCap(self.budget),)), text, thread_id)
-            if self.budget.left > 0:
+            cap = BudgetCap(self.budget)
+            result = self._invoke(self.make(name, (cap,)), text, thread_id)
+            if not cap.fired:
                 return result
             if not self._continue_after_budget():
-                raise _WrapUp
+                raise _WrapUp(result)
             self.budget.extend()
             thread_id += "+"  # run the interrupted attempt again, from a fresh start
 
     def _continue_after_budget(self) -> bool:
-        message = (f"[plan] The request budget ({self.budget.size} model calls) is used up.")
-        self.say(message)
+        self.say(f"[plan] The request budget ({self.budget.size} model calls) is used up.")
         if not self.interactive:
             return False
         try:
@@ -172,8 +211,6 @@ class PlanRunner:
     def _pause(self) -> str | None:
         """Ctrl+C was pressed: a note for the next worker, "" to go on, None to stop."""
         self.pause_requested = False
-        if not self.interactive:
-            return ""
         try:
             answer = self.ask("[plan] You: (a note for the next step, /stop, or Enter to go on) ")
         except (EOFError, KeyboardInterrupt):
@@ -199,19 +236,22 @@ class PlanRunner:
                 f"The worker's result:\n{result}\n\nReply PASS or FAIL on the first line, then notes.")
 
     # one step ---------------------------------------------------------------------------
-    def _attempts(self, goal, step, number, total, done, user_note) -> StepResult:
+    def _attempts(self, goal, step, number, total, done, user_note, round_no, notes="") -> StepResult:
         label = f"[plan] step {number}/{total}"
         if self.make(step.agent) is None:
             return StepResult(step, "failed", notes=f"no agent named {step.agent!r}")
-        result = notes = ""
+        result = ""
         for attempt in range(1, self.max_attempts + 1):
-            self.say(f"{label} · {step.agent}")
-            base = f"{self.thread}:plan:{number}:{attempt}"
-            result = self._run_agent(step.agent, self._worker_input(goal, step, number, total, done,
-                                                                    notes, user_note), f"{base}:worker")
-            verdict = self._run_agent("reviewer", self._review_input(goal, step, number, total, result),
-                                      f"{base}:review")
-            passed, notes = parse_verdict(verdict)
+            self.say(f"{label} - {step.agent}")
+            base = f"{self.thread}:plan:{self.plan_id}:{number}:{round_no}:{attempt}"
+            try:
+                result = self._run_agent(step.agent, self._worker_input(
+                    goal, step, number, total, done, notes, user_note), f"{base}:worker")
+                verdict = self._run_agent("reviewer", self._review_input(
+                    goal, step, number, total, result), f"{base}:review")
+                passed, notes = parse_verdict(verdict)
+            except _RunFailed as error:
+                passed, notes = False, str(error)
             if passed:
                 self.say(f"{label} passed review")
                 return StepResult(step, "passed", result, notes)
@@ -231,27 +271,25 @@ class PlanRunner:
 
     # the plan ------------------------------------------------------------------------------
     def run(self, request: dict) -> dict:
-        # Ctrl+C pauses after the current step instead of aborting the turn.
-        previous = None
-        if threading.current_thread() is threading.main_thread():
-            def pause(_signum, _frame):
-                self.pause_requested = True
-                self.say("[plan] Pausing after this step...")
-            previous = signal.signal(signal.SIGINT, pause)
+        # Interactive: Ctrl+C pauses after the current step (twice: stop now). In one-shot
+        # runs nobody can answer a pause, so Ctrl+C keeps its usual meaning.
+        self._previous_handler = None
+        if self.interactive and threading.current_thread() is threading.main_thread():
+            self._previous_handler = signal.signal(signal.SIGINT, self._on_sigint)
         try:
             return self._run(request)
         finally:
-            if previous is not None:
-                signal.signal(signal.SIGINT, previous)
+            if self._previous_handler is not None:
+                signal.signal(signal.SIGINT, self._previous_handler)
 
     def _run(self, request: dict) -> dict:
         self.budget = Budget(self.budget_size)  # one budget per plan
+        self.plan_id = uuid.uuid4().hex[:8]     # fresh threads for every plan
         goal = str(request.get("goal", ""))
         steps = [Step(str(s["task"]), str(s.get("agent") or "general-purpose"))
                  for s in request.get("steps", [])]
         done: list[StepResult] = []
-        user_note = ""
-        number = 0
+        user_note, notes, round_no, number = "", "", 1, 0
         while number < len(steps):
             step = steps[number]
             if self.pause_requested:
@@ -262,16 +300,21 @@ class PlanRunner:
                     break
                 user_note = note or user_note
             try:
-                outcome = self._attempts(goal, step, number + 1, len(steps), done, user_note)
-            except _WrapUp:
+                outcome = self._attempts(goal, step, number + 1, len(steps), done, user_note,
+                                         round_no, notes)
+            except _WrapUp as wrap:
+                partial = str(wrap.args[0]) if wrap.args else ""
+                done.append(StepResult(step, "stopped", partial,
+                                       notes="budget used up: the plan's request budget ran out"))
                 done += [StepResult(rest, "stopped",
                                     notes="budget used up: the plan's request budget ran out")
-                         for rest in steps[number:]]
+                         for rest in steps[number + 1:]]
                 break
             user_note = ""
             if outcome.status == "failed":
                 choice = self._decide(outcome, number + 1, len(steps))
-                if choice == "retry":
+                if choice == "retry":  # fresh threads, keeping the last review's notes
+                    round_no, notes = round_no + 1, outcome.notes
                     continue
                 if choice == "skip":
                     outcome.status = "skipped"
@@ -281,7 +324,7 @@ class PlanRunner:
                              for rest in steps[number + 1:]]
                     break
             done.append(outcome)
-            number += 1
+            number, round_no, notes = number + 1, 1, ""
         return {"goal": goal, "steps": [r.as_dict() for r in done],
                 "note": ("Tell the user how each step went. The user decided what happens to "
                          "failed, skipped and stopped steps: don't redo them yourself unless "
