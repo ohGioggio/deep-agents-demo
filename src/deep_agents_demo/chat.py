@@ -74,18 +74,29 @@ def printable(message):
     return message
 
 
-def stream_turn(agent, prompt, config, reload_skills=True, approver=None) -> None:
+def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runners=None) -> None:
     """Run one user turn to the end, asking ``approver`` about every paused tool call.
 
     Without an approver, paused calls are rejected (nobody can approve them).
+    ``runners`` answer other pauses by their ``type`` (e.g. ``run_plan``): they run
+    here, on the chat loop's thread, and their return value resumes the tool.
     """
-    approver = approver or Approver(interactive=False)
+    approver, runners = approver or Approver(interactive=False), runners or {}
     payload, shown = turn_input(prompt, reload_skills), set()
+
+    def answer(value):
+        kind = value.get("type") if isinstance(value, dict) else None
+        if kind in runners:
+            return runners[kind](value)
+        if kind == "run_plan":
+            return {"error": "plans can't run here (nobody to run them); do the steps yourself"}
+        return approver.decide(value)
+
     while True:
         paused = stream_once(agent, payload, config, shown)
         if not paused:
             return
-        payload = Command(resume={item.id: approver.decide(item.value) for item in paused})
+        payload = Command(resume={item.id: answer(item.value) for item in paused})
 
 
 def command(*names, usage, summary):

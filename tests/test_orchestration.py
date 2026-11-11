@@ -1,4 +1,5 @@
 """Subagent-driven execution: the parallel cap, workers, run_plan and the plan runner."""
+import json
 import shutil
 import tempfile
 import threading
@@ -152,6 +153,51 @@ class WorkerTests(Workspace):
                          features=[Feature("orchestration", tools=(run_plan,))], agents=[agent_from(ALL_AGENT)])
         self.run_worker(make("helper"))
         self.assertNotIn("run_plan", self.bound()[0])
+
+
+class RunPlanToolTests(Workspace):
+    def turn(self, *responses, runners=None, features=(), approver=None):
+        from deep_agents_demo.orchestration import orchestration_feature
+        model = Model(responses=[*responses, AIMessage(content="done")])
+        agent = build_agent(model, InMemorySaver(), self.backend(), [orchestration_feature(), *features])
+        with patch("builtins.print"):
+            stream_turn(agent, "go", {"configurable": {"thread_id": "t"}},
+                        approver=approver or Approver(interactive=False), runners=runners)
+        last = [m for kind, m in SEEN if kind == "messages"][-1]
+        return [str(m.content) for m in last if m.type == "tool"]
+
+    def test_run_plan_pauses_and_returns_the_runner_answer(self):
+        asked = []
+
+        def runner(request):
+            asked.append(request)
+            return {"steps": [{"status": "passed"}]}
+        results = self.turn(call("run_plan", {"goal": "g", "steps": [{"task": "a"}]}, "p"),
+                            runners={"run_plan": runner})
+        self.assertEqual(asked, [{"type": "run_plan", "goal": "g",
+                                  "steps": [{"task": "a", "agent": "general-purpose"}]}])
+        self.assertEqual(results, [json.dumps({"steps": [{"status": "passed"}]})])
+
+    def test_invalid_steps_are_refused_without_pausing(self):
+        asked = []
+        results = self.turn(call("run_plan", {"goal": "g", "steps": [{"agent": "x"}]}, "p"),
+                            runners={"run_plan": asked.append})
+        self.assertEqual(asked, [])
+        self.assertIn("task", results[0])
+
+    def test_without_a_runner_the_plan_is_refused(self):
+        results = self.turn(call("run_plan", {"goal": "g", "steps": [{"task": "a"}]}, "p"))
+        self.assertIn("can't run here", results[0])
+
+    def test_approvals_still_go_to_the_approver(self):
+        (self.root / "notes.md").write_text("keep")
+        asked = []
+        self.turn(call("delete", {"file_path": "/notes.md"}, "d"), features=[Guardrails.feature()],
+                  runners={"run_plan": lambda request: {}},
+                  approver=Approver(ask=lambda p: asked.append(p) or ("r" if len(asked) == 1 else ""),
+                                    say=lambda *_: None))
+        self.assertTrue(asked)
+        self.assertTrue((self.root / "notes.md").exists())
 
 
 if __name__ == "__main__":
