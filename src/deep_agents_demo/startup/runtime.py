@@ -31,6 +31,7 @@ from deep_agents_demo.features.memory.service import (
 from deep_agents_demo.features.orchestration.feature import orchestration_feature
 from deep_agents_demo.features.skills.manager import SkillManager
 from deep_agents_demo.persistence.chats import Chats
+from deep_agents_demo.persistence.outputs import OutputStore
 from deep_agents_demo.providers.chat import chat_model
 from deep_agents_demo.startup.resources import Resources
 
@@ -154,7 +155,7 @@ def build_runtime(resources: Resources, user: str, notify=None) -> Runtime:
     def preview(name, args):
         return skills.plan(name, args) or my_agents.plan(name, args) or guardrails.preview(name, args)
 
-    return Runtime(agent=agent, chats=Chats(saver, agent, user), preview=preview,
+    return Runtime(agent=agent, chats=Chats(saver, agent, user, outputs=resources.outputs), preview=preview,
                    uploads=Uploads(settings.paths.workspace, user, setup.skills_prefix),
                    agents=agents, agent_manager=my_agents, rebuild=make_agent, say=say,
                    make_worker=make, outputs=resources.outputs)
@@ -165,4 +166,5 @@ def history_runtime(settings: Settings, user: str, stack: ExitStack) -> Runtime:
     saver = stack.enter_context(SqliteSaver.from_conn_string(str(settings.paths.checkpoints)))
     agent = build_agent(ChatOpenAI(model="unused", api_key="unused"), saver,
                         FilesystemBackend(root_dir=str(settings.paths.workspace), virtual_mode=True))
-    return Runtime(agent=agent, chats=Chats(saver, agent, user))
+    outputs = OutputStore(settings.paths.data / "outputs")
+    return Runtime(agent=agent, chats=Chats(saver, agent, user, outputs=outputs), outputs=outputs)

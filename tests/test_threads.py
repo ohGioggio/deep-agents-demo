@@ -10,10 +10,10 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.ui.cli.repl import ChatSession
 from deep_agents_demo.core.turns import turn_input
 from deep_agents_demo.persistence.chats import Chats, new_name, thread_id, valid_name
 from deep_agents_demo.ui.cli.render import format_table
+from deep_agents_demo.ui.cli.repl import ChatSession
 
 
 class ToolFreeFakeModel(FakeMessagesListChatModel):
@@ -40,6 +40,44 @@ class ChatsTestCase(unittest.TestCase):
     def say(self, user, name, *prompts):
         for prompt in prompts:
             self.agent.invoke(turn_input(prompt), {"configurable": {"thread_id": thread_id(user, name)}})
+
+
+class ChatFilesTests(ChatsTestCase):
+    """A chat's delivered files go where the chat goes."""
+
+    def setUp(self):
+        super().setUp()
+        from deep_agents_demo.persistence.outputs import OutputStore
+        self.outputs = OutputStore(Path(self.tmp.name) / "outputs")
+        self.chats = Chats(self.saver, self.agent, "alice", outputs=self.outputs)
+        self.say("alice", "parks", "plan a park")
+        self.outputs.save("alice", "parks", "plan.md", b"# Plan")
+
+    def test_deleting_a_chat_removes_its_files(self):
+        self.chats.delete("parks")
+        self.assertFalse(self.outputs.folder("alice", "parks").exists())
+
+    def test_renaming_a_chat_moves_its_files(self):
+        self.chats.rename("parks", "gardens")
+        self.assertEqual(self.outputs.read("alice", "gardens", "plan.md"), b"# Plan")
+        self.assertFalse(self.outputs.folder("alice", "parks").exists())
+
+    def test_rename_onto_existing_outputs_keeps_both(self):
+        self.outputs.save("alice", "gardens", "old.md", b"# Old")  # left from a chat no longer saved
+        with self.assertRaisesRegex(ValueError, "gardens"):
+            self.chats.rename("parks", "gardens")
+        self.assertTrue(self.chats.exists("parks"))
+        self.assertEqual(self.outputs.read("alice", "parks", "plan.md"), b"# Plan")
+        self.assertEqual(self.outputs.read("alice", "gardens", "old.md"), b"# Old")
+
+    def test_files_command(self):
+        said = []
+        session = ChatSession(self.chats, "parks", say=said.append, outputs=self.outputs)
+        session.handle("/files")
+        self.assertTrue(any("plan.md" in line and "v1" in line for line in "\n".join(said).splitlines()), said)
+        said.clear()
+        ChatSession(self.chats, "roads", say=said.append, outputs=self.outputs).handle("/files")
+        self.assertIn("No files delivered in this chat yet.", said[0])
 
 
 class ChatsTests(ChatsTestCase):

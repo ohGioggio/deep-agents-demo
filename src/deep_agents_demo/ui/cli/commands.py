@@ -9,10 +9,11 @@ from pathlib import Path
 
 from deep_agents_demo.config import Settings
 from deep_agents_demo.features.sandbox.providers import clear_sandbox
+from deep_agents_demo.persistence.outputs import OutputStore
 from deep_agents_demo.startup.resources import document_index, sandbox_backend
 from deep_agents_demo.startup.runtime import history_runtime
 from deep_agents_demo.startup.workspace import prepare_workspace
-from deep_agents_demo.ui.cli.render import format_table, format_transcript
+from deep_agents_demo.ui.cli.render import format_files, format_table, format_transcript
 from deep_agents_demo.ui.cli.repl import confirm
 
 
@@ -47,6 +48,11 @@ def clear_openshell_sandbox(settings: Settings) -> None:
 def list_threads(settings: Settings, user: str, current: str) -> None:
     with ExitStack() as stack:
         print(format_table(history_runtime(settings, user, stack).chats.list(), current))
+
+
+def list_files(settings: Settings, user: str, thread: str) -> None:
+    outputs = OutputStore(settings.paths.data / "outputs")
+    print(format_files(outputs.list(user, thread), outputs.folder(user, thread)))
 
 
 def show_thread(settings: Settings, user: str, name: str) -> None:

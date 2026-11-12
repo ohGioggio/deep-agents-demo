@@ -125,6 +125,14 @@ class FileOutputSettingTests(unittest.TestCase):
             Settings.from_env({"FILE_OUTPUT": "sometimes"})
 
 
+class ListFilesFlagTests(unittest.TestCase):
+    def test_list_files_flag(self):
+        self.dispatch = DispatchTests.dispatch.__get__(self)
+        cmds, _ = self.dispatch("--list-files", "parks", "--user", "alice")
+        cmds.list_files.assert_called_once()
+        self.assertEqual(cmds.list_files.call_args.args[1:], ("alice", "parks"))
+
+
 class RunChatTests(unittest.TestCase):
     def test_a_slash_command_as_prompt_runs_once_and_exits(self):
         runtime = MagicMock()

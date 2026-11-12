@@ -54,8 +54,9 @@ ORCHESTRATION_THREADS = (":plan:", ":room:")
 class Chats:
     """List, show, rename and delete one user's chats."""
 
-    def __init__(self, saver, agent, user: str):
+    def __init__(self, saver, agent, user: str, outputs=None):
         self.saver, self.agent, self.user = saver, agent, user
+        self.outputs = outputs  # an OutputStore: a chat's delivered files go where the chat goes
 
     def _config(self, name):
         return {"configurable": {"thread_id": thread_id(self.user, name)}}
@@ -105,6 +106,8 @@ class Chats:
         self.saver.delete_thread(chat)
         for extra in self._orchestration_threads(chat):  # its plans' and rooms' agent runs
             self.saver.delete_thread(extra)
+        if self.outputs is not None:
+            self.outputs.delete_thread(self.user, name)
 
     def _orchestration_threads(self, chat: str) -> list[str]:
         """Threads of the plans and rooms run in a chat: "<chat thread>:plan:..." and
@@ -128,6 +131,8 @@ class Chats:
         # SqliteSaver inherits copy_thread from the base class, which raises
         # NotImplementedError, so move the rows: a thread lives in exactly two
         # tables, both keyed by thread_id. One transaction keeps it all-or-nothing.
+        if self.outputs is not None:  # first: if it refuses, nothing has moved
+            self.outputs.rename_thread(self.user, old, new)
         source, target = thread_id(self.user, old), thread_id(self.user, new)
         with self.saver.cursor(transaction=True) as cur:
             for table in ("checkpoints", "writes"):

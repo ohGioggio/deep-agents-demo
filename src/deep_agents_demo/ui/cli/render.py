@@ -47,6 +47,18 @@ def shown_path(path: str) -> str:
         return path
 
 
+def format_files(files, folder=None) -> str:
+    """The files delivered in a chat (``OutputFile``s), as a table."""
+    if not files:
+        return "No files delivered in this chat yet."
+    rows = [("FILE", "VERSION", "SIZE", "SAVED", "CAPTION")]
+    rows += [(f.name, f"v{f.version}", size(f.bytes), f.saved_at[:16].replace("T", " "), shorten(f.caption, 48))
+             for f in files]
+    widths = [max(len(r[i]) for r in rows) for i in range(4)]
+    table = "\n".join("  ".join([*(r[i].ljust(widths[i]) for i in range(4)), r[4]]).rstrip() for r in rows)
+    return table + (f"\nIn {shown_path(str(folder))}" if folder is not None else "")
+
+
 class CliRenderer:
     """An ``EventSink`` that prints events as the CLI always has. ``write`` receives
     each printed line (default ``print``); a test passes a list's ``append``."""

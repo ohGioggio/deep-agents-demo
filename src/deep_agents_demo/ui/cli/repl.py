@@ -16,7 +16,12 @@ from deep_agents_demo.startup.runtime import build_runtime
 from deep_agents_demo.startup.workspace import prepare_workspace
 from deep_agents_demo.ui.cli.interrupts import ctrl_c_controls
 from deep_agents_demo.ui.cli.prompts import CliInteraction
-from deep_agents_demo.ui.cli.render import CliRenderer, format_table, format_transcript
+from deep_agents_demo.ui.cli.render import (
+    CliRenderer,
+    format_files,
+    format_table,
+    format_transcript,
+)
 
 GREETING = ("Ask anything. Ideas: a question about your indexed documents, "
             "'Remember that I prefer short answers', or the example skill: "
@@ -90,12 +95,13 @@ class ChatSession:
     """
 
     def __init__(self, chats: Chats, current: str, ask=None, say=None, uploads=None, agents=None,
-                 room=None):
+                 room=None, outputs=None):
         self.chats, self.current = chats, current
         # input/print are looked up at each call, not bound once (tests patch them).
         self.ask = ask or (lambda prompt: input(prompt))
         self.say = say or (lambda *args, **kwargs: print(*args, **kwargs))
         self.uploads, self.agents = uploads, agents
+        self.outputs = outputs  # the OutputStore, for /files
         self.room = room  # (participants, question) -> runs a room and tells the agent
         self.pending = []  # images attached with /image, sent with the next message
         self.reload_skills = True  # reload once per chat, on its first turn this session
@@ -190,6 +196,14 @@ class ChatSession:
     def help(self, arg):
         self.say(HELP)
 
+    @command("files", usage="/files", summary="list the files the agent delivered in this chat")
+    def files(self, arg):
+        if self.outputs is None:
+            self.say("Files aren't available here.")
+            return
+        user = self.chats.user
+        self.say(format_files(self.outputs.list(user, self.current), self.outputs.folder(user, self.current)))
+
     @command("threads", "chats", "list", usage="/threads", summary="list your chats (* marks the current one)")
     def threads(self, arg):
         table = format_table(self.chats.list(), self.current)
@@ -272,7 +286,8 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
     say(GREETING)
     with Resources.open(settings, notify=say, warn=_warn) as resources:
         runtime = build_runtime(resources, user, notify=say)
-        session = ChatSession(runtime.chats, thread, uploads=runtime.uploads, agents=runtime.agents)
+        session = ChatSession(runtime.chats, thread, uploads=runtime.uploads, agents=runtime.agents,
+                              outputs=runtime.outputs)
 
         def run_room(names, question):
             """/room: run it, then tell the agent the outcome as an ordinary turn."""

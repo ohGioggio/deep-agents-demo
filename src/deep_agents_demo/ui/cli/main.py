@@ -43,6 +43,7 @@ def parse_args(argv=None):
     chats.add_argument("--show-thread", metavar="NAME", help="Print a chat's transcript")
     chats.add_argument("--delete-thread", metavar="NAME", help="Delete a chat and its history")
     chats.add_argument("--rename-thread", nargs=2, metavar=("OLD", "NEW"), help="Rename a chat")
+    chats.add_argument("--list-files", metavar="THREAD", help="List the files the agent delivered in a chat")
     chats.add_argument("--yes", action="store_true", help="Don't ask before deleting")
     return parser, parser.parse_args(argv)
 
@@ -53,6 +54,8 @@ def dispatch(settings: Settings, args) -> None:
         commands.clear_openshell_sandbox(settings)
     elif args.list_threads:
         commands.list_threads(settings, args.user, args.thread)
+    elif args.list_files:
+        commands.list_files(settings, args.user, args.list_files)
     elif args.show_thread:
         commands.show_thread(settings, args.user, args.show_thread)
     elif args.delete_thread:
