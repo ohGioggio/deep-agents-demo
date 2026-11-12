@@ -60,6 +60,13 @@ class _Silent:
         return None
 
 
+class _FilesOnly(_Silent):
+    """A quiet run's sink: delivered files are part of the answer, so they still show."""
+
+    def __init__(self, sink):
+        self.sink = sink
+
+
 def stream_once(agent, payload, config, sink, shown=None, label=None) -> list:
     """Stream one run of the agent loop; return the approval requests it paused on.
 
@@ -69,6 +76,9 @@ def stream_once(agent, payload, config, sink, shown=None, label=None) -> list:
     """
     paused, shown = {}, shown if shown is not None else set()
     silent = isinstance(sink, _Silent)  # build nothing nobody will see
+    files_only = isinstance(sink, _FilesOnly)
+    if files_only:
+        sink = sink.sink
     # Include child updates so delegation/tool calls are observable.
     for namespace, update in agent.stream(payload, config=config, stream_mode="updates",
                                           subgraphs=True):
@@ -86,11 +96,11 @@ def stream_once(agent, payload, config, sink, shown=None, label=None) -> list:
                 if key in shown:
                     continue
                 shown.add(key)
+                delivered = file_event(who, message)
                 if not silent:
                     sink.emit(message_event(who, node, message))
-                    delivered = file_event(who, message)
-                    if delivered is not None:
-                        sink.emit(delivered)
+                if delivered is not None and (not silent or files_only):
+                    sink.emit(delivered)
             if "todos" in state and not silent:
                 sink.emit(TodosEvent(tuple(state["todos"])))
     return list(paused.values())
@@ -117,7 +127,8 @@ def run_turn(agent, prompt, config, sink, decide=None, runners=None, reload_skil
     ``decide(request) -> dict`` answers approval pauses (None: reject them all).
     ``runners`` answer other pauses by their ``type`` (e.g. ``run_plan``): they run
     here, on the caller's thread, and their return value resumes the tool.
-    ``quiet`` emits only the final answer; ``show=False`` emits nothing at all.
+    ``quiet`` emits only delivered files and the final answer; ``show=False`` emits
+    nothing at all.
     """
     decide, runners = decide or _nobody, runners or {}
     payload, shown = turn_input(prompt, reload_skills), set()
@@ -132,9 +143,12 @@ def run_turn(agent, prompt, config, sink, decide=None, runners=None, reload_skil
             return {"error": "rooms can't run here (nobody to run them)"}
         return decide(value)
 
-    show = not quiet if show is None else show
+    if show is None:
+        target = _FilesOnly(sink) if quiet else sink
+    else:
+        target = sink if show else _Silent()
     while True:
-        paused = stream_once(agent, payload, config, sink if show else _Silent(), shown, label=label)
+        paused = stream_once(agent, payload, config, target, shown, label=label)
         if not paused:
             if quiet:
                 sink.emit(FinalAnswerEvent(final_answer(agent, config)))

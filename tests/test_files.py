@@ -193,6 +193,20 @@ class FileEventTests(FilesBase):
     def test_no_file_event_for_a_failed_send(self):
         self.assertEqual(self.turn_lines(call("send_file", {"path": "/missing.md"}, "s1")), [])
 
+    def test_a_quiet_run_still_shows_the_file(self):
+        """--prompt prints only the answer, but a delivered file is part of the answer."""
+        from recording_ui import RecordingUI
+
+        from deep_agents_demo.core.turns import run_turn
+        (self.workspace / "plan.md").write_bytes(b"# Plan")
+        ui = RecordingUI()
+        model = Model(responses=[call("send_file", {"path": "/plan.md"}, "s1"), AIMessage(content="Here it is.")])
+        agent = build_agent(model, InMemorySaver(), self.backend, [files_feature(self.backend, self.store, "alice")])
+        run_turn(agent, "go", {"configurable": {"thread_id": thread_id("alice", "parks")}}, ui, quiet=True)
+        self.assertEqual(len(ui.lines), 2, ui.lines)
+        self.assertTrue(ui.lines[0].startswith("[file] plan.md  v1"), ui.lines)
+        self.assertEqual(ui.lines[1], "Here it is.")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -131,6 +131,7 @@ preference is still there.
 | **Long-term memory** | Per-user Mem0 memories that survive across threads |
 | **RAG** | Cited search over your own `.md` and `.txt` files |
 | **Sandbox** | File editing and shell commands in a policy-governed OpenShell sandbox or in Daytona |
+| **Files** | Documents, data and pages delivered as versioned files in the chat (`send_file`), not pasted as messages |
 
 > [!TIP]
 > Set `MEMORY_ENABLED=false` and `RAG_ENABLED=false` to see the bare harness with
@@ -188,6 +189,7 @@ your shell take precedence.
 | `MEMORY_ENABLED` | `true` | Enable Mem0 long-term memory |
 | `MEMORY_MODEL` / `MEMORY_API_KEY` / `MEMORY_BASE_URL` | agent settings | Model used to extract memories |
 | `MEMORY_RECALL` | `auto` | `auto`, `tool` or `both`: how memories reach the agent ([details](#long-term-memory)) |
+| `FILE_OUTPUT` | `auto` | `auto`, `always` or `never`: deliver documents and data as files ([details](#files-the-agent-delivers)) |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model for memory and RAG |
 | `EMBEDDING_PROVIDER` | `auto` | `auto`, `openai` or `nvidia` |
 | `EMBEDDING_API_KEY` | `OPENAI_API_KEY` | Embedding API key |
@@ -612,6 +614,44 @@ Agent change requested: CREATE 'tester' (user: demo-user), new, v1
   over folder files, which win over the built-ins. `/agents` shows what overrides
   what.
 
+## Files the agent delivers
+
+Ask for something you will keep (a document, a report, a dataset, a page) and the
+agent writes it to a file and delivers it in the chat, with a sentence or two about
+it, instead of pasting it as a message. Questions and explanations are still
+answered in the chat.
+
+```text
+[parks] You: Write a short document about the sandbox policy.
+...
+[file] sandbox-policy.md  v1  4.2 KB  ->  data/outputs/demo-user/parks/sandbox-policy.md
+I wrote sandbox-policy.md: what the sandbox allows, what it blocks, and how to change it.
+
+[parks] You: Make the intro shorter.
+...
+[file] sandbox-policy.md  v2  3.9 KB  ->  data/outputs/demo-user/parks/sandbox-policy.md
+```
+
+- **How:** the agent writes the file with its usual tools (`write_file`, `edit_file`,
+  or code in the sandbox), then calls `send_file`, which reads it through the same
+  backend (local files, OpenShell or Daytona alike), checks it and keeps a copy.
+- **Types:** `.md`, `.txt`, `.csv`, `.html`, `.tex`, `.svg`, `.json`, and `.png` /
+  `.jpg` made by code. Each is checked before it is kept: UTF-8 text, CSV rows with
+  the same columns, valid JSON and SVG, images by their content, no credentials;
+  5 MB per text file, 20 MB per image.
+- **Versions:** sending the same name again in a chat keeps the old version and
+  delivers the next one. Files live in `data/outputs/<user>/<chat>/` (every version
+  in `.versions/`), outside the agent's workspace, so a delivered version can't be
+  changed afterwards. Deleting or renaming a chat deletes or moves its files.
+- **Listing:** `/files` in the chat, or `uv run deep-agents-demo --user <name>
+  --list-files <chat>`.
+- **Setting:** `FILE_OUTPUT=auto` (the agent decides), `always` (every answer longer
+  than a few lines) or `never` (no files).
+
+Only the main agent delivers files; subagents and plan workers hand their work back
+to it. Files never need approval: `send_file` only copies a file the agent already
+wrote to a place it can't write.
+
 ## Images: show the agent a picture, let it check its own
 
 The chat model must accept images (the NVIDIA `...-vl-...` models do).
@@ -847,14 +887,15 @@ src/deep_agents_demo/
 ├── config.py            # Settings: every setting, read from the environment once and validated
 ├── seed/                # starter memory, skills and agents, copied into demo_workspace/
 ├── models/              # plain data (frozen dataclasses, to_dict): what crosses to a front end
-│   ├── events.py        #   MessageEvent, TodosEvent, NoticeEvent, FinalAnswerEvent
+│   ├── events.py        #   MessageEvent, FileEvent, TodosEvent, NoticeEvent, FinalAnswerEvent
 │   ├── approvals.py     #   ApprovalRequest, Decision
 │   ├── agents.py        #   AgentDefinition
 │   └── outcomes.py      #   plan steps and outcomes, room outcomes
 ├── persistence/         # storage shared by features
 │   ├── versioned_store.py  # versioned items in SQLite (skills and agents), installs
 │   ├── chats.py         #   chats on LangGraph checkpoints: list, messages, rename, delete
-│   └── files.py         #   safe folder names
+│   ├── files.py         #   safe folder names
+│   └── outputs.py       #   files the agent delivered: per user and chat, every version
 ├── providers/           # outside services
 │   ├── chat.py          #   the chat model client
 │   ├── embeddings.py    #   OpenAI / NVIDIA-compatible embeddings
@@ -870,12 +911,14 @@ src/deep_agents_demo/
 │   ├── tools.py         #   tools registry, DISABLED_TOOLS, shell equivalents
 │   ├── middleware.py    #   ToolAccess, SubagentCallCap, PinSkills, TaskLimiter
 │   ├── messages.py      #   message helpers (images as a note)
+│   ├── media.py         #   image type from content (PNG, JPEG)
 │   └── secrets.py       #   detects and redacts secrets
 ├── features/            # one folder per capability
 │   ├── catalog/         #   example tools: fictional asset catalog
 │   ├── memory/          #   Mem0 service, tools, automatic recall, file memory
 │   ├── documents/       #   Qdrant document index and search_docs
 │   ├── images/          #   attached PNG/JPG images, the image window
+│   ├── files/           #   send_file: validation, delivered files in the chat
 │   ├── guardrails/      #   risky actions (dangerous commands, delete, forget) ask first
 │   ├── skills/          #   SKILL.md format, SkillManager
 │   ├── agents/          #   Claude Code agent files, registry, built-ins, AgentManager
@@ -938,6 +981,7 @@ assembles features, so:
 | `data/skills.sqlite` | User and marketplace skills (every version) and installs |
 | `demo_workspace/user-skills/` | Each user's current skills, regenerated from the database |
 | `demo_workspace/installed-skills/` | Each user's installed marketplace skills, regenerated likewise |
+| `data/outputs/` | Files the agent delivered, per user and chat, with every version ([Files](#files-the-agent-delivers)) |
 
 All of these, and `.env`, are excluded by `.gitignore`. With OpenShell, the
 agent's files live in the sandbox's `/sandbox` (clear them with
