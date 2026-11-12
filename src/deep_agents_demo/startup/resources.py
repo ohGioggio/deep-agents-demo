@@ -16,6 +16,7 @@ from deep_agents_demo.config import Settings
 from deep_agents_demo.features.documents.index import DocumentIndex
 from deep_agents_demo.features.memory.service import close_memory, make_memory
 from deep_agents_demo.features.sandbox.providers import BackendSetup, make_backend
+from deep_agents_demo.persistence.outputs import OutputStore
 from deep_agents_demo.persistence.versioned_store import AGENT_TABLES, VersionedStore
 from deep_agents_demo.providers.embeddings import CompatibleEmbeddings
 from deep_agents_demo.providers.rate_limit import rate_limiter
@@ -52,6 +53,7 @@ class Resources:
     agent_store: VersionedStore
     memory: object = None                    # one Mem0, or None when memory is off
     documents: DocumentIndex | None = None   # None when RAG is off
+    outputs: OutputStore | None = None       # files the agent delivered (data/outputs)
     stack: ExitStack = field(default_factory=ExitStack, repr=False)
 
     @classmethod
@@ -79,7 +81,8 @@ class Resources:
         except BaseException:
             stack.close()
             raise
-        return cls(settings, checkpointer, sandbox, skill_store, agent_store, memory, documents, stack)
+        return cls(settings, checkpointer, sandbox, skill_store, agent_store, memory, documents,
+                   OutputStore(settings.paths.data / "outputs"), stack)
 
     def close(self) -> None:
         self.stack.close()

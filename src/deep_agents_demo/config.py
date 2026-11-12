@@ -21,6 +21,7 @@ CHECKPOINTS = ROOT / "demo_checkpoints.sqlite"
 ENV_FILE = ROOT / ".env"
 
 RECALL_MODES = ("tool", "auto", "both")
+FILE_OUTPUT_MODES = ("auto", "always", "never")
 SANDBOX_PROVIDERS = ("none", "daytona", "openshell")
 PLACEHOLDERS = {"your-api-key", "your-model-id"}
 
@@ -91,6 +92,7 @@ class Settings:
     orchestration_max_calls: int = 150  # model calls one plan (or room) may use before asking
     subagent_max_parallel: int = 3    # subagents running at the same time
     room_max_turns: int = 12          # participant turns in a moderated room
+    file_output: str = "auto"         # FILE_OUTPUT: deliver documents as files (auto, always, never)
     paths: Paths = field(default_factory=Paths)
 
     @classmethod
@@ -115,6 +117,9 @@ class Settings:
         recall_mode = get("MEMORY_RECALL", "auto").lower()
         if recall_mode not in RECALL_MODES:
             raise ValueError(f"MEMORY_RECALL must be one of: {', '.join(RECALL_MODES)}")
+        file_output = get("FILE_OUTPUT", "auto").lower()
+        if file_output not in FILE_OUTPUT_MODES:
+            raise ValueError(f"FILE_OUTPUT must be one of: {', '.join(FILE_OUTPUT_MODES)}")
         provider = get("SANDBOX_PROVIDER", "none").lower()
         if provider not in SANDBOX_PROVIDERS:
             raise ValueError(f"SANDBOX_PROVIDER must be one of: {', '.join(SANDBOX_PROVIDERS)}")
@@ -160,6 +165,7 @@ class Settings:
                 openshell_workspace=get("OPENSHELL_WORKSPACE", "default"),
                 openshell_workdir=get("OPENSHELL_WORKDIR", "/sandbox"),
             ),
+            file_output=file_output,
             rag_enabled=flag("RAG_ENABLED"),
             requests_per_minute=number("API_REQUESTS_PER_MINUTE", 0, float),
             disabled_tools=tuple(dict.fromkeys(

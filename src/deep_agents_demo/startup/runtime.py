@@ -20,6 +20,7 @@ from deep_agents_demo.features.agents.manager import AgentManager
 from deep_agents_demo.features.agents.registry import AgentRegistry
 from deep_agents_demo.features.catalog.feature import catalog_feature
 from deep_agents_demo.features.documents.feature import documents_feature
+from deep_agents_demo.features.files.feature import files_feature
 from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.features.images.feature import images_feature
 from deep_agents_demo.features.images.uploads import Uploads
@@ -50,6 +51,7 @@ class Runtime:
     rebuild: object = None  # () -> (agent, AgentRegistry, make_worker), with the same settings
     say: object = _quiet    # notes for the user outside a turn
     make_worker: object = None  # (name, extra_middleware) -> a standalone agent, for plan runners
+    outputs: object = None  # the OutputStore: files the agent delivered, for front ends to list
 
     def refresh(self) -> bool:
         """After an approved agent change, rebuild so it's available from the next message."""
@@ -81,6 +83,9 @@ def features(resources: Resources, user: str, skills=None, guardrails=None, agen
     settings, setup = resources.settings, resources.sandbox
     yield catalog_feature()  # example tools, always available
     yield images_feature(setup.skills_prefix)  # attached images; check rendered ones
+    files = files_feature(setup.backend, resources.outputs, user, settings.file_output)
+    if files is not None:
+        yield files  # documents and data delivered as versioned files
     if skills is not None:
         yield skills.feature()
     if agents is not None:
@@ -152,7 +157,7 @@ def build_runtime(resources: Resources, user: str, notify=None) -> Runtime:
     return Runtime(agent=agent, chats=Chats(saver, agent, user), preview=preview,
                    uploads=Uploads(settings.paths.workspace, user, setup.skills_prefix),
                    agents=agents, agent_manager=my_agents, rebuild=make_agent, say=say,
-                   make_worker=make)
+                   make_worker=make, outputs=resources.outputs)
 
 
 def history_runtime(settings: Settings, user: str, stack: ExitStack) -> Runtime:

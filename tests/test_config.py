@@ -117,6 +117,14 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[1:], ("demo-user", "t1", "hi"))
 
 
+class FileOutputSettingTests(unittest.TestCase):
+    def test_file_output_setting(self):
+        self.assertEqual(Settings.from_env({}).file_output, "auto")
+        self.assertEqual(Settings.from_env({"FILE_OUTPUT": "Never"}).file_output, "never")
+        with self.assertRaisesRegex(ValueError, "FILE_OUTPUT must be one of: auto, always, never"):
+            Settings.from_env({"FILE_OUTPUT": "sometimes"})
+
+
 class RunChatTests(unittest.TestCase):
     def test_a_slash_command_as_prompt_runs_once_and_exits(self):
         runtime = MagicMock()

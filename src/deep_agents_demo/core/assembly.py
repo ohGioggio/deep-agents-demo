@@ -77,7 +77,7 @@ def _skip_blocked(config, off):
 
 
 # Tools only the main agent may use: a subagent starting plans or rooms would nest.
-MAIN_ONLY = ("run_plan", "start_room")
+MAIN_ONLY = ("run_plan", "start_room", "send_file")
 
 
 def _spec(agent, *, model, model_for, tools, skill_sources, access, max_calls) -> dict:
