@@ -17,12 +17,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from deep_agents_demo.core.media import SIGNATURES, sniff  # noqa: F401  (part of this module's API)
 from deep_agents_demo.persistence.files import safe_folder_name
 
 MAX_BYTES = 20 * 1024 * 1024   # larger files are refused
 MAX_SIDE = 1568                # longer sides are scaled down to this (pixels)
 KEEP_IMAGES = 3                # messages whose images still reach the model
-SIGNATURES = {b"\x89PNG\r\n\x1a\n": "image/png", b"\xff\xd8\xff": "image/jpeg"}
 EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg"}
 _PATH = re.compile(r"\"([^\"]+\.(?:png|jpe?g))\"|'([^']+\.(?:png|jpe?g))'|([^\s\"']+\.(?:png|jpe?g))\b",
                    re.IGNORECASE)
@@ -32,9 +32,6 @@ class ImageError(ValueError):
     """A file that can't be attached, with a reason the user can act on."""
 
 
-def sniff(data: bytes) -> str | None:
-    """The image type from the file's first bytes: image/png, image/jpeg, or None."""
-    return next((mime for signature, mime in SIGNATURES.items() if data.startswith(signature)), None)
 
 
 def load_image(path: Path) -> tuple[bytes, str, tuple[int, int]]:
