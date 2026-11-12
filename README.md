@@ -91,7 +91,7 @@ preference is still there.
 ## Architecture
 
 <p align="center">
-  <a href="assets/architecture.svg"><img src="assets/architecture.svg" width="100%" alt="Architecture: the CLI feeds the Deep Agents loop. Every tool call passes a tool gate, where the registry hides disabled and skill-only tools and skill changes and risky actions wait for your approval. The loop drives planning, context management, chats saved as SQLite checkpoints, skills with a versioned skill store and marketplace, and subagents (researcher and general-purpose); uses Mem0 and Qdrant for memory (remember, list and forget tools, automatic recall into every turn, secrets refused) and RAG; and runs code in an OpenShell sandbox whose policy proxy only allows PyPI and GitHub, or in Daytona. Chat and embedding models are external providers."/></a>
+  <a href="assets/architecture.svg"><img src="assets/architecture.svg" width="100%" alt="Architecture: the CLI feeds the Deep Agents loop. Every tool call passes a tool gate, where the registry hides disabled and skill-only tools and skill changes and risky actions wait for your approval. The loop drives planning, context management, chats saved as SQLite checkpoints, skills with a versioned skill store and marketplace, and subagents (researcher and general-purpose); uses Mem0 and Qdrant for memory (remember, list and forget tools, automatic recall into every turn, secrets refused) and RAG; and runs code in an OpenShell sandbox whose policy proxy only allows PyPI and GitHub, or in Daytona. Documents and data the agent delivers with send_file are kept as versioned files under data/outputs. Chat and embedding models are external providers."/></a>
 </p>
 
 - **Agent loop.** Deep Agents runs the model and its tools until the task is
@@ -110,6 +110,10 @@ preference is still there.
   into every turn automatically. Secrets are refused before anything is stored.
   `search_docs` retrieves cited passages. Both use Qdrant and your embedding
   provider.
+- **Delivered files.** When you ask for something to keep (a document, a dataset,
+  a page), the agent writes it and delivers it with `send_file`: it is checked,
+  saved as a new version under `data/outputs/`, outside the agent's reach, and
+  shown in the chat as a `[file]` line. See [Files the agent delivers](#files-the-agent-delivers).
 - **Execution.** The backend router sends file and shell tools to local files,
   an OpenShell sandbox or Daytona. In OpenShell, all traffic passes the policy
   proxy, which allows only PyPI and GitHub.
