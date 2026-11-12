@@ -76,7 +76,7 @@ class FakeBackend:
                                      error=None if p in self.files else "file_not_found") for p in paths]
 
 
-class SendFileTests(unittest.TestCase):
+class FilesBase(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.workspace = self.root / "ws"
@@ -92,6 +92,9 @@ class SendFileTests(unittest.TestCase):
         config = {"configurable": {"thread_id": thread or thread_id("alice", "parks")}}
         result = agent.invoke({"messages": [{"role": "user", "content": "go"}]}, config)
         return [m for m in result["messages"] if m.type == "tool" and m.name == "send_file"]
+
+
+class SendFileTests(FilesBase):
 
     def test_valid_markdown_is_saved_as_v1(self):
         (self.workspace / "plan.md").write_bytes(b"# Plan\n\nSecret sauce.")
@@ -167,6 +170,28 @@ class SendFileTests(unittest.TestCase):
                       files_feature(self.backend, self.store, "alice", mode="always").prompt)
         self.assertNotIn("for every answer longer than a few lines",
                          files_feature(self.backend, self.store, "alice").prompt)
+
+
+
+class FileEventTests(FilesBase):
+    def turn_lines(self, *responses):
+        from recording_ui import RecordingUI
+
+        from deep_agents_demo.core.turns import run_turn
+        ui = RecordingUI()
+        features = [files_feature(self.backend, self.store, "alice")]
+        model = Model(responses=[*responses, AIMessage(content="done")])
+        agent = build_agent(model, InMemorySaver(), self.backend, features)
+        run_turn(agent, "go", {"configurable": {"thread_id": thread_id("alice", "parks")}}, ui)
+        return [line for line in ui.lines if line.startswith("[file]")]
+
+    def test_one_file_event_for_a_successful_send(self):
+        (self.workspace / "plan.md").write_bytes(b"# Plan")
+        [line] = self.turn_lines(call("send_file", {"path": "/plan.md"}, "s1"))
+        self.assertTrue(line.startswith("[file] plan.md  v1  6 B  ->  "), line)
+
+    def test_no_file_event_for_a_failed_send(self):
+        self.assertEqual(self.turn_lines(call("send_file", {"path": "/missing.md"}, "s1")), [])
 
 
 if __name__ == "__main__":

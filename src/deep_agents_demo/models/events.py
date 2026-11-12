@@ -25,6 +25,18 @@ class MessageEvent(_Event):
 
 
 @dataclass(frozen=True)
+class FileEvent(_Event):
+    """The agent delivered a file (``send_file``); ``path`` is where it was saved."""
+    label: str
+    name: str
+    version: int
+    kind: str
+    bytes: int
+    caption: str
+    path: str
+
+
+@dataclass(frozen=True)
 class TodosEvent(_Event):
     """The agent's to-do list changed."""
     todos: tuple = ()

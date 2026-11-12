@@ -9,7 +9,12 @@ from langgraph.types import Command
 
 from deep_agents_demo.core.messages import has_image, without_images
 from deep_agents_demo.models.approvals import NO_HUMAN
-from deep_agents_demo.models.events import FinalAnswerEvent, MessageEvent, TodosEvent
+from deep_agents_demo.models.events import (
+    FileEvent,
+    FinalAnswerEvent,
+    MessageEvent,
+    TodosEvent,
+)
 
 
 def turn_input(prompt, reload_skills=False):
@@ -38,6 +43,16 @@ def message_event(label: str, node: str, message) -> MessageEvent:
     calls = tuple({"name": c.get("name"), "args": c.get("args", {}), "id": c.get("id")}
                   for c in getattr(message, "tool_calls", None) or ())
     return MessageEvent(label, node, message.type, text, calls, shown.pretty_repr())
+
+
+def file_event(label: str, message) -> FileEvent | None:
+    """The FileEvent for a successful send_file, from its tool message's artifact."""
+    artifact = getattr(message, "artifact", None)
+    if getattr(message, "type", None) != "tool" or getattr(message, "name", None) != "send_file" \
+            or not isinstance(artifact, dict) or not artifact.get("saved"):
+        return None
+    return FileEvent(label, artifact["name"], artifact["version"], artifact["kind"], artifact["bytes"],
+                     artifact.get("caption", ""), artifact["path"])
 
 
 class _Silent:
@@ -73,6 +88,9 @@ def stream_once(agent, payload, config, sink, shown=None, label=None) -> list:
                 shown.add(key)
                 if not silent:
                     sink.emit(message_event(who, node, message))
+                    delivered = file_event(who, message)
+                    if delivered is not None:
+                        sink.emit(delivered)
             if "todos" in state and not silent:
                 sink.emit(TodosEvent(tuple(state["todos"])))
     return list(paused.values())

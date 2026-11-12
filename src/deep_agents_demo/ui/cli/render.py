@@ -1,8 +1,10 @@
 """How the CLI shows things: the engine's events, chat tables, transcripts."""
 import json
 from collections.abc import Callable
+from pathlib import Path
 
 from deep_agents_demo.models.events import (
+    FileEvent,
     FinalAnswerEvent,
     MessageEvent,
     NoticeEvent,
@@ -29,6 +31,22 @@ def format_transcript(lines: list[tuple[str, str]], width: int = 400) -> str:
     return "\n".join(f"{who}: {shorten(text, width)}" for who, text in lines)
 
 
+def size(count: int) -> str:
+    if count < 1024:
+        return f"{count} B"
+    if count < 1024 * 1024:
+        return f"{count / 1024:.1f} KB"
+    return f"{count / 1024 / 1024:.1f} MB"
+
+
+def shown_path(path: str) -> str:
+    """Relative to the current folder when it is under it (with "/"), else as given."""
+    try:
+        return Path(path).resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return path
+
+
 class CliRenderer:
     """An ``EventSink`` that prints events as the CLI always has. ``write`` receives
     each printed line (default ``print``); a test passes a list's ``append``."""
@@ -41,6 +59,8 @@ class CliRenderer:
         if isinstance(event, MessageEvent):
             self.write(f"\n[{event.label} / {event.node}]")
             self.write(event.pretty)
+        elif isinstance(event, FileEvent):
+            self.write(f"[file] {event.name}  v{event.version}  {size(event.bytes)}  ->  {shown_path(event.path)}")
         elif isinstance(event, TodosEvent):
             self.write("[todos] " + json.dumps(list(event.todos), ensure_ascii=False))
         elif isinstance(event, (NoticeEvent, FinalAnswerEvent)):

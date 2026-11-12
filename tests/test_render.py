@@ -67,6 +67,19 @@ class RenderTests(unittest.TestCase):
         self.assertIn("[image]", event.pretty)
         self.assertNotIn("QUJD", event.pretty)
 
+    def test_file_line(self):
+        from pathlib import Path
+
+        from deep_agents_demo.models.events import FileEvent
+        lines = []
+        saved = Path.cwd() / "data" / "outputs" / "demo-user" / "city-demo" / "sandbox-policy.md"
+        CliRenderer(write=lines.append).emit(FileEvent("main", "sandbox-policy.md", 1, "md", 4300, "", str(saved)))
+        self.assertEqual(lines, ["[file] sandbox-policy.md  v1  4.2 KB  ->  "
+                                 "data/outputs/demo-user/city-demo/sandbox-policy.md"])
+        lines.clear()
+        CliRenderer(write=lines.append).emit(FileEvent("main", "big.png", 3, "png", 3 * 1024 * 1024, "", "/elsewhere/big.png"))
+        self.assertEqual(lines, ["[file] big.png  v3  3.0 MB  ->  /elsewhere/big.png"])
+
     def test_events_are_plain_data(self):
         events = [MessageEvent("main", "model", "ai", "hi", ({"name": "ls", "args": {}},), "pretty"),
                   TodosEvent(({"content": "x", "status": "pending"},)), NoticeEvent("[plan] go"),
