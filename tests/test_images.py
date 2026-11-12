@@ -12,8 +12,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from PIL import Image
 
 from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.ui.cli.repl import ChatSession
 from deep_agents_demo.core.turns import printable
+from deep_agents_demo.features.images.feature import images_feature
 from deep_agents_demo.features.images.uploads import (
     MAX_SIDE,
     ImageError,
@@ -24,7 +24,7 @@ from deep_agents_demo.features.images.uploads import (
     sniff,
 )
 from deep_agents_demo.features.images.window import ImageWindow
-from deep_agents_demo.features.images.feature import images_feature
+from deep_agents_demo.ui.cli.repl import ChatSession
 
 SEEN = []  # the messages of every model call
 

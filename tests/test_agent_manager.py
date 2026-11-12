@@ -9,9 +9,8 @@ from deepagents.backends import FilesystemBackend
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
-
 from recording_ui import Approver
-from deep_agents_demo.ui.cli.repl import stream_turn
+
 from deep_agents_demo.config import ChatSettings, MemorySettings, Paths, Settings
 from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.features.agents.files import parse_agent_md
@@ -20,6 +19,7 @@ from deep_agents_demo.features.agents.registry import AgentRegistry
 from deep_agents_demo.persistence.versioned_store import AGENT_TABLES, VersionedStore
 from deep_agents_demo.startup import runtime as app
 from deep_agents_demo.startup.workspace import prepare_workspace
+from deep_agents_demo.ui.cli.repl import stream_turn
 
 
 class Workspace(unittest.TestCase):

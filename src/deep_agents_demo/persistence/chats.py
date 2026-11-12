@@ -102,12 +102,16 @@ class Chats:
         return lines
 
     def delete(self, name: str) -> None:
+        if self.outputs is not None:  # first: if its files can't go, the chat stays whole
+            try:
+                self.outputs.delete_thread(self.user, name)
+            except OSError as error:
+                raise ValueError(f"Couldn't delete the files of chat {name!r} ({error}); "
+                                 "close them and try again.") from error
         chat = thread_id(self.user, name)
         self.saver.delete_thread(chat)
         for extra in self._orchestration_threads(chat):  # its plans' and rooms' agent runs
             self.saver.delete_thread(extra)
-        if self.outputs is not None:
-            self.outputs.delete_thread(self.user, name)
 
     def _orchestration_threads(self, chat: str) -> list[str]:
         """Threads of the plans and rooms run in a chat: "<chat thread>:plan:..." and
@@ -132,16 +136,25 @@ class Chats:
         # NotImplementedError, so move the rows: a thread lives in exactly two
         # tables, both keyed by thread_id. One transaction keeps it all-or-nothing.
         if self.outputs is not None:  # first: if it refuses, nothing has moved
-            self.outputs.rename_thread(self.user, old, new)
-        source, target = thread_id(self.user, old), thread_id(self.user, new)
-        with self.saver.cursor(transaction=True) as cur:
-            for table in ("checkpoints", "writes"):
-                cur.execute(f"UPDATE {table} SET thread_id = ? WHERE thread_id = ?", (target, source))
-                # Its plans' and rooms' agent threads move with it.
-                for marker in ORCHESTRATION_THREADS:
-                    prefix = f"{source}{marker}"
-                    cur.execute(f"UPDATE {table} SET thread_id = ? || substr(thread_id, ?) "
-                                "WHERE substr(thread_id, 1, ?) = ?",
-                                (target, len(source) + 1, len(prefix), prefix))
+            try:
+                self.outputs.rename_thread(self.user, old, new)
+            except OSError as error:
+                raise ValueError(f"Couldn't move the files of chat {old!r} ({error}); "
+                                 "close them and try again.") from error
+        try:
+            source, target = thread_id(self.user, old), thread_id(self.user, new)
+            with self.saver.cursor(transaction=True) as cur:
+                for table in ("checkpoints", "writes"):
+                    cur.execute(f"UPDATE {table} SET thread_id = ? WHERE thread_id = ?", (target, source))
+                    # Its plans' and rooms' agent threads move with it.
+                    for marker in ORCHESTRATION_THREADS:
+                        prefix = f"{source}{marker}"
+                        cur.execute(f"UPDATE {table} SET thread_id = ? || substr(thread_id, ?) "
+                                    "WHERE substr(thread_id, 1, ?) = ?",
+                                    (target, len(source) + 1, len(prefix), prefix))
+        except BaseException:
+            if self.outputs is not None:  # put the files back with the chat they belong to
+                self.outputs.rename_thread(self.user, new, old)
+            raise
 
 

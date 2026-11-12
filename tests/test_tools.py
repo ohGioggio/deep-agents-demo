@@ -9,24 +9,24 @@ from deepagents.backends import CompositeBackend, FilesystemBackend
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from recording_ui import Approver
 from test_guardrails import FakeSandbox
 from test_memory import FakeMemory
 
-from deep_agents_demo.core.assembly import build_agent
-from recording_ui import Approver
-from deep_agents_demo.features.catalog.feature import catalog_feature
-from deep_agents_demo.ui.cli.repl import stream_turn
 from deep_agents_demo.config import Settings
+from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.core.middleware import ToolAccess
 from deep_agents_demo.core.tools import CORE, ToolRegistry, shell_block, tool_name
+from deep_agents_demo.features.catalog.feature import catalog_feature
+from deep_agents_demo.features.guardrails.feature import Guardrails
+from deep_agents_demo.features.memory.feature import memory_feature
+from deep_agents_demo.features.memory.service import MemoryService
 from deep_agents_demo.features.skills.format import split_skill_md, warnings
 from deep_agents_demo.features.skills.manager import SkillManager
-from deep_agents_demo.features.guardrails.feature import Guardrails
-from deep_agents_demo.features.memory.service import MemoryService
-from deep_agents_demo.features.memory.feature import memory_feature
 from deep_agents_demo.persistence.versioned_store import VersionedStore
 from deep_agents_demo.startup.workspace import SEED_DIR
+from deep_agents_demo.ui.cli.repl import stream_turn
 
 SEEN = []  # (tool names bound, system prompt) for every model call
 

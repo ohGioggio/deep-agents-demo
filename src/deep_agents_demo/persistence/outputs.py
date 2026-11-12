@@ -2,10 +2,12 @@
 
     <root>/<user>/<chat>/<name>                    the latest version
     <root>/<user>/<chat>/.versions/<name>.v1, .v2  every version, never changed
-    <root>/<user>/<chat>/index.json                one record per version
+    <root>/<user>/<chat>/.index.json               one record per version
 
 The agent can't write here (its file tools act on the workspace or a sandbox), so a
-delivered version stays as it was delivered.
+delivered version stays as it was delivered. Names that differ only in case are the
+same file (Windows folders don't tell them apart), and every path stays inside the
+root, whatever the user or chat is called.
 """
 import json
 import os
@@ -17,6 +19,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from deep_agents_demo.persistence.files import safe_folder_name
+
+INDEX = ".index.json"  # a delivered file can't be named this (clean_name refuses leading dots)
+
+
+def _part(name: str) -> str:
+    """One folder name for a user or chat; never "." or ".." (they would leave the root)."""
+    safe = safe_folder_name(name)
+    return safe.replace(".", "_") if set(safe) == {"."} else safe
 
 
 @dataclass(frozen=True)
@@ -52,10 +62,16 @@ class OutputStore:
         self.lock = threading.RLock()  # tool calls in one step run in parallel threads
 
     def folder(self, user: str, chat: str) -> Path:
-        return self.root / safe_folder_name(user) / safe_folder_name(chat)
+        return self.root / _part(user) / _part(chat)
+
+    def _inside(self, folder: Path) -> Path:
+        """``folder``, after checking it is inside the root (never delete or move outside)."""
+        if self.root.resolve() not in folder.resolve().parents:
+            raise ValueError(f"{folder} is outside the output store")
+        return folder
 
     def _index(self, folder: Path) -> list[dict]:
-        path = folder / "index.json"
+        path = folder / INDEX
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
 
     def _file(self, folder: Path, record: dict) -> OutputFile:
@@ -67,13 +83,20 @@ class OutputStore:
         with self.lock:
             folder = self.folder(user, chat)
             index = self._index(folder)
+            # The name it was first delivered under, if it differs only in case.
+            name = next((r["name"] for r in index if r["name"].casefold() == name.casefold()), name)
             version = 1 + max((r["version"] for r in index if r["name"] == name), default=0)
-            _write(folder / ".versions" / f"{name}.v{version}", data)
-            _write(folder / name, data)
+            kept = folder / ".versions" / f"{name}.v{version}"
+            _write(kept, data)
+            try:
+                _write(folder / name, data)
+            except BaseException:  # e.g. the latest copy is open in another program
+                kept.unlink(missing_ok=True)
+                raise
             record = {"name": name, "version": version, "bytes": len(data),
                       "kind": Path(name).suffix.lstrip(".").lower(), "caption": caption,
                       "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-            _write(folder / "index.json", json.dumps(index + [record], indent=2).encode("utf-8"))
+            _write(folder / INDEX, json.dumps(index + [record], indent=2).encode("utf-8"))
             return self._file(folder, record)
 
     def list(self, user: str, chat: str) -> list[OutputFile]:
@@ -88,21 +111,22 @@ class OutputStore:
     def read(self, user: str, chat: str, name: str, version: int | None = None) -> bytes:
         with self.lock:
             folder = self.folder(user, chat)
-            versions = [r["version"] for r in self._index(folder) if r["name"] == name]
+            records = [r for r in self._index(folder) if r["name"].casefold() == name.casefold()]
+            versions = [r["version"] for r in records]
             if not versions or (version is not None and version not in versions):
                 raise KeyError(f"{name} v{version}" if version else name)
-            return (folder / ".versions" / f"{name}.v{version or max(versions)}").read_bytes()
+            return (folder / ".versions" / f"{records[0]['name']}.v{version or max(versions)}").read_bytes()
 
     def delete_thread(self, user: str, chat: str) -> None:
         with self.lock:
-            folder = self.folder(user, chat)
+            folder = self._inside(self.folder(user, chat))
             if folder.exists():
                 shutil.rmtree(folder)
 
     def rename_thread(self, user: str, old: str, new: str) -> None:
         """Move a chat's files with the chat; refuse if ``new`` already has files."""
         with self.lock:
-            source, target = self.folder(user, old), self.folder(user, new)
+            source, target = self._inside(self.folder(user, old)), self._inside(self.folder(user, new))
             if not source.exists():
                 return
             if target.exists():

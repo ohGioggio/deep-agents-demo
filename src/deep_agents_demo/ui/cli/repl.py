@@ -252,7 +252,11 @@ class ChatSession:
         if not arg or not self.chats.exists(arg):
             self.say(f"No chat named {arg!r}. See /threads.")
         elif confirm(f"Delete chat {arg!r} ({self.chats.info(arg).turns} turns)?", self.ask):
-            self.chats.delete(arg)
+            try:
+                self.chats.delete(arg)
+            except ValueError as error:
+                self.say(str(error))
+                return
             current = arg == self.current
             self.say(f"Deleted {arg!r}." + (" You are still in it, now empty." if current else ""))
             if current:

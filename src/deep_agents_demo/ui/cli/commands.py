@@ -69,7 +69,10 @@ def delete_thread(settings: Settings, user: str, name: str, yes: bool = False, a
         if not chats.exists(name):
             raise UsageError(f"no chat named {name!r} for user {user!r}")
         if yes or confirm(f"Delete chat {name!r} ({chats.info(name).turns} turns)?", ask):
-            chats.delete(name)
+            try:
+                chats.delete(name)
+            except ValueError as error:
+                raise UsageError(str(error)) from error
             print(f"Deleted {name!r}.")
         else:
             print("Kept.")

@@ -80,6 +80,37 @@ class ChatFilesTests(ChatsTestCase):
         self.assertIn("No files delivered in this chat yet.", said[0])
 
 
+class LockedChatFilesTests(ChatFilesTests):
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        locked = PermissionError("[WinError 32] The file is being used by another process")
+        for name in ("delete_thread", "rename_thread"):
+            patcher = patch.object(self.outputs, name, side_effect=locked)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    test_deleting_a_chat_removes_its_files = test_renaming_a_chat_moves_its_files = None
+    test_rename_onto_existing_outputs_keeps_both = test_files_command = None
+
+    def test_locked_files_stop_the_delete_cleanly(self):
+        with self.assertRaisesRegex(ValueError, "being used"):
+            self.chats.delete("parks")
+        self.assertTrue(self.chats.exists("parks"))
+
+    def test_locked_files_stop_the_rename_cleanly(self):
+        with self.assertRaisesRegex(ValueError, "being used"):
+            self.chats.rename("parks", "gardens")
+        self.assertTrue(self.chats.exists("parks"))
+        self.assertFalse(self.chats.exists("gardens"))
+
+    def test_delete_command_reports_it(self):
+        said = []
+        session = ChatSession(self.chats, "roads", ask=lambda _: "y", say=said.append, outputs=self.outputs)
+        session.handle("/delete parks")
+        self.assertTrue(any("being used" in line for line in said), said)
+
+
 class ChatsTests(ChatsTestCase):
     def test_lists_only_this_users_chats_newest_first(self):
         self.say("alice", "parks", "plan a park", "add pine trees")

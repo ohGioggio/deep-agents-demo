@@ -58,6 +58,11 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 clean_name(bad)
 
+    def test_leading_dots_are_refused(self):
+        for bad in (".index.json", ".versions.md", "..hidden.md"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                clean_name(bad)
+
     def test_describe(self):
         self.assertEqual(describe("t.csv", b"a,b\n1,2\n3,4\n"), "csv, 3 rows x 2 columns")
         self.assertEqual(describe("a.md", b"x" * 1300), "md, 1.3 KB")
@@ -170,6 +175,29 @@ class SendFileTests(FilesBase):
                       files_feature(self.backend, self.store, "alice", mode="always").prompt)
         self.assertNotIn("for every answer longer than a few lines",
                          files_feature(self.backend, self.store, "alice").prompt)
+
+    def test_errors_come_back_to_the_agent(self):
+        """Nothing send_file meets may end the chat session: each failure is a message."""
+        from unittest.mock import patch
+
+        class Exploding(FakeBackend):
+            def download_files(self, paths):
+                raise ConnectionError("sandbox unreachable")
+        (self.workspace / "big.csv").write_bytes(b"a,b\n" + b"x" * 200_000 + b",1\n")
+        (self.workspace / "deep.json").write_bytes(b"[" * 100_000 + b"]" * 100_000)
+        (self.workspace / "ok.md").write_bytes(b"# ok")
+        cases = [({"path": "/big.csv"}, None, "Not sent"),
+                 ({"path": "/deep.json"}, None, "Not sent"),
+                 ({"path": "/x.md"}, Exploding({}), "sandbox unreachable")]
+        for args, backend, words in cases:
+            with self.subTest(args=args):
+                [message] = self.run_turn(call("send_file", args, "s1"), backend=backend)
+                self.assertIn(words, message.content)
+                self.assertIsNone(message.artifact)
+        with patch.object(self.store, "save", side_effect=PermissionError("[WinError 5] Access is denied")):
+            [message] = self.run_turn(call("send_file", {"path": "/ok.md"}, "s1"))
+        self.assertIn("Access is denied", message.content)
+        self.assertEqual(self.store.list("alice", "parks"), [])
 
 
 

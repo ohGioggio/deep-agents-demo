@@ -15,12 +15,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 from recording_ui import Approver, RecordingUI
 from test_agents import ALL_AGENT, SEEN, Model, agent_from, call
 
-from deep_agents_demo.ui.cli.repl import stream_turn
 from deep_agents_demo.core.assembly import build_agent, worker_factory
 from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
 from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.startup.workspace import SEED_DIR
+from deep_agents_demo.ui.cli.repl import stream_turn
 
 BUILTINS = tuple(BUILTIN_AGENTS.values())  # what the composition root passes
 
@@ -475,7 +475,6 @@ class WiringTests(Workspace):
     def test_plan_through_the_runtime(self):
         from contextlib import ExitStack
 
-        from deep_agents_demo.ui.cli.repl import runners_for
         from deep_agents_demo.config import (
             ChatSettings,
             MemorySettings,
@@ -483,6 +482,7 @@ class WiringTests(Workspace):
             Settings,
         )
         from deep_agents_demo.startup import runtime as app
+        from deep_agents_demo.ui.cli.repl import runners_for
         settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
                             memory=MemorySettings(enabled=False), rag_enabled=False,
                             paths=Paths(data=self.root / "data", workspace=self.root / "ws",

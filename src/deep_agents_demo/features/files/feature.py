@@ -58,14 +58,17 @@ def make_send_file(backend, outputs: OutputStore, user: str):
             name = clean_name(path)
         except ValueError as error:
             return str(error), None
-        [found] = backend.download_files([path])
-        if found.error or found.content is None:
-            return (f"Can't read {path}: {found.error or 'no content'}. Write the file first "
-                    "(write_file), then send it."), None
-        problem = validate(name, found.content)
-        if problem:
-            return f"Not sent: {problem}.", None
-        saved = outputs.save(user, chat, name, found.content, caption.strip()[:300])
+        try:
+            [found] = backend.download_files([path])
+            if found.error or found.content is None:
+                return (f"Can't read {path}: {found.error or 'no content'}. Write the file first "
+                        "(write_file), then send it."), None
+            problem = validate(name, found.content)
+            if problem:
+                return f"Not sent: {problem}.", None
+            saved = outputs.save(user, chat, name, found.content, caption.strip()[:300])
+        except Exception as error:  # a sandbox error, a locked file...: tell the agent, keep the chat
+            return f"Not sent: {type(error).__name__}: {error}", None
         result = {"name": saved.name, "version": saved.version, "bytes": saved.bytes,
                   "kind": saved.kind, "details": describe(saved.name, found.content)}
         return json.dumps(result), {"saved": True, **saved.to_dict()}

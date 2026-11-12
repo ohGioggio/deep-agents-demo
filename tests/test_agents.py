@@ -9,11 +9,10 @@ from deepagents.backends import FilesystemBackend
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from recording_ui import Approver
 
 from deep_agents_demo.core import assembly as agent_module
 from deep_agents_demo.core.assembly import build_agent
-from recording_ui import Approver
-from deep_agents_demo.ui.cli.repl import stream_turn
 from deep_agents_demo.core.middleware import SubagentCallCap
 from deep_agents_demo.core.tools import BUILTIN, tool_name
 from deep_agents_demo.features.agents.files import (
@@ -25,6 +24,7 @@ from deep_agents_demo.features.agents.files import (
 from deep_agents_demo.features.agents.registry import AgentRegistry
 from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.startup.workspace import SEED_DIR
+from deep_agents_demo.ui.cli.repl import stream_turn
 
 KNOWN = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute",
                    "write_todos", "task", "search_assets"})

@@ -13,9 +13,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.core.secrets import find_secrets, redact
+from deep_agents_demo.features.memory.feature import file_memory_feature, memory_feature
 from deep_agents_demo.features.memory.recall import AutoRecallMiddleware
 from deep_agents_demo.features.memory.service import MemoryService, WritePolicy
-from deep_agents_demo.features.memory.feature import file_memory_feature, memory_feature
 from deep_agents_demo.features.memory.tools import memory_tools
 
 KEY = "sk-proj-abcDEF1234567890ghijKLMNOP"

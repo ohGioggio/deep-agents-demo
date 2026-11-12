@@ -26,6 +26,8 @@ def clean_name(path: str) -> str:
     anything else unusual as "_". ValueError when there is no name or extension."""
     base = PurePosixPath(str(path).replace("\\", "/")).name
     stem, dot, extension = base.rpartition(".")
+    if base.startswith("."):
+        raise ValueError(f"{path!r}: a file name can't start with a dot; use e.g. report.md")
     if not dot or not stem.strip(" ._") or not extension:
         raise ValueError(f"{path!r} needs a file name with an extension, e.g. report.md")
     stem = re.sub(r"[^A-Za-z0-9._-]", "_", re.sub(r"\s+", "-", stem.strip()))
@@ -42,6 +44,13 @@ class _Tags(HTMLParser):
 
 
 def _check_text(suffix: str, text: str) -> str | None:
+    try:
+        return _check_format(suffix, text)
+    except (csv.Error, RecursionError, ValueError) as error:  # e.g. a huge CSV field, deep nesting
+        return f"it can't be read as {suffix[1:].upper()}: {type(error).__name__}: {str(error)[:200]}"
+
+
+def _check_format(suffix: str, text: str) -> str | None:
     if suffix == ".json":
         try:
             json.loads(text)
@@ -109,6 +118,9 @@ def describe(name: str, data: bytes) -> str:
     """A short description for the agent, e.g. "csv, 12 rows x 4 columns"."""
     kind = PurePosixPath(name).suffix.lstrip(".").lower()
     if kind == "csv":
-        rows = [row for row in csv.reader(io.StringIO(data.decode("utf-8"))) if row]
-        return f"csv, {len(rows)} rows x {len(rows[0]) if rows else 0} columns"
+        try:
+            rows = [row for row in csv.reader(io.StringIO(data.decode("utf-8"))) if row]
+            return f"csv, {len(rows)} rows x {len(rows[0]) if rows else 0} columns"
+        except (csv.Error, UnicodeDecodeError):
+            pass
     return f"{kind}, {_size(len(data))}"
