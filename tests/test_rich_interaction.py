@@ -148,10 +148,22 @@ class RendererPauseTest(unittest.TestCase):
         r.resume()
         self.assertIsNone(r._live)
 
-    def test_notify_prints_through_the_console_when_free(self):
+    def test_notify_writes_to_stderr_when_nothing_draws(self):
         c = console()
-        RichRenderer(c).notify("[plan] Pausing")
-        self.assertIn("[plan] Pausing", c.export_text())
+        with patch("deep_agents_demo.ui.cli.richui.renderer.os.write") as write:
+            RichRenderer(c).notify("[plan] Pausing")
+        self.assertEqual(write.call_args.args[1], b"\n[plan] Pausing\n")
+        self.assertNotIn("Pausing", c.export_text())
+
+    def test_a_failing_console_does_not_lose_a_notice(self):
+        r = RichRenderer(console())
+        r.emit(RunStarted("r1", "main"))
+        r.notify("[plan] Pausing")
+        with patch.object(r.console, "print", side_effect=OSError("closed")), \
+                patch("deep_agents_demo.ui.cli.richui.renderer.os.write") as write:
+            r._run([])
+        self.assertEqual(write.call_args.args[1], b"\n[plan] Pausing\n")
+        r.close()
 
     def test_notify_never_blocks_when_io_is_held(self):
         c = console()

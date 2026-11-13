@@ -167,6 +167,34 @@ class RunChatTests(unittest.TestCase):
         stream.assert_called_once()
         self.assertEqual(stream.call_args.args[1], "hello")
 
+    def test_ctrl_c_mid_turn_closes_the_live_view_before_teardown(self):
+        log = []
+
+        @contextlib.contextmanager
+        def resources(*_args, **_kwargs):
+            try:
+                yield MagicMock()
+            finally:
+                log.append("teardown")
+        renderer = MagicMock()
+        renderer.close.side_effect = lambda: log.append("close")
+        box = MagicMock()
+        box.read.return_value = "hello"
+        runtime = MagicMock()
+        runtime.chats.user = "alice"
+        from deep_agents_demo.ui.cli.richui import input_box, mode
+        with patch.object(chat, "build_runtime", return_value=runtime), \
+                patch.object(chat.Resources, "open", resources), \
+                patch.object(chat, "prepare_workspace"), \
+                patch.object(mode, "use_rich", return_value=True), \
+                patch.object(chat, "_rich_parts", return_value=(renderer, MagicMock(), None)), \
+                patch.object(input_box, "InputBox", return_value=box), \
+                patch.object(chat, "stream_turn", side_effect=KeyboardInterrupt), \
+                patch("builtins.print"):
+            with self.assertRaises(KeyboardInterrupt):
+                chat.run_chat(Settings.from_env({}), "alice", "t1")
+        self.assertEqual(log, ["close", "teardown"])
+
 
 class RegistryTests(unittest.TestCase):
     def test_every_command_is_in_help_and_dispatches(self):

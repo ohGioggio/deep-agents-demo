@@ -17,6 +17,8 @@ from prompt_toolkit.layout import (
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.processors import Processor, Transformation
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
+from rich.text import Text
 
 from deep_agents_demo.ui.cli.richui.menu import (
     LABEL_COLUMN, MIN_DETAIL, NEEDS_ARGUMENT, MenuItem, argument_items, command_items, filter_items, fit_row, footer,
@@ -29,6 +31,11 @@ STYLE = Style.from_dict({
     "selected": "bg:#312e81", "selected.desc": "#e0e7ff",
 })
 ARGUMENT_LINE = re.compile(r"^(/\w+) (.*)$")
+
+
+def input_prefix_width(label: str) -> int:
+    """Terminal cells taken by the box's left edge and the "label › " prompt."""
+    return get_cwidth(f"│ {label} › ")
 
 
 class Menu(NamedTuple):
@@ -57,15 +64,17 @@ class InputBox:
 
     ``commands`` is the repl registry (name -> method with ``.command``); the providers are
     called when a menu needs them (chats: objects with name/turns/updated/first; agents:
-    (name, description) pairs) and their answers kept for one ``read``.
+    (name, description) pairs) and their answers kept for one ``read``. With a Rich
+    ``console``, the sent line stays on screen as "label › text" once the box is gone.
     """
 
     def __init__(self, commands, chats_provider, agents_provider, history_path, prompt_label,
-                 cwd=None):
+                 cwd=None, console=None):
         self.commands = command_items(commands)
         self.chats_provider, self.agents_provider = chats_provider, agents_provider
         self.prompt_label = prompt_label
         self.cwd = Path(cwd or ".")
+        self.console = console
         path = Path(history_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.history = FileHistory(str(path))
@@ -224,10 +233,9 @@ class InputBox:
         menu_window = ConditionalContainer(
             Window(FormattedTextControl(menu_lines), dont_extend_height=True, wrap_lines=False),
             filter=is_open)
-        prefix = f"│ {label} › "
         input_row = VSplit([
             Window(FormattedTextControl(lambda: [("class:box", "│ "), ("class:label", f"{label} › ")]),
-                   width=len(prefix), dont_extend_width=True),
+                   width=input_prefix_width(label), dont_extend_width=True),
             Window(BufferControl(buffer, input_processors=[_Ghost(ghost)]), height=1),
             Window(FormattedTextControl(lambda: [("class:box", "│")]), width=1, dont_extend_width=True),
         ], height=1)
@@ -241,7 +249,14 @@ class InputBox:
         app = Application(layout=layout, key_bindings=keys, style=STYLE, full_screen=False,
                           erase_when_done=True)
         app.ttimeoutlen = 0.1  # a lone Esc is recognised after 0.1 s (arrow keys arrive whole)
-        return app.run()
+        line = app.run()   # Ctrl+C / Ctrl+D raise: nothing was sent, nothing is echoed
+        self.echo(label, line)
+        return line
+
+    def echo(self, label: str, line: str) -> None:
+        """The sent line, kept on screen (the box erases itself when done)."""
+        if self.console is not None:
+            self.console.print(Text(f"{label} › ", style="prompt") + Text(line))
 
     @staticmethod
     def _row(item: MenuItem, selected: bool, typed: str, inner: int) -> StyleAndTextTuples:
@@ -253,6 +268,8 @@ class InputBox:
         word, _, usage = name_part.lstrip().partition(" ")
         lead = name_part[:len(name_part) - len(name_part.lstrip())]
         hit = word.lower().find(typed.lower()) if typed else -1
+        if selected and lead:   # a marker that shows without colour (NO_COLOR), same width
+            lead = "›" + lead[1:]
         fragments: StyleAndTextTuples = [("class:frame", "│"), (base + "class:cmd", lead)]
         if hit >= 0:
             fragments += [(base + "class:cmd", word[:hit]),

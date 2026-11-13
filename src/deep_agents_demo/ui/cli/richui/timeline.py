@@ -9,7 +9,9 @@ import json
 import time
 from pathlib import Path
 
+from rich.cells import cell_len
 from rich.style import Style
+from rich.table import Table
 from rich.text import Text
 
 from deep_agents_demo.models.events import (
@@ -24,6 +26,23 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 MARKS = {"ok": ("✓", "ok"), "error": ("✗", "error"), "rejected": ("✗", "error"),
          "cut": ("✗", "error"), "stopped": ("✗", "error")}
 TODO_MARKS = {"completed": ("✓", "ok"), "in_progress": ("▸", "approval"), "pending": ("○", "muted")}
+STEP_PASSED = {"ok", "passed"}
+
+
+def _one_row(line: Text) -> Text:
+    """A tree line stays one row (cut with "…"), so its guides line up at any width."""
+    line.no_wrap, line.overflow = True, "ellipsis"
+    return line
+
+
+def _guided(prefix: str, text: Text) -> Table:
+    """A detail line that may wrap (verbose JSON, a result, a file path): the wrapped rows
+    keep the tree's guides on their left."""
+    grid = Table.grid(padding=0)
+    grid.add_column(width=cell_len(prefix), no_wrap=True)
+    grid.add_column(overflow="fold")
+    grid.add_row(Text(prefix, style="muted"), text)
+    return grid
 
 
 def _cut(text: str, width: int) -> str:
@@ -155,18 +174,24 @@ class Timeline:
         if node is None or node.kind != "sub":
             return
         node.status = event.status
+        if event.input_tokens or event.output_tokens or event.duration:   # an older event has none
+            node.footer = format_footer(event.ended_at, event.input_tokens, event.output_tokens,
+                                        event.duration)
         if not node.merged:
             node.done = True
             node.duration = time.monotonic() - node.started
 
+    def _plan_call(self) -> _Node:
+        """Where plan steps go: under the running ``run_plan`` call, else at the top."""
+        for node in reversed(self._root.children):
+            if node.kind == "tool" and node.name == "run_plan" and not node.done:
+                return node
+        return self._root
+
     def _on_StepStarted(self, event: StepStarted) -> None:
         if event.kind != "plan":
             return
-        parent = self._root
-        for node in reversed(self._root.children):
-            if node.kind == "tool" and node.name == "run_plan" and not node.done:
-                parent = node
-                break
+        parent = self._plan_call()
         node = _Node("step", parent, event.agent)
         node.number, node.total = event.number, event.total
         parent.children.append(node)
@@ -177,11 +202,15 @@ class Timeline:
             return
         node = self._runs.get(event.run_id)
         if node is None or node.kind != "step":   # a stopped plan's steps never started
-            node = _Node("step", self._root, "")
+            node = _Node("step", self._plan_call(), "")
             node.number = event.number
-            self._root.children.append(node)
+            node.parent.children.append(node)
         node.done = True
         node.status, node.attempts, node.duration = event.status, event.attempts, event.duration
+        node.answer = event.summary
+        if event.input_tokens or event.output_tokens or event.duration:
+            node.footer = format_footer(time.time(), event.input_tokens, event.output_tokens,
+                                        event.duration)
 
     def _on_ToolCallStart(self, event: ToolCallStart) -> None:
         if event.tool_call_id in self._calls:
@@ -285,7 +314,7 @@ class Timeline:
             mark, style = TODO_MARKS.get(todo.get("status"), TODO_MARKS["pending"])
             line = Text(f"{mark} ", style=style)
             line.append(str(todo.get("content", "")))
-            out.append(line)
+            out.append(_one_row(line))
         return out
 
     def _branch(self, node: _Node, prefix: str, settled: bool, last: bool = False) -> list:
@@ -293,20 +322,20 @@ class Timeline:
         connector = "└─ " if last and not top else "├─ "
         head = Text(prefix + connector, style="muted")
         self._head(node, head)
-        lines = [head]
+        lines: list = [_one_row(head)]
         child_prefix = prefix + ("   " if last and not top else "│  ")
         details = self._details(node)
         kids = [c for c in node.children]
         answer = self._answer(node)
         total = len(kids) + (1 if answer is not None else 0)
         for text in details:
-            lines.append(Text(child_prefix, style="muted") + text)
+            lines.append(_guided(child_prefix, text))
         for index, child in enumerate(kids):
             lines.extend(self._branch(child, child_prefix, settled, last=index == total - 1))
         if answer is not None:
             line = Text(child_prefix + "└─ ", style="muted")
             line.append_text(answer)
-            lines.append(line)
+            lines.append(_one_row(line))
         return lines
 
     def _details(self, node: _Node) -> list:
@@ -333,10 +362,14 @@ class Timeline:
         return out
 
     def _answer(self, node: _Node) -> Text | None:
-        if node.kind != "sub" or not node.answer.strip():
+        """A subagent's or passed plan step's short answer, with its footer (a step that
+        didn't pass has its reason on its own line: only the footer goes here)."""
+        if node.kind == "step" and (node.status not in STEP_PASSED or not node.answer.strip()):
+            return Text(node.footer, style="muted") if node.footer else None
+        if node.kind not in ("sub", "step") or not node.answer.strip():
             return None
         first = node.answer.strip().splitlines()[0]
-        line = Text(f"{node.name}:", style="subagent")
+        line = Text(f"{node.name}:", style="subagent" if node.kind == "sub" else "step")
         line.append(" " + first)
         if node.footer:
             line.append("  " + node.footer, style="muted")
@@ -385,11 +418,14 @@ class Timeline:
         if not node.done:
             line.append(f"  {_spinner()} working… {int(time.monotonic() - node.started)} s",
                         style="approval")
-        elif node.status == "ok":
+        elif node.status in STEP_PASSED:
             tries = f"{node.attempts} {'try' if node.attempts == 1 else 'tries'}"
             line.append("  ✓ passed review", style="ok")
             line.append(f" · {tries} · {_seconds(node.duration)}", style="muted")
         else:
             line.append(f"  ✗ {node.status}", style="error")
+            reason = node.answer.strip().splitlines()[0] if node.answer.strip() else ""
+            if reason:
+                line.append(": " + _cut(reason, TEXT_WIDTH), style="error")
             if node.attempts:
                 line.append(f" · {node.attempts} {'try' if node.attempts == 1 else 'tries'}", style="muted")

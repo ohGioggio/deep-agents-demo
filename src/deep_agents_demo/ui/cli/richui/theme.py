@@ -12,6 +12,7 @@ THEME = Theme({
     "approval": "#fbbf24",
     "muted": "#7d8590",
     "file": "#7ee787",
+    "prompt": "#ffa657",   # the input box's "label ›" (its prompt_toolkit colour)
 })
 
 

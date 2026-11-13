@@ -22,11 +22,14 @@ class MenuItem:
 
 
 def filter_items(items: list[MenuItem], typed: str) -> list[MenuItem]:
-    """Items whose value contains ``typed`` (any case); prefix matches first, then the given order."""
+    """Items whose value contains ``typed`` (any case): an exact match first, then prefix
+    matches, then the rest, each in the given order."""
     needle = typed.lower().lstrip("/")  # the slash of a command name is not part of the match
-    hits = [i for i in items if needle in i.value.lower().lstrip("/")]
-    starts = [i for i in hits if i.value.lower().lstrip("/").startswith(needle)]
-    return starts + [i for i in hits if i not in starts]
+
+    def key(item):
+        return item.value.lower().lstrip("/")
+    hits = [i for i in items if needle in key(i)]
+    return sorted(hits, key=lambda i: (key(i) != needle, not key(i).startswith(needle)))
 
 
 def command_items(commands) -> list[MenuItem]:

@@ -320,69 +320,69 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
     say = print if prompt is None else (lambda *_args, **_kwargs: None)
     prepare_workspace(settings)
     say(GREETING)
-    renderer = None
-    try:
-        with Resources.open(settings, notify=say, warn=_warn) as resources:
-            runtime = build_runtime(resources, user, notify=say)
-            tables = box = None
-            sink, interaction, notify = None, CliInteraction(), None
-            if rich:
-                renderer, interaction, tables = _rich_parts(verbose)
-                sink, notify = renderer, renderer.notify
-            session = ChatSession(runtime.chats, thread, uploads=runtime.uploads, agents=runtime.agents,
-                                  outputs=runtime.outputs, tables=tables)
-            if rich:
-                from deep_agents_demo.ui.cli.richui.input_box import InputBox
-                history = settings.paths.data / "history" / f"{safe_folder_name(user)}.txt"
-                box = InputBox(
-                    COMMANDS, lambda: runtime.chats.list(),
-                    lambda: [(a["name"], a["description"]) for a in session.agents.overview()]
-                    if session.agents is not None else [],
-                    history, session.current)
+    with Resources.open(settings, notify=say, warn=_warn) as resources:
+        renderer = None
+        try:
+                runtime = build_runtime(resources, user, notify=say)
+                tables = box = None
+                sink, interaction, notify = None, CliInteraction(), None
+                if rich:
+                    renderer, interaction, tables = _rich_parts(verbose)
+                    sink, notify = renderer, renderer.notify
+                session = ChatSession(runtime.chats, thread, uploads=runtime.uploads, agents=runtime.agents,
+                                      outputs=runtime.outputs, tables=tables)
+                if rich:
+                    from deep_agents_demo.ui.cli.richui.input_box import InputBox
+                    history = settings.paths.data / "history" / f"{safe_folder_name(user)}.txt"
+                    box = InputBox(
+                        COMMANDS, lambda: runtime.chats.list(),
+                        lambda: [(a["name"], a["description"]) for a in session.agents.overview()]
+                        if session.agents is not None else [],
+                        history, session.current, console=renderer.console)
 
-            def runners():
-                return runners_for(runtime, settings, thread_id(runtime.chats.user, session.current),
-                                   approver, interactive=prompt is None, quiet=quiet,
-                                   interaction=interaction, sink=sink, notify=notify)
+                def runners():
+                    return runners_for(runtime, settings, thread_id(runtime.chats.user, session.current),
+                                       approver, interactive=prompt is None, quiet=quiet,
+                                       interaction=interaction, sink=sink, notify=notify)
 
-            def run_room(names, question):
-                """/room: run it, then tell the agent the outcome as an ordinary turn."""
-                active = runners()
-                from deep_agents_demo.features.orchestration.rooms import room_followup
-                outcome = active["start_room"]({"type": "start_room", "question": question,
-                                                "participants": names})
-                if "summary" not in outcome:  # refused before it started, e.g. an unknown agent
-                    say(f"Room not started: {outcome.get('error')}")
-                    return
-                stream_turn(runtime.agent, room_followup(question, names, outcome), session.config,
-                            approver=approver, runners=active, quiet=quiet, sink=sink)
-            session.room = run_room
-            approver = Approvals(runtime.preview, interaction, interactive=prompt is None)
-            while True:
-                try:
-                    if prompt is not None:
-                        line = prompt
-                    elif box is not None:
-                        line = box.read(session.current).strip()
-                    else:
-                        line = input(f"\n[{session.current}] You: ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    break
-                if line.lower() in {"exit", "quit", "/exit", "/quit"}:
-                    break
-                if not line or session.handle(line):
+                def run_room(names, question):
+                    """/room: run it, then tell the agent the outcome as an ordinary turn."""
+                    active = runners()
+                    from deep_agents_demo.features.orchestration.rooms import room_followup
+                    outcome = active["start_room"]({"type": "start_room", "question": question,
+                                                    "participants": names})
+                    if "summary" not in outcome:  # refused before it started, e.g. an unknown agent
+                        say(f"Room not started: {outcome.get('error')}")
+                        return
+                    stream_turn(runtime.agent, room_followup(question, names, outcome), session.config,
+                                approver=approver, runners=active, quiet=quiet, sink=sink)
+                session.room = run_room
+                approver = Approvals(runtime.preview, interaction, interactive=prompt is None)
+                while True:
+                    try:
+                        if prompt is not None:
+                            line = prompt
+                        elif box is not None:
+                            line = box.read(session.current).strip()
+                        else:
+                            line = input(f"\n[{session.current}] You: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        break
+                    if line.lower() in {"exit", "quit", "/exit", "/quit"}:
+                        break
+                    if not line or session.handle(line):
+                        if prompt is not None:
+                            break
+                        continue
+                    # Skills reload every turn (local files, cheap), so an approved change is
+                    # visible from the next message.
+                    stream_turn(runtime.agent, session.content(line), session.config, reload_skills=True,
+                                approver=approver, runners=runners(), quiet=quiet, sink=sink)
+                    if runtime.refresh():  # an approved agent change: available from the next message
+                        session.agents = runtime.agents
+                        say("Agents updated.")
                     if prompt is not None:
                         break
-                    continue
-                # Skills reload every turn (local files, cheap), so an approved change is
-                # visible from the next message.
-                stream_turn(runtime.agent, session.content(line), session.config, reload_skills=True,
-                            approver=approver, runners=runners(), quiet=quiet, sink=sink)
-                if runtime.refresh():  # an approved agent change: available from the next message
-                    session.agents = runtime.agents
-                    say("Agents updated.")
-                if prompt is not None:
-                    break
-    finally:
-        if renderer is not None:
-            renderer.close()  # Ctrl+C mid-turn raises no RunError; stop the live view first
+        finally:  # before the resources' teardown, so nothing draws over it
+            if renderer is not None:
+                renderer.close()  # Ctrl+C mid-turn raises no RunError; stop the live view first

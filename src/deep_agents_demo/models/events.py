@@ -144,9 +144,14 @@ class SubagentStarted(_Event):
 
 @dataclass(frozen=True)
 class SubagentFinished(_Event):
-    """A subagent run ended with ``status`` "ok", "error" or "rejected"."""
+    """A subagent run ended with ``status`` "ok", "error" or "rejected"; the token totals
+    include its nested runs (its footer: ``format_footer(ended_at, ...)``)."""
     run_id: str
     status: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    duration: float = 0.0
+    ended_at: float = 0.0
 
 
 @dataclass(frozen=True)

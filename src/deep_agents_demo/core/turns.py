@@ -137,6 +137,7 @@ class _Run:
     input_tokens: int = 0
     output_tokens: int = 0
     pending_tasks: list = field(default_factory=list)  # [(task call id, subagent_type)] not yet started
+    started: float = field(default_factory=time.monotonic)
 
     def add_usage(self, input_tokens: int, output_tokens: int) -> None:
         run = self
@@ -241,7 +242,8 @@ class _Progress:
             status = "rejected"
         subagent = self.subagents.pop(call_id, None)
         if subagent is not None:
-            send(SubagentFinished(subagent.id, status))
+            send(SubagentFinished(subagent.id, status, subagent.input_tokens, subagent.output_tokens,
+                                  time.monotonic() - subagent.started, time.time()))
         else:  # a task whose subagent never showed itself
             run.pending_tasks[:] = [task for task in run.pending_tasks if task[0] != call_id]
         duration = time.monotonic() - started if started is not None else 0.0

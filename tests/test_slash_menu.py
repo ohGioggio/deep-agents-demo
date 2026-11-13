@@ -1,4 +1,5 @@
 """The / menu: its logic (no terminal) and the input box driven through a fake terminal."""
+import io
 import tempfile
 import threading
 import time
@@ -11,7 +12,8 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 from deep_agents_demo.ui.cli.repl import COMMANDS
-from deep_agents_demo.ui.cli.richui.input_box import InputBox
+from deep_agents_demo.ui.cli.richui.input_box import InputBox, input_prefix_width
+from deep_agents_demo.ui.cli.richui.theme import make_console
 from deep_agents_demo.ui.cli.richui.menu import (
     NEEDS_ARGUMENT, MenuItem, argument_items, command_items, filter_items, fit_row, footer,
     ghost_text, window,
@@ -85,6 +87,23 @@ class MenuLogicTests(unittest.TestCase):
             _, items = argument_items("/image", "pics/b", [], [], root)
             self.assertEqual(["pics/b.JPG"], [i.value for i in items])
 
+    def test_exact_match_comes_first(self):
+        chats = [chat("foo2"), chat("foo"), chat("xfoo")]
+        _title, items = argument_items("/switch", "FOO", chats, [], Path("."))
+        self.assertEqual(["foo", "foo2", "xfoo"], [i.value for i in items])
+
+    def test_selected_row_is_marked_without_colour(self):
+        item = MenuItem("/new", "/new [name]", "start a new chat")
+        row = "".join(text for _style, text in InputBox._row(item, True, "", 40))
+        other = "".join(text for _style, text in InputBox._row(item, False, "", 40))
+        self.assertTrue(row.startswith("│›/new"), row)
+        self.assertTrue(other.startswith("│ /new"), other)
+        self.assertEqual(len(row), len(other))
+
+    def test_prefix_width_counts_cells(self):
+        self.assertEqual(9, input_prefix_width("公园"))   # "│ " + 4 cells + " › "
+        self.assertEqual(10, input_prefix_width("parks"))
+
     def test_needs_argument(self):
         self.assertEqual({"/rename", "/switch", "/delete", "/room", "/image"}, NEEDS_ARGUMENT)
 
@@ -97,14 +116,15 @@ class MenuLogicTests(unittest.TestCase):
         self.assertTrue(fit_row("/new [name]", detail, 100).endswith("none)"))
 
 
-def read_with(keys, history=None, chats=(), agents=(), pause=0.0):
+def read_with(keys, history=None, chats=(), agents=(), pause=0.0, console=None, label="parks"):
     """Type ``keys`` (a list of strings, with a pause between them) into an InputBox."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "history"
         if history:
             path.write_bytes("".join(f"\n# t\n+{line}\n" for line in history).encode("utf-8"))
         with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-            box = InputBox(COMMANDS, lambda: list(chats), lambda: list(agents), path, "parks")
+            box = InputBox(COMMANDS, lambda: list(chats), lambda: list(agents), path, "parks",
+                           console=console)
 
             def type_keys():
                 time.sleep(0.3)
@@ -117,7 +137,7 @@ def read_with(keys, history=None, chats=(), agents=(), pause=0.0):
                 except Exception:
                     pass  # the box already returned and its pipe is closed
             threading.Thread(target=type_keys, daemon=True).start()
-            return box.read("parks")
+            return box.read(label)
 
 
 class InputBoxTests(unittest.TestCase):
@@ -146,6 +166,20 @@ class InputBoxTests(unittest.TestCase):
     def test_history_up_recalls(self):
         self.assertEqual("what is a park", read_with(["\x1b[A", "\r"], history=["what is a park"],
                                                     pause=0.4))
+
+    def test_switch_picks_the_exact_name(self):
+        self.assertEqual("/switch foo", read_with(["/switch foo\r"], chats=[chat("foo2"), chat("foo")]))
+
+    def test_sent_line_stays_on_screen(self):
+        c = make_console(file=io.StringIO(), width=60, force_terminal=False, record=True)
+        self.assertEqual("hello", read_with(["hello\r"], console=c))
+        self.assertIn("parks › hello", c.export_text())
+
+    def test_nothing_is_echoed_on_ctrl_d(self):
+        c = make_console(file=io.StringIO(), width=60, force_terminal=False, record=True)
+        with self.assertRaises(EOFError):
+            read_with(["\x04"], console=c)
+        self.assertEqual("", c.export_text())
 
     def test_ctrl_d_is_eof(self):
         with self.assertRaises(EOFError):

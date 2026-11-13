@@ -124,6 +124,15 @@ class TurnEventTests(EngineTest):
         order = [sink.events.index(e) for e in (started, own[0], finished)]
         self.assertEqual(order, sorted(order))
 
+    def test_subagent_finished_carries_its_totals(self):
+        sink = self.turn(tasks("t1"), AIMessage(content="Sub agent done."), AIMessage(content="All done.", id="a2"))
+        [finished] = sink.of(SubagentFinished)
+        [turn] = sink.of(RunFinished)
+        self.assertEqual((finished.input_tokens, finished.output_tokens), (100, 10))  # its one message
+        self.assertEqual((turn.input_tokens, turn.output_tokens), (300, 30))          # the whole turn
+        self.assertGreaterEqual(finished.duration, 0.0)
+        self.assertGreater(finished.ended_at, 1_000_000_000)
+
     def test_parallel_subagents_have_separate_runs(self):
         sink = self.turn(tasks("t1", "t2"), AIMessage(content="First sub."), AIMessage(content="Second sub."),
                     AIMessage(content="Both done.", id="a2"))

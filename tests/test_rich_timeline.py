@@ -1,11 +1,13 @@
 import io
 import unittest
 
+from rich.cells import cell_len
 from rich.console import Console, Group
 
 from deep_agents_demo.models.events import (
     ApprovalRequested, FileEvent, RunFinished, RunStarted, StateSnapshot, StepFinished, StepStarted,
     SubagentFinished, SubagentStarted, TextMessageEnd, ToolCallEnd, ToolCallStart,
+    format_footer,
 )
 from deep_agents_demo.ui.cli.richui.renderer import RichRenderer
 from deep_agents_demo.ui.cli.richui.theme import THEME, make_console
@@ -238,6 +240,50 @@ class TimelineTest(unittest.TestCase):
         out = c.export_text()
         self.assertEqual(out.count(evil), 5)   # short arg, JSON arg, result, summary, answer
         self.assertNotIn("]8;", c.file.getvalue())
+
+    def test_subagent_answer_line_has_its_footer(self):
+        t = Timeline()
+        t.handle(ToolCallStart("r1", "t1", "task", {"subagent_type": "researcher"}))
+        t.handle(SubagentStarted("sub", "r1", "researcher", "t1"))
+        t.handle(TextMessageEnd("sub", "m1", "Oak and pine.", 1, 1, False))
+        t.handle(SubagentFinished("sub", "ok", 1200, 80, 6.0, 0.0))
+        t.handle(ToolCallEnd("r1", "t1", "task", "ok", "", 6.1))
+        out = draw(t.take_settled())
+        self.assertIn("researcher: Oak and pine.  " + format_footer(0.0, 1200, 80, 6.0), out)
+
+    def test_plan_step_has_its_answer_and_footer(self):
+        t = Timeline()
+        t.handle(StepStarted("s1", "plan", 1, 2, "general-purpose"))
+        t.handle(StepFinished("s1", "plan", 1, "passed", 1, 7.0, 300, 40, "Wrote the park plan."))
+        out = draw(t.take_settled())
+        self.assertIn("step 1/2  general-purpose  ✓ passed review · 1 try · 7.0 s", out)
+        self.assertIn("└─ general-purpose: Wrote the park plan.", out)
+        self.assertIn("300 in / 40 out · 7 s", out)
+
+    def test_failed_step_shows_its_reason(self):
+        t = Timeline()
+        t.handle(StepStarted("s1", "plan", 1, 2, "general-purpose"))
+        t.handle(StepFinished("s1", "plan", 1, "failed", 2, 9.0, 50, 5, "tests broke"))
+        out = draw(t.take_settled())
+        self.assertIn("step 1/2  general-purpose  ✗ failed: tests broke · 2 tries", out)
+        self.assertIn("50 in / 5 out · 9 s", out)
+
+    def test_narrow_lines_keep_their_guides(self):
+        t = Timeline(verbose=True)
+        t.handle(ToolCallStart("r1", "t1", "task", {"description": "x " * 40}))
+        t.handle(SubagentStarted("sub", "r1", "researcher", "t1"))
+        call(t, "sub", "c1", "search_assets_with_a_long_name", {"q": "y" * 60},
+             summary="a long summary of what came back " * 2, result="z " * 60)
+        t.handle(TextMessageEnd("sub", "m", "A long answer " * 10, 1, 1, False))
+        t.handle(SubagentFinished("sub", "ok", 1200, 80, 6.0, 0.0))
+        t.handle(ToolCallEnd("r1", "t1", "task", "ok", "", 1.0))
+        c = console(width=50)
+        c.print(Group(*t.take_settled()))
+        lines = c.export_text().splitlines()
+        self.assertGreater(len(lines), 4)
+        for line in lines:
+            self.assertLessEqual(cell_len(line), 50, line)
+            self.assertTrue(line[:1] in "├│└ ", line)
 
 
 def call_via(r, run, cid, name):
