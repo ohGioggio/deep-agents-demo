@@ -1,8 +1,10 @@
 import io
+import threading
 import unittest
+from unittest.mock import patch
 
 from deep_agents_demo.models.approvals import ApprovalRequest
-from deep_agents_demo.models.events import RunStarted
+from deep_agents_demo.models.events import RunFinished, RunStarted
 from deep_agents_demo.ui.cli.prompts import CliInteraction
 from deep_agents_demo.ui.cli.richui.interaction import RichInteraction
 from deep_agents_demo.ui.cli.richui.renderer import RichRenderer
@@ -96,6 +98,13 @@ class RichInteractionTest(unittest.TestCase):
         i.decide(REQUEST)
         self.assertEqual(rec.log[-1], "resume")
 
+    def test_one_pause_around_a_whole_decide(self):
+        rec = Recorder()
+        i = RichInteraction(console(), renderer=rec, ask=scripted(["d", "r", "why"], rec.log))
+        i.decide(REQUEST)
+        self.assertEqual([x if isinstance(x, str) else x[0] for x in rec.log],
+                         ["pause", "ask", "ask", "ask", "resume"])
+
     def test_choose_and_ask(self):
         rec = Recorder()
         i = RichInteraction(console(), renderer=rec, ask=scripted(["2", EOFError(), "hi", KeyboardInterrupt()], rec.log))
@@ -120,6 +129,54 @@ class RendererPauseTest(unittest.TestCase):
         self.assertIsNotNone(r._live)
         r.close()
         self.assertIsNone(r._live)
+
+    def test_a_turn_ending_while_paused_leaves_no_live_after_resume(self):
+        r = RichRenderer(console())
+        r.emit(RunStarted("r1", "main"))
+        r.pause()
+        r.emit(RunFinished("r1", "main", 1, 1, 1.0, 0.0))
+        r.resume()
+        self.assertIsNone(r._live)
+        r.close()
+
+    def test_close_while_paused(self):
+        r = RichRenderer(console())
+        r.emit(RunStarted("r1", "main"))
+        r.pause()
+        r.close()
+        self.assertIsNone(r._live)
+        r.resume()
+        self.assertIsNone(r._live)
+
+    def test_notify_prints_through_the_console_when_free(self):
+        c = console()
+        RichRenderer(c).notify("[plan] Pausing")
+        self.assertIn("[plan] Pausing", c.export_text())
+
+    def test_notify_never_blocks_when_io_is_held(self):
+        c = console()
+        r = RichRenderer(c)
+        held, release = threading.Event(), threading.Event()
+
+        def hold():
+            with r._io:
+                held.set()
+                release.wait(5)
+        t = threading.Thread(target=hold)
+        t.start()
+        held.wait(5)
+        writes = []
+        done = threading.Thread(target=lambda: r.notify("[plan] Pausing"))
+        with patch("deep_agents_demo.ui.cli.richui.renderer.os.write",
+                   side_effect=lambda fd, data: writes.append(data)):
+            done.start()
+            done.join(2)
+            finished = not done.is_alive()
+        release.set()
+        t.join()
+        self.assertTrue(finished)
+        self.assertEqual(writes, [b"\n[plan] Pausing\n"])
+        self.assertNotIn("Pausing", c.export_text())
 
     def test_resume_without_a_turn_does_not_start_live(self):
         r = RichRenderer(console())

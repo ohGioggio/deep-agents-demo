@@ -11,6 +11,8 @@ Locking: ``_lock`` guards the state only and is never held while calling Live or
 ``_lock``). Handlers queue the output work in ``_todo``; ``emit`` runs it afterwards, in order,
 under ``_io`` (which ``__rich_console__`` never takes).
 """
+import os
+import sys
 import threading
 import time
 
@@ -217,9 +219,28 @@ class RichRenderer:
                 self._run([("start",)])
 
     def notify(self, message: str) -> None:
-        """Print a line above the live region (for the Ctrl+C notice)."""
-        with self._io:
-            self._run([("print", Text(message, style="approval"))])
+        """Print a line above the live region (the Ctrl+C notice). Runs in a signal
+        handler, so it never blocks: if output is busy it writes straight to stderr."""
+        if self._io.acquire(blocking=False):
+            try:
+                if self._console_free():
+                    self.console.print(Text(message, style="approval"))
+                    return
+            finally:
+                self._io.release()
+        try:
+            os.write(sys.stderr.fileno(), f"\n{message}\n".encode())
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    def _console_free(self) -> bool:
+        lock = getattr(self.console, "_lock", None)   # Rich's own print lock (reentrant)
+        if lock is None:
+            return True
+        if lock.acquire(blocking=False):
+            lock.release()
+            return True
+        return False
 
     def close(self) -> None:
         with self._io:

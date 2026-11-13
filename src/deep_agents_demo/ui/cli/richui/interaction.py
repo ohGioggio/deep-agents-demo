@@ -4,6 +4,7 @@ Same answers and the same messages for the agent as ``CliInteraction``. Every re
 takes the renderer's Live region down (``pause``) and brings it back afterwards (``resume``).
 """
 from collections.abc import Callable
+from contextlib import contextmanager
 
 from rich import box
 from rich.console import Console
@@ -31,19 +32,27 @@ class RichInteraction:
         self._renderer = renderer
         self._ask = ask
 
-    def _read(self, prompt: Text) -> str:
-        """One line from the user, with Live down while we wait."""
+    @contextmanager
+    def _paused(self):
+        """Live stays down for a whole prompt, not between its reads and prints."""
         if self._renderer is not None:
             self._renderer.pause()
         try:
-            if self._ask is not None:
-                return self._ask(prompt.plain)
-            return self._console.input(prompt)
+            yield
         finally:
             if self._renderer is not None:
                 self._renderer.resume()
 
+    def _read(self, prompt: Text) -> str:
+        if self._ask is not None:
+            return self._ask(prompt.plain)
+        return self._console.input(prompt)
+
     def decide(self, request: ApprovalRequest) -> Decision:
+        with self._paused():
+            return self._decide(request)
+
+    def _decide(self, request: ApprovalRequest) -> Decision:
         self._console.print(Panel(Text(request.summary), title=Text(request.title, style="approval"),
                                   title_align="left", border_style="approval", box=box.ROUNDED,
                                   padding=(0, 1)))
@@ -73,12 +82,14 @@ class RichInteraction:
     def choose(self, prompt: str, options: tuple[str, ...]) -> str:
         """The typed answer (the caller matches it to ``options``); "" if none."""
         try:
-            return self._read(Text(prompt, style="approval"))
+            with self._paused():
+                return self._read(Text(prompt, style="approval"))
         except (EOFError, KeyboardInterrupt):
             return ""
 
     def ask(self, prompt: str) -> str | None:
         try:
-            return self._read(Text(prompt, style="approval"))
+            with self._paused():
+                return self._read(Text(prompt, style="approval"))
         except (EOFError, KeyboardInterrupt):
             return None
