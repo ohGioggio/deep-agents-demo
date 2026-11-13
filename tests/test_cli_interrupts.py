@@ -67,6 +67,36 @@ class RunnersForTests(unittest.TestCase):
         self.assertEqual(self.seen, [before, before])
 
 
+class NewAgentsInTheSameMessageTests(unittest.TestCase):
+    """An agent approved earlier in this message can join a room or a plan at once."""
+
+    def test_the_room_uses_agents_made_earlier_in_the_message(self):
+        root = Path(tempfile.mkdtemp())
+        settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
+                            paths=Paths(data=root / "data", workspace=root / "ws",
+                                        checkpoints=root / "data" / "c.sqlite"))
+        built = []
+
+        def factory(names):
+            def make(name, extra=()):
+                built.append(name)
+                return Stopping()
+            make.names = frozenset(names)
+            return make
+        runtime = SimpleNamespace(make_worker=factory({"moderator", "critic"}), agents=None,
+                                  chats=SimpleNamespace(user="u"))
+
+        def refresh():  # an approved create_agent: the rebuild adds "helper"
+            runtime.make_worker = factory({"moderator", "critic", "helper"})
+            return True
+        runtime.refresh = refresh
+        runners = runners_for(runtime, settings, "t", Approvals(), interactive=False, quiet=True)
+        room = runners["start_room"]({"type": "start_room", "question": "q",
+                                      "participants": ["critic", "helper"]})
+        self.assertNotIn("error", room)
+        self.assertEqual(built, ["moderator"])  # it got as far as running the room
+
+
 class CtrlCControlsTests(unittest.TestCase):
     def test_an_unknown_previous_handler_restores_the_default(self):
         from unittest.mock import patch

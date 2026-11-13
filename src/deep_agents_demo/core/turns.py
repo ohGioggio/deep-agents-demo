@@ -11,6 +11,7 @@ ignores them.
 """
 import ast
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -101,14 +102,32 @@ def _parsed(text: str, parse):
 _SEND_FILE_FAILURES = ("Not sent", "Can't read")
 
 
+def _json_error(content: str) -> str:
+    """The ``error`` of a JSON object result (start_room, run_plan, ...), or ""."""
+    if not content.lstrip().startswith("{"):
+        return ""
+    parsed = _parsed(content, json.loads)
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    return str(error) if error else ""
+
+
+# How LangChain words a rejected call; the reason after it is what matters.
+_REJECTED = re.compile(r"^User rejected the tool call for `[^`]*` with reason:\s*")
+
+
 def _failed(name: str, content: str) -> bool:
-    return content.startswith("Error") or (name == "send_file" and content.startswith(_SEND_FILE_FAILURES))
+    return (content.startswith("Error") or bool(_json_error(content))
+            or (name == "send_file" and content.startswith(_SEND_FILE_FAILURES)))
 
 
 def summarize_result(name: str, content: str) -> str:
     """A tool result in a few words: "12 lines", "3 entries", "v2 · 4.2 KB", or its first line."""
-    lines = content.strip().splitlines()
+    content = _REJECTED.sub("", content.strip())
+    lines = content.splitlines()
     first = (lines[0] if lines else "")[:60]
+    error = _json_error(content)
+    if error:
+        return error.splitlines()[0][:60] if error.strip() else first
     if _failed(name, content):
         return first
     if name == "read_file":

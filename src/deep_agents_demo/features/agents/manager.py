@@ -262,7 +262,8 @@ class AgentManager(ItemManager):
                   "Change them only when the user asks: create_agent, update_agent, remove_agent, "
                   "import_agent, restore_agent, publish_agent, install_agent, uninstall_agent. "
                   "Their tools must be existing tool names. Each change is shown to the user for "
-                  "approval and is available from the next message. list_agents shows every "
+                  "approval; once approved, start_room and run_plan can use it right away, "
+                  "task and list_agents from the next message. list_agents shows every "
                   "agent and where it comes from. When the user names an agent, hand the work "
                   "to that agent with task (subagent_type is its name), not to another one. ")
         return Feature(name="agents", prompt=prompt, tools=tuple(self.tools()),

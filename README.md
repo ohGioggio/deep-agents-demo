@@ -672,7 +672,9 @@ Agent change requested: CREATE 'tester' (user: demo-user), new, v1
   agent can't create tools), and no credentials. Unusable changes are rejected
   with the reasons.
 - **Available from your next message:** after an approved change the agent is
-  rebuilt ("Agents updated."), no restart needed.
+  rebuilt ("Agents updated."), no restart needed. Rooms and plans can use a new
+  agent at once, so "create these four experts and start a room" works in one
+  message.
 - **Precedence:** your own agents win over installed marketplace agents, which win
   over folder files, which win over the built-ins. `/agents` shows what overrides
   what.
