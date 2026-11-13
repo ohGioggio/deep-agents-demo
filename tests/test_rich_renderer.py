@@ -60,7 +60,7 @@ class RichRendererTest(unittest.TestCase):
         self.assertIn("I disagree.", out)
         self.assertIn("5 in / 6 out", out)
 
-    def test_subagent_text_and_tool_text_are_not_boxes(self):
+    def test_subagent_text_and_tool_text_are_tree_lines_not_boxes(self):
         c = console()
         r = RichRenderer(c)
         r.emit(RunStarted("r1", "main"))
@@ -74,9 +74,9 @@ class RichRendererTest(unittest.TestCase):
         r.emit(RunFinished("r1", "main", 1, 1, 1.0, 0.0))
         r.close()
         out = c.export_text()
-        self.assertNotIn("secret sub answer", out)
-        self.assertNotIn("Let me check", out)
-        self.assertNotIn("─", out)
+        self.assertIn("researcher: secret sub answer", out)
+        self.assertIn("├─ Let me check", out)
+        self.assertNotIn("╭", out)
 
     def test_renders_at_narrow_width(self):
         c = console(50)
@@ -117,7 +117,8 @@ class RichRendererTest(unittest.TestCase):
         r.emit(RunFinished("r1", "main", 5, 6, 3.0, 0.0))
         r.close()
         out = c.export_text()
-        self.assertNotIn("Checking now", out)
+        self.assertEqual(out.count("Checking now"), 1)
+        self.assertLess(out.index("Checking now"), out.index("The final answer"))
         self.assertEqual(out.count("The final answer"), 1)
         self.assertEqual(out.count("main"), 1)
         self.assertIn("5 in / 6 out", out)

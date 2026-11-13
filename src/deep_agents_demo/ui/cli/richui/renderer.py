@@ -3,7 +3,8 @@
 The renderer owns the console and one ``Live`` region for the length of a run. The region
 shows ``self`` (see ``__rich_console__``), which stacks the parts that are still changing:
 the "thinking" line and the answer box being written; Live re-renders it at most 8 times
-a second. Finished boxes are printed above it. A timeline can be added to ``_parts`` later.
+a second. Finished boxes are printed above it. The timeline (tool calls, subagents, plan steps) is
+drawn in the same region while unfinished; branches that settle are printed above it, once.
 
 Locking: ``_lock`` guards the state only and is never held while calling Live or the console
 (Live's refresh thread holds its own lock and calls ``__rich_console__``, which takes
@@ -21,8 +22,10 @@ from rich.panel import Panel
 from rich.text import Text
 
 from deep_agents_demo.models.events import format_footer
+from deep_agents_demo.ui.cli.richui.timeline import Timeline
 
 REFRESHES_PER_SECOND = 8
+TIMELINE_EVENTS = {"ToolCallEnd", "FileEvent", "StateSnapshot", "ApprovalRequested", "SubagentFinished"}
 
 
 class _Box:
@@ -56,6 +59,7 @@ class RichRenderer:
         self._box: _Box | None = None         # the box being written or settled
         self._settled = False                 # the box's message has ended
         self._waiting_since: float | None = None  # a run started, nothing has arrived yet
+        self._timeline = Timeline(verbose)
 
     # ---- what the Live region shows ----
     def __rich_console__(self, console, options):
@@ -68,6 +72,7 @@ class RichRenderer:
         if self._waiting_since is not None:
             seconds = int(time.monotonic() - self._waiting_since)
             parts.append(Text(f"thinking… {seconds} s", style="muted"))
+        parts.extend(self._timeline.lines())
         if self._box is not None:
             parts.append(self._box.panel())
         return parts
@@ -75,10 +80,13 @@ class RichRenderer:
     # ---- events (plain-only and unknown events have no handler and are ignored) ----
     def emit(self, event) -> None:
         handler = getattr(self, f"_on_{type(event).__name__}", None)
-        if handler:
+        if handler or type(event).__name__ in TIMELINE_EVENTS:
             with self._io:
                 with self._lock:
-                    handler(event)
+                    self._timeline.handle(event)
+                    self._settle()   # the tree first, so it prints above the box the handler may flush
+                    if handler:
+                        handler(event)
                     todo, self._todo = self._todo, []
                 self._run(todo)
 
@@ -139,7 +147,7 @@ class RichRenderer:
     def _on_TextMessageEnd(self, event) -> None:
         if event.run_id in self._subagents or self._box is None or self._box.run_id != event.run_id:
             return
-        if event.has_tool_calls:  # a dim line in the timeline, not a box
+        if event.has_tool_calls:  # a dim line in the timeline (see Timeline), not a box
             self._box = None
             return
         self._box.text = event.text or self._box.text
@@ -158,6 +166,14 @@ class RichRenderer:
     # ---- helpers (state only; they queue output in _todo) ----
     def _start_live(self) -> None:
         self._todo.append(("start",))
+
+    def _settle(self, force: bool = False) -> None:
+        """Queue the timeline branches that have settled to be printed (and keep Live up
+        while some are still running)."""
+        for line in self._timeline.take_settled(force):
+            self._todo.append(("print", line))
+        if not force and self._timeline.active():
+            self._start_live()
 
     def _flush(self) -> None:
         """Queue the box to be printed for good (with its footer, if it got one)."""
@@ -180,6 +196,7 @@ class RichRenderer:
             with self._lock:
                 self._waiting_since = None
                 self._todo.append(("stop",))
+                self._settle(force=True)
                 self._flush()
                 todo, self._todo = self._todo, []
             self._run(todo)
