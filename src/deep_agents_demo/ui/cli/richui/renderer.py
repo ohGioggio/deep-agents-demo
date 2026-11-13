@@ -60,6 +60,8 @@ class RichRenderer:
         self._settled = False                 # the box's message has ended
         self._waiting_since: float | None = None  # a run started, nothing has arrived yet
         self._timeline = Timeline(verbose)
+        self._paused = False                  # a prompt is being read: Live stays down
+        self._want_live = False               # Live was up (or asked for) when paused
 
     # ---- what the Live region shows ----
     def __rich_console__(self, console, options):
@@ -93,11 +95,14 @@ class RichRenderer:
     def _run(self, todo: list) -> None:
         for op, *args in todo:
             if op == "start":
-                if self._live is None:
+                if self._paused:
+                    self._want_live = True   # drawn when resume() restarts it
+                elif self._live is None:
                     self._live = Live(self, console=self.console,
                                       refresh_per_second=REFRESHES_PER_SECOND, transient=True)
                     self._live.start()
             elif op == "stop":
+                self._want_live = False
                 live, self._live = self._live, None
                 if live is not None:
                     live.stop()
@@ -191,6 +196,30 @@ class RichRenderer:
         self._flush()
         if error:
             self._todo.append(("print", Text(f"✗ {error}", style="error")))
+
+    def pause(self) -> None:
+        """Take Live down before a prompt is read; the tree stays in the state and is
+        drawn again by ``resume``. Events arriving meanwhile only update the state."""
+        with self._io:
+            with self._lock:
+                self._paused = True
+            wanted = self._live is not None or self._want_live
+            self._run([("stop",)])
+            self._want_live = wanted
+
+    def resume(self) -> None:
+        with self._io:
+            with self._lock:
+                self._paused = False
+                restart = self._want_live
+            self._want_live = False
+            if restart:
+                self._run([("start",)])
+
+    def notify(self, message: str) -> None:
+        """Print a line above the live region (for the Ctrl+C notice)."""
+        with self._io:
+            self._run([("print", Text(message, style="approval"))])
 
     def close(self) -> None:
         with self._io:

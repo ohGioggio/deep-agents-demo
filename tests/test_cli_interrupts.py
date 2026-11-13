@@ -94,6 +94,15 @@ class CtrlCControlsTests(unittest.TestCase):
                 handler(2, None)
             self.assertTrue(target.stopped)
 
+    def test_the_pause_notice_goes_through_notify_when_given(self):
+        target, said = Target(), []
+        with ctrl_c_controls(target, interactive=True, label="[plan]", notify=said.append):
+            signal.getsignal(signal.SIGINT)(2, None)
+        self.assertTrue(target.pause_requested)
+        self.assertEqual(len(said), 1)
+        self.assertIn("Pausing after this one", said[0])
+        self.assertIn("[plan]", said[0])
+
 
 if __name__ == "__main__":
     unittest.main()

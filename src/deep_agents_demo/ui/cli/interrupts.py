@@ -3,18 +3,21 @@ import os
 import signal
 import sys
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 
 from deep_agents_demo.core.ports import Interruptible
 
 
 @contextmanager
-def ctrl_c_controls(target: Interruptible, interactive: bool, label: str = ""):
+def ctrl_c_controls(target: Interruptible, interactive: bool, label: str = "",
+                    notify: Callable[[str], None] | None = None):
     """While the block runs, Ctrl+C calls ``target.request_pause()`` (first press) and
     ``target.stop()`` then raises KeyboardInterrupt (second press, stops now).
 
     Only in an interactive chat on the main thread: in a one-shot run nobody can
-    answer a pause, so Ctrl+C keeps its usual meaning.
+    answer a pause, so Ctrl+C keeps its usual meaning. ``notify`` (a renderer's way to
+    print safely) receives the pause notice instead of a raw write to stderr.
     """
     if not interactive or threading.current_thread() is not threading.main_thread():
         yield
@@ -31,10 +34,13 @@ def ctrl_c_controls(target: Interruptible, interactive: bool, label: str = ""):
             raise KeyboardInterrupt
         pressed = True
         target.request_pause()
+        message = f"{label} Pausing after this one (Ctrl+C again to stop now)."
+        if notify is not None:
+            notify(message)
+            return
         # Not through Python's stdout: the handler can fire in the middle of a print.
         try:
-            os.write(sys.stderr.fileno(),
-                     f"\n{label} Pausing after this one (Ctrl+C again to stop now).\n".encode())
+            os.write(sys.stderr.fileno(), f"\n{message}\n".encode())
         except (OSError, ValueError, AttributeError):
             pass
 
