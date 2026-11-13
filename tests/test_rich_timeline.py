@@ -204,6 +204,58 @@ class TimelineTest(unittest.TestCase):
         r.close()
         self.assertEqual(c.export_text().count("step 1/2"), 1)
 
+    def _room_turn(self, r, step, run, agent):
+        r.emit(StepStarted(step, "room", 1, 4, agent))
+        r.emit(RunStarted(run, f"room / {agent}"))
+        r.emit(TextMessageEnd(run, "m" + run, f"{agent} speaks", 1, 1, False))
+        r.emit(RunFinished(run, f"room / {agent}", 1, 1, 1.0, 0.0))
+        r.emit(StepFinished(step, "room", 1, "ok", 1, 1.0, 1, 1))
+
+    def test_room_started_by_the_tool_keeps_its_line_running(self):
+        c = console(force_terminal=True)
+        r = RichRenderer(c)
+        r.emit(RunStarted("r1", "main"))
+        r.emit(ToolCallStart("r1", "c1", "start_room", {"topic": "naming"}))
+        self._room_turn(r, "s1", "x1", "critic")
+        self.assertTrue(r._timeline.active())
+        self.assertIsNotNone(r._live)
+        self.assertNotIn("interrupted", c.file.getvalue())
+        self._room_turn(r, "s2", "x2", "writer")
+        self.assertIsNotNone(r._live)
+        r.emit(ToolCallEnd("r1", "c1", "start_room", "ok", "done", 2.0))
+        r.emit(StateSnapshot(({"content": "write it", "status": "pending"},)))
+        r.emit(TextMessageEnd("r1", "m9", "The final answer", 1, 1, False))
+        r.emit(RunFinished("r1", "main", 5, 6, 3.0, 0.0))
+        r.close()
+        out = c.export_text()
+        self.assertNotIn("interrupted", out)
+        self.assertEqual(out.count("start_room"), 1)
+        self.assertIn("start_room  naming  ✓ done", out)
+        self.assertEqual(out.count("○ write it"), 1)
+
+    def test_runs_inside_a_running_tool_call_are_not_roots(self):
+        t = Timeline()
+        t.handle(RunStarted("r1", "main"))
+        t.handle(ToolCallStart("r1", "c1", "start_room", {"topic": "x"}))
+        t.handle(RunStarted("x1", "room / critic"))
+        t.handle(RunFinished("x1", "room / critic", 1, 1, 1.0, 0.0))
+        self.assertEqual(t.take_settled(), [])
+        self.assertTrue(t.active())
+        t.handle(ToolCallEnd("r1", "c1", "start_room", "ok", "", 1.0))
+        t.handle(RunFinished("r1", "main", 1, 1, 1.0, 0.0))
+        out = draw(t.take_settled())
+        self.assertIn("start_room  x  ✓", out)
+        self.assertNotIn("interrupted", out)
+
+    def test_plan_runs_inside_run_plan_keep_the_turn_open(self):
+        t = Timeline()
+        t.handle(RunStarted("r1", "main"))
+        t.handle(ToolCallStart("r1", "c1", "run_plan", {"goal": "g"}))
+        t.handle(RunStarted("w1", "plan / worker"))   # before any step started
+        t.handle(RunFinished("w1", "plan / worker", 1, 1, 1.0, 0.0))
+        self.assertEqual(t.take_settled(), [])
+        self.assertTrue(t.active())
+
     def test_tall_branch_shows_its_newest_lines(self):
         c = Console(file=io.StringIO(), width=100, height=10, force_terminal=False, theme=THEME,
                     record=True)

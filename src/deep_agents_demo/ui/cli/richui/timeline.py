@@ -122,6 +122,14 @@ class Timeline:
                     return child
         return None
 
+    def _running_group_call(self) -> _Node | None:
+        """The running ``start_room`` / ``run_plan`` call: runs that start meanwhile (room
+        turns, plan workers) belong to it and never end the turn."""
+        for node in reversed(self._root.children):
+            if node.kind == "tool" and node.name in ("start_room", "run_plan") and not node.done:
+                return node
+        return None
+
     def _release_files(self) -> None:
         for node in self._calls.values():
             node.awaiting_file = False
@@ -132,7 +140,7 @@ class Timeline:
         if event.parent_id and event.parent_id in self._runs:
             self._runs[event.run_id] = self._runs[event.parent_id]
             return
-        step = self._running_step()
+        step = self._running_step() or self._running_group_call()
         if step is not None:
             self._runs[event.run_id] = step
         else:
