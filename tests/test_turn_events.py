@@ -9,15 +9,22 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from streaming_model import StreamingModel
 from test_agents import call
+from test_orchestration import RunnerBase
+from test_rooms import RoomBase
 
 from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.core.turns import run_turn, summarize_result
+from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.models.events import (
+    ApprovalRequested,
     MessageEvent,
+    NoticeEvent,
     RunError,
     RunFinished,
     RunStarted,
     StateSnapshot,
+    StepFinished,
+    StepStarted,
     SubagentFinished,
     SubagentStarted,
     TextMessageContent,
@@ -161,6 +168,137 @@ class TurnEventTests(EngineTest):
         [error] = sink.of(RunError)
         self.assertEqual((error.run_id, error.label, error.message), (sink.of(RunStarted)[0].run_id, "main", "boom"))
         self.assertFalse(sink.of(RunFinished))
+
+
+REJECT = {"decisions": [{"type": "reject", "message": "no"}]}
+
+
+class ApprovalEventTests(EngineTest):
+    def gated(self, decision, call_args=None):
+        (self.root / "notes.md").write_text("keep")
+        agent = self.agent(call("delete", {"file_path": "/notes.md"}, "d"), AIMessage(content="Ok.", id="a2"),
+                           features=[Guardrails.feature()])
+        sink = RecordingSink()
+        asked = []
+        run_turn(agent, "go", {"configurable": {"thread_id": "t"}}, sink,
+                 lambda request: asked.append(sink.events[:]) or decision)
+        return sink, asked
+
+    def test_approval_is_announced_then_rejected(self):
+        sink, asked = self.gated(REJECT)
+        [requested] = sink.of(ApprovalRequested)
+        [start] = sink.of(ToolCallStart)
+        self.assertEqual((requested.run_id, requested.tool_call_id, requested.name),
+                         (start.run_id, "d", "delete"))
+        self.assertIn(requested, asked[0], "announced before decide is called")
+        [end] = sink.of(ToolCallEnd)
+        self.assertEqual((end.tool_call_id, end.status), ("d", "rejected"))
+        self.assertLess(sink.events.index(requested), sink.events.index(end))
+        self.assertTrue((self.root / "notes.md").exists())
+
+    def test_an_approved_call_is_not_rejected(self):
+        sink, _ = self.gated({"decisions": [{"type": "approve"}]})
+        self.assertEqual(len(sink.of(ApprovalRequested)), 1)
+        [end] = sink.of(ToolCallEnd)
+        self.assertEqual(end.status, "ok")
+
+    def test_unmatched_approval_has_no_call_id(self):
+        from deep_agents_demo.core.turns import _Progress
+        sink = RecordingSink()
+        progress = _Progress("main")
+        ids = progress.approval_requested({"action_requests": [{"name": "delete", "args": {"a": 1}}]}, sink.emit)
+        self.assertEqual(ids, [""])
+        self.assertEqual(sink.of(ApprovalRequested)[0].tool_call_id, "")
+
+
+def used(text):
+    """A reply that reports token usage (the runner fixtures' models don't)."""
+    return AIMessage(content=text, usage_metadata={"input_tokens": 100, "output_tokens": 10, "total_tokens": 110})
+
+
+def step_events(sink):
+    return [e for e in sink.events if isinstance(e, (StepStarted, StepFinished))]
+
+
+class PlanStepEventTests(RunnerBase):
+    def test_plan_steps_are_events(self):
+        runner = self.runner(used("result one"), used("PASS\nok"), used("result two\nmore"), used("PASS\nfine"))
+        sink = RecordingSink()
+        runner.sink = sink
+        self.plan(runner, ("write it", "general-purpose"), ("check it", "general-purpose"))
+        events = step_events(sink)
+        self.assertEqual([type(e) for e in events], [StepStarted, StepFinished, StepStarted, StepFinished])
+        first, done, second, done2 = events
+        self.assertEqual((first.kind, first.number, first.total, first.agent), ("plan", 1, 2, "general-purpose"))
+        self.assertEqual((second.number, done2.number), (2, 2))
+        self.assertEqual((done.kind, done.status, done.attempts, done.summary), ("plan", "passed", 1, "result one"))
+        self.assertEqual(done2.summary, "result two")
+        self.assertEqual(done.run_id, first.run_id)
+        self.assertNotEqual(first.run_id, second.run_id)
+        self.assertEqual((done.input_tokens, done.output_tokens), (200, 20), "worker plus reviewer")
+        self.assertGreaterEqual(done.duration, 0)
+        self.assertIn("[plan] step 1/2 - general-purpose", [e.text for e in sink.of(NoticeEvent)])
+
+    def test_a_retried_step_counts_attempts_and_tokens(self):
+        runner = self.runner(used("v1"), used("FAIL\nadd tests"), used("v2"), used("PASS\ngood"))
+        sink = RecordingSink()
+        runner.sink = sink
+        self.plan(runner, ("do it", "general-purpose"))
+        [done] = sink.of(StepFinished)
+        self.assertEqual((done.status, done.attempts, done.input_tokens), ("passed", 2, 400))
+        self.assertEqual(len(sink.of(StepStarted)), 1)
+
+    def test_failed_skipped_and_stopped_steps(self):
+        runner = self.runner(used("a"), used("FAIL\nno"), used("b"), used("FAIL\nstill no"), answers=["s"])
+        sink = RecordingSink()
+        runner.sink = sink
+        self.plan(runner, ("one", "general-purpose"))
+        self.assertEqual([e.status for e in sink.of(StepFinished)], ["skipped"])
+        runner = self.runner(used("a"), used("FAIL\nno"), used("b"), used("FAIL\nno"), interactive=False)
+        sink = RecordingSink()
+        runner.sink = sink
+        self.plan(runner, ("one", "general-purpose"), ("two", "general-purpose"))
+        finished = sink.of(StepFinished)
+        self.assertEqual([e.status for e in finished], ["failed", "stopped"])
+        self.assertEqual(len(sink.of(StepStarted)), 1, "a stopped step never started")
+        self.assertEqual(finished[1].attempts, 0)
+
+
+class RoomTurnEventTests(RoomBase):
+    def test_room_turns_are_events(self):
+        runner = self.runner(used("NEXT: critic\nWhat breaks?"), used("The cache breaks."),
+                             used("NEXT: helper\nFix it?"), used("Yes, a TTL."), used("END\nAgreed."))
+        sink = RecordingSink()
+        runner.sink = sink
+        self.room(runner)
+        events = step_events(sink)
+        self.assertEqual([type(e) for e in events], [StepStarted, StepFinished] * 2)
+        first, done, second, done2 = events
+        self.assertEqual((first.kind, first.number, first.total, first.agent), ("room", 1, 12, "critic"))
+        self.assertEqual((second.number, second.agent), (2, "helper"))
+        self.assertEqual((done.status, done.attempts, done.summary), ("done", 1, "The cache breaks."))
+        self.assertEqual(done.input_tokens, 100)
+        self.assertEqual(done.run_id, first.run_id)
+
+    def test_a_failed_turn_is_failed(self):
+        from test_orchestration import Boom
+        runner = self.runner(used("NEXT: helper\nGo."), used("END\nDone."))
+        real = runner.make
+        runner.make = lambda name, extra=(): Boom() if name == "helper" else real(name, extra)
+        sink = RecordingSink()
+        runner.sink = sink
+        self.room(runner)
+        [done] = sink.of(StepFinished)
+        self.assertEqual(done.status, "failed")
+
+    def test_a_turn_cut_by_the_budget_is_cut(self):
+        runner = self.runner(used("NEXT: critic\nGo."), *[call("ls", {"path": "/"}, f"l{i}") for i in range(6)],
+                             used("Summary."), interactive=False)
+        runner.budget_size = 3
+        sink = RecordingSink()
+        runner.sink = sink
+        self.room(runner)
+        self.assertEqual([e.status for e in sink.of(StepFinished)], ["cut"])
 
 
 class Recorded:

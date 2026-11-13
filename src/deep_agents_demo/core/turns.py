@@ -21,6 +21,7 @@ from langgraph.types import Command
 from deep_agents_demo.core.messages import has_image, without_images
 from deep_agents_demo.models.approvals import NO_HUMAN
 from deep_agents_demo.models.events import (
+    ApprovalRequested,
     FileEvent,
     FinalAnswerEvent,
     MessageEvent,
@@ -153,7 +154,8 @@ class _Progress:
         self.main = _Run(uuid.uuid4().hex, label)
         self.started = time.monotonic()
         self.runs = {(): self.main}   # stream namespace -> run
-        self.calls = {}               # tool call id -> (run, name, start time)
+        self.calls = {}               # tool call id -> (run, name, args, start time)
+        self.rejected = set()         # ids of tool calls the user rejected
         self.subagents = {}           # task call id -> its subagent run
         self.streaming = set()        # ids of messages that got a TextMessageStart
         self.finished = set()         # ids of messages that got a TextMessageEnd
@@ -223,17 +225,20 @@ class _Progress:
         self.finished.add(message_id)
         send(TextMessageEnd(run.id, message_id, text, tokens_in, tokens_out, bool(calls)))
         for call in calls:
-            self.calls[call["id"]] = (run, call["name"], time.monotonic())
+            self.calls[call["id"]] = (run, call["name"], call.get("args", {}), time.monotonic())
             if call["name"] == "task":
                 run.pending_tasks.append((call["id"], (call.get("args") or {}).get("subagent_type", "")))
             send(ToolCallStart(run.id, call["id"], call["name"], call.get("args", {})))
 
     def _tool_result(self, namespace, message, send) -> None:
         call_id = message.tool_call_id
-        run, name, started = self.calls.pop(call_id, (None, message.name or "", None))
+        run, name, _args, started = self.calls.pop(call_id, (None, message.name or "", {}, None))
         run = run or self.run_for(namespace, send)
         text = _text(message)
         status = "error" if getattr(message, "status", None) == "error" or _failed(name, text) else "ok"
+        if call_id in self.rejected:
+            self.rejected.discard(call_id)
+            status = "rejected"
         subagent = self.subagents.pop(call_id, None)
         if subagent is not None:
             send(SubagentFinished(subagent.id, status))
@@ -241,6 +246,25 @@ class _Progress:
             run.pending_tasks[:] = [task for task in run.pending_tasks if task[0] != call_id]
         duration = time.monotonic() - started if started is not None else 0.0
         send(ToolCallEnd(run.id, call_id, name, status, summarize_result(name, text), duration, text))
+
+    def approval_requested(self, request, send) -> list:
+        """Announce each call a pause waits on; returns the matched tool call id per action
+        ("" when no pending call has that name and args)."""
+        ids = []
+        for action in request.get("action_requests", []) if isinstance(request, dict) else []:
+            name, args = action.get("name"), action.get("args", {})
+            call_id, run = next(((cid, entry[0]) for cid, entry in self.calls.items()
+                                 if cid not in ids and entry[1] == name and entry[2] == args), ("", self.main))
+            ids.append(call_id)
+            send(ApprovalRequested(run.id, call_id, name))
+        return ids
+
+    def approval_answered(self, ids, response) -> None:
+        """Remember which of the announced calls the user rejected."""
+        decisions = response.get("decisions", []) if isinstance(response, dict) else []
+        for call_id, decision in zip(ids, decisions):
+            if call_id and isinstance(decision, dict) and decision.get("type") == "reject":
+                self.rejected.add(call_id)
 
     def todos_changed(self, todos, send) -> None:
         todos = tuple(todos)
@@ -352,7 +376,10 @@ def run_turn(agent, prompt, config, sink, decide=None, runners=None, reload_skil
             return {"error": "plans can't run here (nobody to run them); do the steps yourself"}
         if kind == "start_room":
             return {"error": "rooms can't run here (nobody to run them)"}
-        return decide(value)
+        ids = progress.approval_requested(value, target.emit)
+        response = decide(value)
+        progress.approval_answered(ids, response)
+        return response
 
     if show is None:
         target = _FilesOnly(sink) if quiet else sink

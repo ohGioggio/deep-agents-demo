@@ -108,6 +108,8 @@ class PlanRunner(Runner):
             return StepResult(step, "failed", notes=f"no agent named {step.agent!r}")
         result = ""
         for attempt in range(1, self.max_attempts + 1):
+            if self.step is not None:
+                self.step.attempts += 1
             self.say(f"{label} - {step.agent}")
             base = f"{self.thread}:plan:{self.plan_id}:{number}:{round_no}:{attempt}"
             try:
@@ -136,6 +138,15 @@ class PlanRunner(Runner):
             return "stop"
         return {"r": "retry", "s": "skip"}.get(answer[:1], "stop")
 
+    def _settle_stopped(self, current, number: int, total: int, summary: str = "") -> None:
+        """The plan stopped at step ``number`` (0-based): close its open events, then settle
+        the later steps (and this one too, when it never started)."""
+        if current is not None:
+            self.finish_step(current, "stopped", summary)
+            self.settle_unstarted("plan", range(number + 2, total + 1))
+        else:
+            self.settle_unstarted("plan", range(number + 1, total + 1))
+
     # the plan ------------------------------------------------------------------------------
     def _run(self, request: dict) -> dict:
         self.budget = Budget(self.budget_size)  # one budget per plan
@@ -145,22 +156,29 @@ class PlanRunner(Runner):
                  for s in request.get("steps", [])]
         done: list[StepResult] = []
         user_note, notes, round_no, number = "", "", 1, 0
-        while number < len(steps):
+        total = len(steps)
+        current = None  # the open step's events: kept across a retry, closed when it settles
+        while number < total:
             step = steps[number]
             if self.pause_requested:
                 note = self._pause()
                 if note is None:
                     done += [StepResult(rest, "stopped", notes="stopped by the user")
                              for rest in steps[number:]]
+                    self._settle_stopped(current, number, total)
                     break
                 user_note = note or user_note
+            if current is None:
+                current = self.begin_step("plan", number + 1, total, step.agent)
+            self.step = current
             try:
-                outcome = self._attempts(goal, step, number + 1, len(steps), done, user_note,
+                outcome = self._attempts(goal, step, number + 1, total, done, user_note,
                                          round_no, notes)
             except KeyboardInterrupt:  # a second Ctrl+C: stop the plan, keep the chat
                 self.say(f"{self.label} Stopped.")
                 done += [StepResult(rest, "stopped", notes="stopped by the user")
                          for rest in steps[number:]]
+                self._settle_stopped(current, number, total)
                 break
             except _WrapUp as wrap:
                 partial = str(wrap.args[0]) if wrap.args else ""
@@ -169,10 +187,11 @@ class PlanRunner(Runner):
                 done += [StepResult(rest, "stopped",
                                     notes="budget used up: the plan's request budget ran out")
                          for rest in steps[number + 1:]]
+                self._settle_stopped(current, number, total, partial)
                 break
             user_note = ""
             if outcome.status == "failed":
-                choice = self._decide(outcome, number + 1, len(steps))
+                choice = self._decide(outcome, number + 1, total)
                 if choice == "retry":  # fresh threads, keeping the last review's notes
                     round_no, notes = round_no + 1, outcome.notes
                     continue
@@ -182,7 +201,11 @@ class PlanRunner(Runner):
                     done.append(outcome)
                     done += [StepResult(rest, "stopped", notes="the plan was stopped")
                              for rest in steps[number + 1:]]
+                    self.finish_step(current, "failed", outcome.result or outcome.notes)
+                    self.settle_unstarted("plan", range(number + 2, total + 1))
                     break
+            self.finish_step(current, outcome.status, outcome.result or outcome.notes)
+            current = None
             done.append(outcome)
             number, round_no, notes = number + 1, 1, ""
         return {"goal": goal, "steps": [r.as_dict() for r in done],

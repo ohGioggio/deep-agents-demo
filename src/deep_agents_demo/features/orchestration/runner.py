@@ -1,5 +1,8 @@
 """What plans and rooms share: running one agent on the caller's thread, with the
 budget, approvals, and pausing or stopping when the front end asks (``Interruptible``)."""
+import time
+import uuid
+
 from deep_agents_demo.core.ports import EventSink, Interaction
 from deep_agents_demo.core.turns import run_turn
 from deep_agents_demo.features.orchestration.limits import (
@@ -8,7 +11,12 @@ from deep_agents_demo.features.orchestration.limits import (
     BudgetCap,
     _WrapUp,
 )
-from deep_agents_demo.models.events import NoticeEvent
+from deep_agents_demo.models.events import (
+    NoticeEvent,
+    RunFinished,
+    StepFinished,
+    StepStarted,
+)
 
 
 def _last_text(graph, config) -> str:
@@ -19,6 +27,34 @@ def _last_text(graph, config) -> str:
         if message.type == "ai" and text.strip() and text.strip() != BUDGET_STOP:
             return text
     return ""
+
+
+class _StepRun:
+    """One plan step or room turn in progress: its tokens, attempts and clock cover every agent
+    run made while it is open (worker and reviewer, retries included)."""
+
+    def __init__(self, kind: str, number: int, total: int, agent: str):
+        self.id, self.kind, self.number, self.total, self.agent = uuid.uuid4().hex, kind, number, total, agent
+        self.started = time.monotonic()
+        self.attempts = self.input_tokens = self.output_tokens = 0
+
+
+class _Tally:
+    """The sink an agent run emits to: passes events on and adds the run's tokens to the open step."""
+
+    def __init__(self, sink, step: "_StepRun | None"):
+        self.sink, self.step = sink, step
+
+    def emit(self, event) -> None:
+        if isinstance(event, RunFinished) and self.step is not None:
+            self.step.input_tokens += event.input_tokens
+            self.step.output_tokens += event.output_tokens
+        self.sink.emit(event)
+
+
+def first_line(text: str) -> str:
+    lines = str(text or "").strip().splitlines()
+    return lines[0].strip() if lines else ""
 
 
 class _RunFailed(Exception):
@@ -50,6 +86,7 @@ class Runner:
         self.pause_requested = False  # checked between turns or steps
         self.stopped = False          # checked before every agent run
         self.quiet = False  # one-shot runs: show nothing but the answer
+        self.step: _StepRun | None = None  # the plan step or room turn being run
 
     # Interruptible ------------------------------------------------------------------------
     def request_pause(self) -> None:
@@ -62,6 +99,27 @@ class Runner:
         """A notice for the user (e.g. "[plan] step 1/2 - general-purpose")."""
         if not self.quiet:
             self.sink.emit(NoticeEvent(text))
+
+    def begin_step(self, kind: str, number: int, total: int, agent: str) -> _StepRun:
+        """A plan step or room turn starts: agent runs from here count towards it."""
+        step = self.step = _StepRun(kind, number, total, agent)
+        if not self.quiet:
+            self.sink.emit(StepStarted(step.id, kind, number, total, agent))
+        return step
+
+    def finish_step(self, step: _StepRun, status: str, summary: str = "") -> None:
+        if self.step is step:
+            self.step = None
+        if not self.quiet:
+            self.sink.emit(StepFinished(step.id, step.kind, step.number, status, step.attempts,
+                                        time.monotonic() - step.started, step.input_tokens,
+                                        step.output_tokens, first_line(summary)))
+
+    def settle_unstarted(self, kind: str, numbers) -> None:
+        """Steps settled without ever starting (the later steps of a stopped plan)."""
+        for number in numbers:
+            if not self.quiet:
+                self.sink.emit(StepFinished(uuid.uuid4().hex, kind, number, "stopped", 0, 0.0, 0, 0, ""))
 
     def run(self, request: dict) -> dict:
         try:
@@ -87,7 +145,7 @@ class Runner:
             raise KeyboardInterrupt  # handled like a second Ctrl+C: stop, keep the chat
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
         try:
-            run_turn(graph, text, config, self.sink, self.approvals.decide, reload_skills=True,
+            run_turn(graph, text, config, _Tally(self.sink, self.step), self.approvals.decide, reload_skills=True,
                      label=label, show=not self.quiet)
             return _last_text(graph, config)
         except (KeyboardInterrupt, _WrapUp):

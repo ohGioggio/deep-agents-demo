@@ -192,18 +192,26 @@ class RoomRunner(Runner):
                 prompt = text or "What is your view?"
                 self.say(f"{self.label} moderator -> {name}: {prompt.splitlines()[0][:200]}")
                 self.lines.append(f"**Moderator:** {prompt}")
+                turn = self.begin_step("room", turns + 1, self.max_turns, name)
+                turn.attempts = 1
                 try:
                     answer = self._run_agent(name, self._turn_input(question, prompt),
                                              f"{base}:{decisions}:{name}")
                     self.lines.append(f"**{name}:** {answer}")
+                    self.finish_step(turn, "done", answer)
                 except _RunFailed as error:
                     self.lines.append(f"*({name} could not answer: {error})*")
+                    self.finish_step(turn, "failed", str(error))
                 except _WrapUp as wrap:  # keep what the interrupted turn had said
                     partial = str(wrap.args[0]).strip() if wrap.args else ""
                     if partial:
                         self.lines.append(f"**{name}:** {partial}")
                     self.lines.append(f"*({name}'s turn was cut short: the request budget ran out)*")
                     turns += 1
+                    self.finish_step(turn, "cut", partial)
+                    raise
+                except KeyboardInterrupt:  # stopped mid-turn: close the turn's events
+                    self.finish_step(turn, "cut")
                     raise
                 turns += 1
         except _WrapUp:
