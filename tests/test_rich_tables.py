@@ -77,6 +77,22 @@ class TablesTests(unittest.TestCase):
         for expected in ("LAST MESSAGE", "CAPTION", "DESCRIPTION", "plan.md", "critic"):
             self.assertIn(expected, text)
 
+    def test_user_text_is_never_parsed_as_markup(self):
+        chats = [ChatInfo(name="odd", turns=2, updated="", first="x", last="Use [/oops] and [bold] here")]
+        files = [OutputFile(name="notes.md", version=1, bytes=10, kind="md", caption="Plan [bold] now [/x]",
+                            saved_at="2026-11-12T09:31:00+00:00", path=None)]
+        agents = [{"name": "odd", "tools": "read_file [/y]", "model": "configured", "source": "a [bold]",
+                   "overrides": "[/z]", "description": "[red]d[/red]"}]
+        console = Console(file=io.StringIO(), width=100, record=True, color_system=None)
+        tables = RichTables(console)
+        tables.threads(chats, None)
+        tables.files(files, None)
+        tables.agents(agents)
+        text = console.export_text()
+        for expected in ("[/oops]", "[bold]", "Plan [bold] now [/x]", "read_file [/y]", "a [bold]",
+                         "[/z]", "[red]d[/red]"):
+            self.assertIn(expected, text)
+
     def test_empty_lists_say_so_as_plain_text(self):
         console = Console(file=io.StringIO(), width=100, record=True, color_system=None)
         tables = RichTables(console)

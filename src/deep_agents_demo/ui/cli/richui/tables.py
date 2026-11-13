@@ -26,8 +26,8 @@ def chats_table(chats, current: str | None = None) -> Table:
     table.columns[2].justify = "right"
     for c in chats:
         when = c.updated[:16].replace("T", " ") if c.updated else "-"
-        table.add_row("*" if c.name == current else "", c.name, str(c.turns),
-                      Text(when, style=DIM), shorten(c.last, 48))
+        table.add_row("*" if c.name == current else "", Text(c.name), str(c.turns),
+                      Text(when, style=DIM), Text(shorten(c.last, 48)))
     return table
 
 
@@ -35,7 +35,7 @@ def files_table(files, folder=None) -> Table:
     table = _table("FILE", "VERSION", "SIZE", "SAVED", "CAPTION")
     for f in files:
         table.add_row(Text(f.name, style=FILE_COLOUR), f"v{f.version}", size(f.bytes),
-                      Text(f.saved_at[:16].replace("T", " "), style=DIM), shorten(f.caption, 48))
+                      Text(f.saved_at[:16].replace("T", " "), style=DIM), Text(shorten(f.caption, 48)))
     return table
 
 
@@ -43,8 +43,8 @@ def agents_table(rows) -> Table:
     table = _table("AGENT", "TOOLS", "MODEL", "SOURCE", "DESCRIPTION")
     for r in rows:
         overrides = f" (overrides {r['overrides']})" if r["overrides"] else ""
-        table.add_row(Text(r["name"], style=AGENT_COLOUR), r["tools"], r["model"],
-                      r["source"] + overrides, Text(r.get("description", ""), style=DIM))
+        table.add_row(Text(r["name"], style=AGENT_COLOUR), Text(r["tools"]), Text(r["model"]),
+                      Text(r["source"] + overrides), Text(r.get("description", ""), style=DIM))
     return table
 
 
@@ -66,7 +66,7 @@ class RichTables:
             return
         self.console.print(files_table(files, folder))
         if folder is not None:
-            self.console.print(f"In {shown_path(str(folder))}", style=DIM)
+            self.console.print(Text(f"In {shown_path(str(folder))}", style=DIM))
 
     def agents(self, rows) -> None:
         self.console.print(agents_table(rows))
