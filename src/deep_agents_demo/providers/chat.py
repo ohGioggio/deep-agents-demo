@@ -10,4 +10,5 @@ def chat_model(settings: Settings, model: str | None = None) -> ChatOpenAI:
     # Shares the request cap with the embeddings; retries ride out transient errors.
     return ChatOpenAI(model=model or settings.chat.model, api_key=settings.chat.api_key,
                       base_url=settings.chat.base_url,
-                      rate_limiter=rate_limiter(settings.requests_per_minute), max_retries=6)
+                      rate_limiter=rate_limiter(settings.requests_per_minute), max_retries=6,
+                      stream_usage=True)  # token counts on streamed answers too

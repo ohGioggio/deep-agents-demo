@@ -96,11 +96,19 @@ def _parsed(text: str, parse):
         return None
 
 
+# How send_file says it delivered nothing (features/files/feature.py).
+_SEND_FILE_FAILURES = ("Not sent", "Can't read")
+
+
+def _failed(name: str, content: str) -> bool:
+    return content.startswith("Error") or (name == "send_file" and content.startswith(_SEND_FILE_FAILURES))
+
+
 def summarize_result(name: str, content: str) -> str:
     """A tool result in a few words: "12 lines", "3 entries", "v2 · 4.2 KB", or its first line."""
     lines = content.strip().splitlines()
     first = (lines[0] if lines else "")[:60]
-    if content.startswith("Error"):
+    if _failed(name, content):
         return first
     if name == "read_file":
         return f"{len(content.splitlines())} lines"
@@ -225,7 +233,7 @@ class _Progress:
         run, name, started = self.calls.pop(call_id, (None, message.name or "", None))
         run = run or self.run_for(namespace, send)
         text = _text(message)
-        status = "error" if getattr(message, "status", None) == "error" or text.startswith("Error") else "ok"
+        status = "error" if getattr(message, "status", None) == "error" or _failed(name, text) else "ok"
         subagent = self.subagents.pop(call_id, None)
         if subagent is not None:
             send(SubagentFinished(subagent.id, status))
@@ -274,13 +282,12 @@ def stream_once(agent, payload, config, sink, shown=None, label=None, progress=N
     progress = progress or _Progress(label or "main")
     send = sink.emit
     # Include child updates so delegation/tool calls are observable; "messages"
-    # brings the model's text as it is written.
-    for namespace, mode, chunk in agent.stream(payload, config=config, stream_mode=["updates", "messages"],
-                                               subgraphs=True):
+    # brings the model's text as it is written (nobody sees it in a silent run).
+    modes = ["updates"] if silent else ["updates", "messages"]
+    for namespace, mode, chunk in agent.stream(payload, config=config, stream_mode=modes, subgraphs=True):
         if mode == "messages":
-            if not silent:
-                message, metadata = chunk
-                progress.chunk(namespace, message, metadata, _speaker(label, namespace), send)
+            message, metadata = chunk
+            progress.chunk(namespace, message, metadata, _speaker(label, namespace), send)
             continue
         for node, state in chunk.items():
             if node == "__interrupt__":
