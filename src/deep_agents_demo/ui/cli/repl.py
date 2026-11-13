@@ -45,6 +45,28 @@ def stream_turn(agent, prompt, config, reload_skills=True, approver=None, runner
              quiet, show)
 
 
+class _NewestWorkers:
+    """The worker factory for plans and rooms, from the newest agents: an agent change
+    approved earlier in this message is rebuilt in first, so a room can use an agent the
+    user just made (the main agent's own ``task`` still gets it from the next message)."""
+
+    def __init__(self, runtime):
+        self.runtime = runtime
+
+    def _current(self):
+        refresh = getattr(self.runtime, "refresh", None)
+        if refresh is not None:
+            refresh()  # a no-op unless an agent change is waiting
+        return self.runtime.make_worker
+
+    @property
+    def names(self):
+        return getattr(self._current(), "names", None)
+
+    def __call__(self, name, extra=()):
+        return self._current()(name, extra)
+
+
 def runners_for(runtime, settings, thread: str, approver, interactive: bool, quiet: bool = False,
                 interaction=None, sink=None, notify=None) -> dict:
     """What answers non-approval pauses in a turn: the plan runner (run_plan) and the
@@ -55,7 +77,8 @@ def runners_for(runtime, settings, thread: str, approver, interactive: bool, qui
     if runtime.make_worker is None:
         return {}
     interaction, sink = interaction or CliInteraction(), sink or CliRenderer()
-    plans = PlanRunner(runtime.make_worker, approver, interaction, sink, thread=thread,
+    workers = _NewestWorkers(runtime)
+    plans = PlanRunner(workers, approver, interaction, sink, thread=thread,
                        max_attempts=settings.plan_max_attempts,
                        budget=settings.orchestration_max_calls, interactive=interactive)
     plans.quiet = quiet
@@ -64,7 +87,7 @@ def runners_for(runtime, settings, thread: str, approver, interactive: bool, qui
         agent = runtime.agents.get(name) if runtime.agents is not None else None
         return agent.description if agent else ""
     folder = safe_folder_name(runtime.chats.user)
-    rooms = RoomRunner(runtime.make_worker, approver, interaction, sink, thread=thread,
+    rooms = RoomRunner(workers, approver, interaction, sink, thread=thread,
                        max_turns=settings.room_max_turns, budget=settings.orchestration_max_calls,
                        interactive=interactive, transcripts=settings.paths.workspace / "rooms" / folder,
                        describe=describe)
@@ -378,7 +401,9 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
                     # visible from the next message.
                     stream_turn(runtime.agent, session.content(line), session.config, reload_skills=True,
                                 approver=approver, runners=runners(), quiet=quiet, sink=sink)
-                    if runtime.refresh():  # an approved agent change: available from the next message
+                    # An approved agent change: available from the next message (a room or plan
+                    # in this message may have rebuilt the agents already).
+                    if runtime.refresh() or session.agents is not runtime.agents:
                         session.agents = runtime.agents
                         say("Agents updated.")
                     if prompt is not None:

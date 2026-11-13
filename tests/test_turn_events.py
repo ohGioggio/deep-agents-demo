@@ -13,7 +13,7 @@ from test_orchestration import RunnerBase
 from test_rooms import RoomBase
 
 from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.core.turns import run_turn, summarize_result
+from deep_agents_demo.core.turns import _failed, run_turn, summarize_result
 from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.models.events import (
     ApprovalRequested,
@@ -391,6 +391,18 @@ class SummaryTests(unittest.TestCase):
         for text in ("Not sent: a.exe: this kind of file can't be delivered.", "Can't read /x.md: file_not_found."):
             with self.subTest(text=text):
                 self.assertEqual(summarize_result("send_file", text + "\nmore"), text)
+
+    def test_a_json_error_is_a_failure_and_shows_the_error(self):
+        text = json.dumps({"question": "q", "participants": ["a", "b"],
+                           "error": "no agent named 'a'; see list_agents (or /agents)"})
+        self.assertTrue(_failed("start_room", text))
+        self.assertEqual(summarize_result("start_room", text), "no agent named 'a'; see list_agents (or /agents)")
+        self.assertFalse(_failed("start_room", json.dumps({"summary": "agreed", "error": ""})))
+
+    def test_a_rejection_shows_its_reason(self):
+        reason = "Not shown to the user because it is invalid: agent 'x' already exists. Fix it."
+        text = f"User rejected the tool call for `create_agent` with reason: {reason}"
+        self.assertEqual(summarize_result("create_agent", text), reason[:60])
 
 
 if __name__ == "__main__":
