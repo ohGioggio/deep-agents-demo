@@ -51,6 +51,9 @@ class MenuLogicTests(unittest.TestCase):
         self.assertEqual("1/11 ↓ · Tab · Enter · Esc", footer(0, 11))
         self.assertEqual("↑ 11/11 · Tab · Enter · Esc", footer(10, 11))
         self.assertEqual("1/1 · Tab · Enter · Esc", footer(0, 1))
+        self.assertEqual("2/5 · Tab · Enter · Esc", footer(1, 5))  # fits: nothing to scroll
+        self.assertEqual("↑ 6/6 · Tab · Enter · Esc", footer(5, 6))  # the window ends at the end
+        self.assertEqual("1/6 ↓ · Tab · Enter · Esc", footer(0, 6))
 
     def test_ghost_text(self):
         item = MenuItem("/rename", "/rename NAME", "rename this chat")
@@ -108,6 +111,11 @@ def read_with(keys, history=None, chats=(), agents=(), pause=0.0):
                 for part in keys:
                     pipe.send_text(part)
                     time.sleep(pause)
+                time.sleep(3)
+                try:
+                    pipe.send_text("\x03")  # never hang the suite: a stuck box ends with Ctrl+C
+                except Exception:
+                    pass  # the box already returned and its pipe is closed
             threading.Thread(target=type_keys, daemon=True).start()
             return box.read("parks")
 
@@ -129,7 +137,11 @@ class InputBoxTests(unittest.TestCase):
         self.assertEqual("/switch roads", read_with(["/switch ro\r"], chats=[chat("roads")]))
 
     def test_esc_closes_and_sends_what_is_typed(self):
-        self.assertEqual("/n", read_with(["/n", "\x1b", "\r"], pause=0.4))
+        # Esc closes the menu at once: the next key is a plain "b", not an Alt chord
+        self.assertEqual("/reb", read_with(["/re", "\x1b", "b", "\r"], pause=0.15))
+
+    def test_rename_has_no_chat_list(self):
+        self.assertEqual("/rename ro", read_with(["/rename ro\r"], chats=[chat("roads")]))
 
     def test_history_up_recalls(self):
         self.assertEqual("what is a park", read_with(["\x1b[A", "\r"], history=["what is a park"],

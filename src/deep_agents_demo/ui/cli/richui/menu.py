@@ -8,7 +8,7 @@ from prompt_toolkit.utils import get_cwidth
 
 NEEDS_ARGUMENT = {"/rename", "/switch", "/delete", "/room", "/image"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
-TITLES = {"/switch": "your chats", "/delete": "your chats", "/rename": "your chats",
+TITLES = {"/switch": "your chats", "/delete": "your chats",  # /rename takes a new name: no list
           "/room": "agents", "/image": "images"}
 LABEL_COLUMN = 24  # width of the name column (with its leading space); descriptions start here
 MIN_DETAIL = 8     # a description narrower than this is dropped, not cut
@@ -88,9 +88,11 @@ def window(items, selected: int, size: int = 5) -> tuple[int, int]:
     return start, min(len(items), start + size)
 
 
-def footer(selected: int, total: int) -> str:
-    up = "↑ " if selected > 0 else ""
-    down = " ↓" if selected < total - 1 else ""
+def footer(selected: int, total: int, size: int = 5) -> str:
+    """"pos/total" with an arrow on each side that has more rows beyond the window."""
+    start, end = window(range(total), selected, size)
+    up = "↑ " if start > 0 else ""
+    down = " ↓" if end < total else ""
     return f"{up}{selected + 1}/{total}{down} · Tab · Enter · Esc"
 
 

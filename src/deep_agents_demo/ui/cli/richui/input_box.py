@@ -89,7 +89,7 @@ class InputBox:
             argument = ARGUMENT_LINE.match(text)
             if text.startswith("/") and " " not in text:
                 found = Menu("commands", filter_items(self.commands, text), text, None)
-            elif argument and argument.group(1) in NEEDS_ARGUMENT:
+            elif argument and argument.group(1) in NEEDS_ARGUMENT and argument.group(1) != "/rename":
                 command, rest = argument.groups()
                 if command == "/room":
                     if " -- " in text:
@@ -97,7 +97,7 @@ class InputBox:
                     rest = rest.rsplit(" ", 1)[-1]  # complete the word being typed
                 title, items = argument_items(
                     command, rest,
-                    provided("chats", self.chats_provider) if command in ("/switch", "/delete", "/rename")
+                    provided("chats", self.chats_provider) if command in ("/switch", "/delete")
                     else [],
                     provided("agents", self.agents_provider) if command == "/room" else [],
                     self.cwd)
@@ -162,7 +162,7 @@ class InputBox:
             current, item = selected_item()
             fill(current, item, current.command is None and item.value in NEEDS_ARGUMENT)
 
-        @keys.add("escape", filter=is_open)
+        @keys.add("escape", filter=is_open, eager=True)  # no wait for an Alt chord
         def _(event):
             state["dismissed"] = True
 
