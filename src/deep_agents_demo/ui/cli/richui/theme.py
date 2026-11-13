@@ -10,7 +10,7 @@ THEME = Theme({
     "ok": "#7ee787",
     "error": "#ff7b72",
     "approval": "#fbbf24",
-    "dim": "#7d8590",
+    "muted": "#7d8590",
     "file": "#7ee787",
 })
 

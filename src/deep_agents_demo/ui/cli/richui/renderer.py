@@ -4,6 +4,11 @@ The renderer owns the console and one ``Live`` region for the length of a run. T
 shows ``self`` (see ``__rich_console__``), which stacks the parts that are still changing:
 the "thinking" line and the answer box being written; Live re-renders it at most 8 times
 a second. Finished boxes are printed above it. A timeline can be added to ``_parts`` later.
+
+Locking: ``_lock`` guards the state only and is never held while calling Live or the console
+(Live's refresh thread holds its own lock and calls ``__rich_console__``, which takes
+``_lock``). Handlers queue the output work in ``_todo``; ``emit`` runs it afterwards, in order,
+under ``_io`` (which ``__rich_console__`` never takes).
 """
 import threading
 import time
@@ -33,7 +38,7 @@ class _Box:
     def panel(self) -> Panel:
         return Panel(Markdown(self.text), title=Text(self.title, style=self.style),
                      title_align="left",
-                     subtitle=Text(self.footer, style="dim") if self.footer else None,
+                     subtitle=Text(self.footer, style="muted") if self.footer else None,
                      subtitle_align="right", border_style=self.style, box=box.ROUNDED,
                      padding=(0, 1))
 
@@ -42,7 +47,9 @@ class RichRenderer:
     def __init__(self, console: Console, verbose: bool = False):
         self.console = console
         self.verbose = verbose
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()   # state only
+        self._io = threading.RLock()     # serialises Live/console calls
+        self._todo: list = []            # output queued by handlers: ("start",) ("stop",) ("print", renderable)
         self._live: Live | None = None
         self._subagents: set[str] = set()     # run ids whose text is not boxed
         self._speakers: dict[str, str] = {}   # run id -> "room / critic"
@@ -53,24 +60,41 @@ class RichRenderer:
     # ---- what the Live region shows ----
     def __rich_console__(self, console, options):
         with self._lock:
-            parts = self._parts()
+            parts = self._parts()   # builds the renderables from the current state
         yield Group(*parts)
 
     def _parts(self) -> list:
         parts = []
         if self._waiting_since is not None:
             seconds = int(time.monotonic() - self._waiting_since)
-            parts.append(Text(f"thinking… {seconds} s", style="dim"))
+            parts.append(Text(f"thinking… {seconds} s", style="muted"))
         if self._box is not None:
             parts.append(self._box.panel())
         return parts
 
     # ---- events (plain-only and unknown events have no handler and are ignored) ----
     def emit(self, event) -> None:
-        with self._lock:
-            handler = getattr(self, f"_on_{type(event).__name__}", None)
-            if handler:
-                handler(event)
+        handler = getattr(self, f"_on_{type(event).__name__}", None)
+        if handler:
+            with self._io:
+                with self._lock:
+                    handler(event)
+                    todo, self._todo = self._todo, []
+                self._run(todo)
+
+    def _run(self, todo: list) -> None:
+        for op, *args in todo:
+            if op == "start":
+                if self._live is None:
+                    self._live = Live(self, console=self.console,
+                                      refresh_per_second=REFRESHES_PER_SECOND, transient=True)
+                    self._live.start()
+            elif op == "stop":
+                live, self._live = self._live, None
+                if live is not None:
+                    live.stop()
+            else:
+                self.console.print(args[0])
 
     def _on_RunStarted(self, event) -> None:
         if event.run_id in self._subagents:
@@ -129,40 +153,33 @@ class RichRenderer:
 
     def _on_RunError(self, event) -> None:
         if event.run_id not in self._subagents:
-            self._finish(event.run_id, "")
+            self._finish(event.run_id, "", event.message)
 
-    # ---- helpers ----
+    # ---- helpers (state only; they queue output in _todo) ----
     def _start_live(self) -> None:
-        if self._live is None:
-            self._live = Live(self, console=self.console, refresh_per_second=REFRESHES_PER_SECOND,
-                              transient=True)
-            self._live.start()
+        self._todo.append(("start",))
 
     def _flush(self) -> None:
-        """Print the box for good (with its footer, if it got one)."""
+        """Queue the box to be printed for good (with its footer, if it got one)."""
         if self._box is not None and self._box.text.strip():
-            live = self._live
-            if live is not None:
-                live.console.print(self._box.panel())
-            else:
-                self.console.print(self._box.panel())
+            self._todo.append(("print", self._box.panel()))
         self._box = None
         self._settled = False
 
-    def _finish(self, run_id: str, footer: str) -> None:
+    def _finish(self, run_id: str, footer: str, error: str = "") -> None:
         if self._box is not None and self._box.run_id == run_id:
             self._box.footer = footer if self._settled else ""
         self._waiting_since = None
-        self._stop_live()
+        self._todo.append(("stop",))
         self._flush()
-
-    def _stop_live(self) -> None:
-        live, self._live = self._live, None
-        if live is not None:
-            live.stop()
+        if error:
+            self._todo.append(("print", Text(f"✗ {error}", style="error")))
 
     def close(self) -> None:
-        with self._lock:
-            self._waiting_since = None
-            self._stop_live()
-            self._flush()
+        with self._io:
+            with self._lock:
+                self._waiting_since = None
+                self._todo.append(("stop",))
+                self._flush()
+                todo, self._todo = self._todo, []
+            self._run(todo)
