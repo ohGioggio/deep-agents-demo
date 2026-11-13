@@ -136,6 +136,7 @@ preference is still there.
 | **RAG** | Cited search over your own `.md` and `.txt` files |
 | **Sandbox** | File editing and shell commands in a policy-governed OpenShell sandbox or in Daytona |
 | **Files** | Documents, data and pages delivered as versioned files in the chat (`send_file`), not pasted as messages |
+| **Terminal UI** | Streamed Markdown answers, a live timeline of tool calls, subagents and plan steps, footers with tokens and time, and a `/` command menu ([details](#the-terminal-ui)) |
 
 > [!TIP]
 > Set `MEMORY_ENABLED=false` and `RAG_ENABLED=false` to see the bare harness with
@@ -259,27 +260,54 @@ uv run python -m unittest discover -s tests -v           # offline tests
 
 ## The terminal UI
 
-In a terminal the chat draws a Rich interface: a framed input box, a live
-timeline of each turn (tool calls in cyan, subagents in pink, plan steps and
-rooms in blue, delivered files and to-dos in green, approvals in amber, timings
-in grey) and a footer after every answer with the time, tokens in and out and
-the duration. Approvals show a panel (with a coloured diff for file changes),
-and `/threads`, `/files` and `/agents` print tables.
+In a terminal the chat draws a Rich interface:
 
-Type `/` in the input box to open the command menu:
+<p align="center"><img src="assets/chat-preview.svg" width="100%" alt="The chat in a terminal: a timeline of tool calls with a researcher subagent and two plan steps nested under it, a [file] link, the answer in a framed box with its footer (time, tokens, duration), and the / command menu above the input box with /switch selected"/></p>
+
+- **The input box** (`parks › …`) stays at the bottom; what you send stays on
+  screen as `parks › your message`.
+- **The timeline** shows each turn as it happens: one line per tool call (name,
+  short arguments, ✓ / ✗ with a short result, duration), with subagents, plan
+  steps and the calls inside them nested under it. Subagents and plan steps end
+  with their short answer and their own footer; text the agent writes beside a
+  tool call is one grey line. Whatever is running shows a spinner with the
+  elapsed time, and `thinking… N s` shows while the model is silent. Plan and
+  room messages (a failed review and why, "Stopped.", a used-up budget) appear
+  as grey lines.
+- **Answers** stream into a box as Markdown (headings, lists, tables, code):
+  the main answer, and each turn of a room. The box's bottom edge is its footer:
+  end time · tokens in / out (the whole turn, subagents and plan steps included)
+  · duration. While a long answer streams, the newest lines stay in view.
+- **Approvals** show a panel with the change and the `[a]pprove [r]eject [d]iff
+  [f]ull file` keys; `d` shows a coloured diff. The live view pauses while you
+  answer.
+- **`[file]` lines** link to the delivered file (click them in Windows Terminal).
+  `/threads`, `/files` and `/agents` print tables. `--verbose` adds each tool
+  call's full arguments and result under its line.
+
+Colours: tool calls cyan, subagents pink, plan steps and rooms blue, files and
+success green, approvals amber, failures red, timings grey.
+
+### The `/` command menu
+
+Type `/` in the input box: a framed menu of up to 5 commands opens between the
+output and the box, and narrows as you type.
 
 | Key | Does |
 | --- | --- |
-| type after `/` | filter the commands (contains; names starting with it come first) |
-| `Up` / `Down` | move the selection (the first match is selected) |
-| `Tab` or `Right` | accept the selection |
-| `Enter` | run the selection; a command that needs an argument (`/switch`, `/delete`, `/room`, `/image`) is filled in and waits for it |
+| type after `/` | filter (contains); an exact match comes first, then names starting with what you typed |
+| `Up` / `Down` | move the selection and scroll past 5 (the first match is selected); `Up` in an empty box recalls earlier messages |
+| `Tab` or `Right` | accept the selection, whose rest is shown in grey in the box |
+| `Enter` | run the selection; a command that needs an argument (`/switch`, `/delete`, `/rename`, `/room`, `/image`) is filled in and waits for it |
 | `Esc` | close the menu |
 
-After `/switch ` or `/delete ` the menu lists your chats, after `/room ` the
-agents and after `/image ` the images in the current folder. Ctrl+C in an
-ordinary turn ends the chat; while a plan or a room runs, the first press pauses
-it and the second stops it.
+After `/switch ` or `/delete ` the menu lists your chats, after `/room ` your
+agents and after `/image ` the PNG and JPG files in the folder you type;
+`/rename` takes a new name, so it shows no list. The menu and the box resize
+with the terminal.
+
+Ctrl+C in an ordinary turn ends the chat; while a plan or a room runs, the first
+press pauses it and the second stops it.
 
 The Rich UI is only used when you chat (no `--prompt`), stdin and stdout are both
 terminals, and `--plain` is not given. Otherwise (`--prompt`, output piped or
