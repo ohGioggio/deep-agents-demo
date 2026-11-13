@@ -36,6 +36,8 @@ def parse_args(argv=None):
     parser.add_argument("--prompt", help="Run one prompt instead of interactive chat (prints the answer)")
     parser.add_argument("--verbose", action="store_true",
                         help="With --prompt, print every step (tool calls, subagents), not just the answer")
+    parser.add_argument("--plain", action="store_true",
+                        help="Plain text chat: no colours, boxes or menu (also used when output is redirected)")
     parser.add_argument("--clear-sandbox", action="store_true",
                         help="Delete all files the agent created in the OpenShell sandbox, then exit")
     chats = parser.add_argument_group("chat management (for --user; each exits when done)")
@@ -68,7 +70,8 @@ def dispatch(settings: Settings, args) -> None:
         problem = settings.chat.problem()
         if problem:
             raise commands.UsageError(problem)
-        run_chat(settings, args.user, args.thread, args.prompt, verbose=args.verbose)
+        run_chat(settings, args.user, args.thread, args.prompt, verbose=args.verbose,
+                 plain=args.plain)
 
 
 def main(argv=None) -> None:

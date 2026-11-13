@@ -117,6 +117,15 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[1:], ("demo-user", "t1", "hi"))
 
 
+class PlainFlagTests(unittest.TestCase):
+    def test_plain_flag(self):
+        self.assertFalse(cli.parse_args([])[1].plain)
+        self.assertTrue(cli.parse_args(["--plain"])[1].plain)
+        run = DispatchTests.dispatch.__get__(self)
+        _, run_chat = run("--plain")
+        self.assertTrue(run_chat.call_args.kwargs["plain"])
+
+
 class FileOutputSettingTests(unittest.TestCase):
     def test_file_output_setting(self):
         self.assertEqual(Settings.from_env({}).file_output, "auto")

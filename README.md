@@ -249,12 +249,43 @@ uv run python -m unittest discover -s tests -v           # offline tests
 | `--user` | `demo-user` | Mem0 namespace, not authentication |
 | `--prompt` | | Run a single prompt instead of interactive chat; prints only the answer |
 | `--verbose` | | With `--prompt`, print every step (tool calls, subagents, plans, rooms) too |
+| `--plain` | | Plain text chat: no colours, boxes or `/` menu (see [The terminal UI](#the-terminal-ui)) |
 | `--index-docs DIR` | | Rebuild the RAG index from `DIR`, then exit |
 | `--clear-sandbox` | | Delete everything the agent created in the OpenShell sandbox, then exit |
 | `--list-threads` | | List your chats with turns, last use and last message, then exit |
 | `--show-thread NAME` | | Print a chat's transcript, then exit |
 | `--rename-thread OLD NEW` | | Rename a chat, then exit |
 | `--delete-thread NAME` | | Delete a chat after asking (`--yes` skips the question), then exit |
+
+## The terminal UI
+
+In a terminal the chat draws a Rich interface: a framed input box, a live
+timeline of each turn (tool calls in cyan, subagents in pink, plan steps and
+rooms in blue, delivered files and to-dos in green, approvals in amber, timings
+in grey) and a footer after every answer with the time, tokens in and out and
+the duration. Approvals show a panel (with a coloured diff for file changes),
+and `/threads`, `/files` and `/agents` print tables.
+
+Type `/` in the input box to open the command menu:
+
+| Key | Does |
+| --- | --- |
+| type after `/` | filter the commands (contains; names starting with it come first) |
+| `Up` / `Down` | move the selection (the first match is selected) |
+| `Tab` or `Right` | accept the selection |
+| `Enter` | run the selection; a command that needs an argument (`/switch`, `/delete`, `/room`, `/image`) is filled in and waits for it |
+| `Esc` | close the menu |
+
+After `/switch ` or `/delete ` the menu lists your chats, after `/room ` the
+agents and after `/image ` the images in the current folder. Ctrl+C in an
+ordinary turn ends the chat; while a plan or a room runs, the first press pauses
+it and the second stops it.
+
+The Rich UI is only used when you chat (no `--prompt`), stdin and stdout are both
+terminals, and `--plain` is not given. Otherwise (`--prompt`, output piped or
+redirected, `--plain`) the output is the plain text it has always been, so
+scripts keep working. Set `NO_COLOR=1` to keep the layout without colours.
+Your input history is kept in `data/history/<user>.txt`.
 
 ## Skills
 
@@ -938,6 +969,15 @@ src/deep_agents_demo/
     │   ├── repl.py      #   chat loop and slash commands
     │   ├── render.py    #   prints events, chat tables and transcripts
     │   ├── prompts.py   #   the approval prompt and questions (Interaction over input())
+    │   ├── richui/      #   the Rich terminal UI (only used in a terminal; --plain turns it off)
+    │   │   ├── mode.py        #   Rich or plain: interactive, no --plain, stdin and stdout terminals
+    │   │   ├── theme.py       #   palette and the console
+    │   │   ├── renderer.py    #   live view of a turn (an EventSink)
+    │   │   ├── timeline.py    #   the tree of tool calls, subagents, steps, files and to-dos
+    │   │   ├── interaction.py #   approval panel, diff and questions (an Interaction)
+    │   │   ├── tables.py      #   /threads, /files and /agents tables
+    │   │   ├── menu.py        #   command menu: items, filtering, argument lists
+    │   │   └── input_box.py   #   the framed input box with the / menu (prompt_toolkit)
     │   ├── interrupts.py  # Ctrl+C: pause, then stop, a running plan or room
     │   └── commands.py  #   one-shot commands: index docs, clear sandbox, manage chats
     └── gui/             # reserved: how a GUI plugs in (README)
