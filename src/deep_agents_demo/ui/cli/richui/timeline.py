@@ -266,13 +266,18 @@ class Timeline:
             node.done, node.status = True, node.status or "cut"
         node.awaiting_file = False
 
-    def lines(self) -> list:
-        """The unfinished part of the tree, for the Live region."""
+    def lines(self, limit: int | None = None) -> list:
+        """The unfinished part of the tree, for the Live region. With ``limit``, only the
+        last lines that fit (the rest is summed up in one muted line on top)."""
         out: list = []
         for node in self._root.children:
             if not node.settled():
                 out.extend(self._branch(node, "", settled=False))
-        return out + self._todo_lines()
+        out += self._todo_lines()
+        if limit is not None and len(out) > limit:
+            hidden = len(out) - (limit - 1)
+            out = [Text(f"… {hidden} earlier lines", style="muted")] + out[hidden:]
+        return out
 
     def _todo_lines(self) -> list:
         out = []
@@ -308,7 +313,7 @@ class Timeline:
         out: list = []
         if node.kind == "tool" and self.verbose:
             if node.args:
-                for row in json.dumps(node.args, ensure_ascii=False, indent=2).splitlines():
+                for row in json.dumps(node.args, ensure_ascii=False, indent=2, default=str).splitlines():
                     out.append(Text(row, style="muted"))
             if node.result:
                 for row in node.result.splitlines():

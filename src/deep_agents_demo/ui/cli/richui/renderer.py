@@ -64,15 +64,15 @@ class RichRenderer:
     # ---- what the Live region shows ----
     def __rich_console__(self, console, options):
         with self._lock:
-            parts = self._parts()   # builds the renderables from the current state
+            parts = self._parts(max(3, console.size.height - 2))   # builds the renderables from the current state
         yield Group(*parts)
 
-    def _parts(self) -> list:
+    def _parts(self, height: int | None = None) -> list:
         parts = []
         if self._waiting_since is not None:
             seconds = int(time.monotonic() - self._waiting_since)
             parts.append(Text(f"thinking… {seconds} s", style="muted"))
-        parts.extend(self._timeline.lines())
+        parts.extend(self._timeline.lines(height))
         if self._box is not None:
             parts.append(self._box.panel())
         return parts
@@ -186,7 +186,8 @@ class RichRenderer:
         if self._box is not None and self._box.run_id == run_id:
             self._box.footer = footer if self._settled else ""
         self._waiting_since = None
-        self._todo.append(("stop",))
+        if not self._timeline.active():   # a plan worker ending leaves the tree running
+            self._todo.append(("stop",))
         self._flush()
         if error:
             self._todo.append(("print", Text(f"✗ {error}", style="error")))

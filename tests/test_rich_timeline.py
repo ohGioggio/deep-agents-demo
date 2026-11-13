@@ -1,14 +1,14 @@
 import io
 import unittest
 
-from rich.console import Group
+from rich.console import Console, Group
 
 from deep_agents_demo.models.events import (
     ApprovalRequested, FileEvent, RunFinished, RunStarted, StateSnapshot, StepFinished, StepStarted,
     SubagentFinished, SubagentStarted, TextMessageEnd, ToolCallEnd, ToolCallStart,
 )
 from deep_agents_demo.ui.cli.richui.renderer import RichRenderer
-from deep_agents_demo.ui.cli.richui.theme import make_console
+from deep_agents_demo.ui.cli.richui.theme import THEME, make_console
 from deep_agents_demo.ui.cli.richui.timeline import Timeline
 
 
@@ -184,6 +184,65 @@ class TimelineTest(unittest.TestCase):
         t.handle(RunFinished("r1", "main", 1, 1, 1.0, 0.0))
         self.assertIn("✗ interrupted", draw(t.take_settled()))
         self.assertEqual(t.lines(), [])
+
+    def test_live_stays_up_when_a_plan_worker_finishes(self):
+        c = console(force_terminal=True)
+        r = RichRenderer(c)
+        r.emit(RunStarted("r1", "main"))
+        r.emit(StepStarted("s1", "plan", 1, 2, "general-purpose"))
+        r.emit(RunStarted("w1", "worker", "s1"))
+        r.emit(RunFinished("w1", "worker", 1, 1, 1.0, 0.0))
+        self.assertIsNotNone(r._live)
+        shown = console()
+        shown.print(r)
+        self.assertIn("step 1/2", shown.export_text())
+        r.emit(StepFinished("s1", "plan", 1, "ok", 1, 2.0, 1, 1))
+        r.emit(RunFinished("r1", "main", 1, 1, 3.0, 0.0))
+        self.assertIsNone(r._live)
+        r.close()
+        self.assertEqual(c.export_text().count("step 1/2"), 1)
+
+    def test_tall_branch_shows_its_newest_lines(self):
+        c = Console(file=io.StringIO(), width=100, height=10, force_terminal=False, theme=THEME,
+                    record=True)
+        r = RichRenderer(c)
+        r.emit(RunStarted("r1", "main"))
+        r.emit(ToolCallStart("r1", "p", "run_plan", {}))
+        r.emit(StepStarted("s1", "plan", 1, 1, "general-purpose"))
+        for n in range(30):
+            call_via(r, "s1", f"c{n}", f"tool_{n}")
+        r.emit(ToolCallStart("s1", "last", "tool_last", {}))
+        c.print(r)
+        out = c.export_text()
+        self.assertLessEqual(len(out.splitlines()), 10)
+        self.assertIn("tool_last", out)
+        self.assertIn("earlier lines", out)
+        self.assertNotIn("tool_0 ", out)
+
+    def test_verbose_json_survives_unserialisable_args(self):
+        t = Timeline(verbose=True)
+        call(t, "r1", "c1", "tool", {"obj": object()})
+        self.assertIn("object object", draw(t.take_settled()))
+
+    def test_markup_is_shown_literally(self):
+        t = Timeline(verbose=True)
+        evil = "[bold]x[/bold] [link=file:///x]y[/link]"
+        t.handle(ToolCallStart("r1", "t1", "task", {"a": evil}))
+        t.handle(SubagentStarted("sub", "r1", "researcher", "t1"))
+        call(t, "sub", "c1", "tool", {"a": evil}, result=evil, summary=evil)
+        t.handle(TextMessageEnd("sub", "m", evil, 1, 1, False))
+        t.handle(ToolCallEnd("r1", "t1", "task", "ok", "", 1.0))
+        c = console(force_terminal=True)
+        c.legacy_windows = False
+        c.print(Group(*t.take_settled()))
+        out = c.export_text()
+        self.assertEqual(out.count(evil), 5)   # short arg, JSON arg, result, summary, answer
+        self.assertNotIn("]8;", c.file.getvalue())
+
+
+def call_via(r, run, cid, name):
+    r.emit(ToolCallStart(run, cid, name, {}))
+    r.emit(ToolCallEnd(run, cid, name, "ok", "", 0.1))
 
 
 if __name__ == "__main__":
