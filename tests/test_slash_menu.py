@@ -125,19 +125,37 @@ def read_with(keys, history=None, chats=(), agents=(), pause=0.0, console=None, 
         with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
             box = InputBox(COMMANDS, lambda: list(chats), lambda: list(agents), path, "parks",
                            console=console)
+            # Only this box's thread may write to its pipe, and only while the box is open: on
+            # Linux a closed pipe's descriptor is reused by the next test's pipe, so a late
+            # write would land in another test's box.
+            lock, done, fired = threading.Lock(), threading.Event(), threading.Event()
+
+            def send(text):
+                with lock:
+                    if done.is_set():
+                        return False
+                    pipe.send_text(text)
+                    return True
 
             def type_keys():
                 time.sleep(0.3)
                 for part in keys:
-                    pipe.send_text(part)
+                    if not send(part):
+                        return
                     time.sleep(pause)
-                time.sleep(3)
-                try:
-                    pipe.send_text("\x03")  # never hang the suite: a stuck box ends with Ctrl+C
-                except Exception:
-                    pass  # the box already returned and its pipe is closed
+                if not done.wait(3):  # never hang the suite: a stuck box ends with Ctrl+C
+                    fired.set()
+                    send("\x03")
             threading.Thread(target=type_keys, daemon=True).start()
-            return box.read(label)
+            try:
+                return box.read(label)
+            except KeyboardInterrupt:
+                if fired.is_set():  # a failure, not a reason to stop the whole suite
+                    raise AssertionError(f"the box never returned for {keys!r}") from None
+                raise
+            finally:
+                with lock:
+                    done.set()
 
 
 class InputBoxTests(unittest.TestCase):
