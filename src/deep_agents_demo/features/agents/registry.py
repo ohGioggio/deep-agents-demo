@@ -85,7 +85,8 @@ class AgentRegistry:
             rows.append({"name": agent.name, "source": agent.source,
                          "tools": "all" if tools is None else (", ".join(tools) or "none"),
                          "model": agent.model or "configured",
-                         "overrides": self._overrides.get(agent.name, "")})
+                         "overrides": self._overrides.get(agent.name, ""),
+                         "description": agent.description})
         return rows
 
 

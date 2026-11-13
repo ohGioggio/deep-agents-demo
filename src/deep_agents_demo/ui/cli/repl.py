@@ -95,13 +95,14 @@ class ChatSession:
     """
 
     def __init__(self, chats: Chats, current: str, ask=None, say=None, uploads=None, agents=None,
-                 room=None, outputs=None):
+                 room=None, outputs=None, tables=None):
         self.chats, self.current = chats, current
         # input/print are looked up at each call, not bound once (tests patch them).
         self.ask = ask or (lambda prompt: input(prompt))
         self.say = say or (lambda *args, **kwargs: print(*args, **kwargs))
         self.uploads, self.agents = uploads, agents
         self.outputs = outputs  # the OutputStore, for /files
+        self.tables = tables  # RichTables: /threads, /files, /agents as tables when given
         self.room = room  # (participants, question) -> runs a room and tells the agent
         self.pending = []  # images attached with /image, sent with the next message
         self.reload_skills = True  # reload once per chat, on its first turn this session
@@ -162,14 +163,19 @@ class ChatSession:
             self.say("No agents here.")
             return
         rows = self.agents.overview()
+        footer = ("general-purpose (and researcher, when documents or the catalog are on) are "
+                  "built in unless an agent replaces them.")
+        if self.tables is not None:
+            self.tables.agents(rows)
+            self.say(footer)
+            return
         width = max(len(r["name"]) for r in rows)
         lines = [f"  {'NAME':<{width}}  TOOLS / MODEL / SOURCE"]
         for r in rows:
             note = f" (overrides {r['overrides']})" if r["overrides"] else ""
             lines.append(f"  {r['name']:<{width}}  tools: {r['tools']}; model: {r['model']}; "
                          f"source: {r['source']}{note}")
-        lines.append("  general-purpose (and researcher, when documents or the catalog are on) are "
-                     "built in unless an agent replaces them.")
+        lines.append("  " + footer)
         self.say("Subagents:\n" + "\n".join(lines))
 
     @command("room", usage="/room A B -- QUESTION", summary="let agents discuss a question, moderated")
@@ -202,12 +208,23 @@ class ChatSession:
             self.say("Files aren't available here.")
             return
         user = self.chats.user
-        self.say(format_files(self.outputs.list(user, self.current), self.outputs.folder(user, self.current)))
+        files, folder = self.outputs.list(user, self.current), self.outputs.folder(user, self.current)
+        if self.tables is not None:
+            self.tables.files(files, folder)
+        else:
+            self.say(format_files(files, folder))
 
     @command("threads", "chats", "list", usage="/threads", summary="list your chats (* marks the current one)")
     def threads(self, arg):
-        table = format_table(self.chats.list(), self.current)
-        if not self.chats.exists(self.current):
+        chats = self.chats.list()
+        new = not self.chats.exists(self.current)
+        if self.tables is not None:
+            self.tables.threads(chats, self.current)
+            if new:
+                self.say(f"*  {self.current} (new: saved after your first message)")
+            return
+        table = format_table(chats, self.current)
+        if new:
             table += f"\n*  {self.current} (new: saved after your first message)"
         self.say(table)
 
