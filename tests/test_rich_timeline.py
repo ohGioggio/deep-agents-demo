@@ -251,6 +251,14 @@ class TimelineTest(unittest.TestCase):
         out = draw(t.take_settled())
         self.assertIn("researcher: Oak and pine.  " + format_footer(0.0, 1200, 80, 6.0), out)
 
+    def test_subagent_without_an_answer_still_has_its_footer(self):
+        t = Timeline()
+        t.handle(ToolCallStart("r1", "t1", "task", {"subagent_type": "researcher"}))
+        t.handle(SubagentStarted("sub", "r1", "researcher", "t1"))
+        t.handle(SubagentFinished("sub", "error", 50, 0, 2.0, 0.0))
+        t.handle(ToolCallEnd("r1", "t1", "task", "error", "boom", 2.1))
+        self.assertIn("└─ " + format_footer(0.0, 50, 0, 2.0), draw(t.take_settled()))
+
     def test_plan_step_has_its_answer_and_footer(self):
         t = Timeline()
         t.handle(StepStarted("s1", "plan", 1, 2, "general-purpose"))

@@ -364,10 +364,10 @@ class Timeline:
     def _answer(self, node: _Node) -> Text | None:
         """A subagent's or passed plan step's short answer, with its footer (a step that
         didn't pass has its reason on its own line: only the footer goes here)."""
-        if node.kind == "step" and (node.status not in STEP_PASSED or not node.answer.strip()):
-            return Text(node.footer, style="muted") if node.footer else None
-        if node.kind not in ("sub", "step") or not node.answer.strip():
+        if node.kind not in ("sub", "step"):
             return None
+        if not node.answer.strip() or (node.kind == "step" and node.status not in STEP_PASSED):
+            return Text(node.footer, style="muted") if node.footer else None
         first = node.answer.strip().splitlines()[0]
         line = Text(f"{node.name}:", style="subagent" if node.kind == "sub" else "step")
         line.append(" " + first)

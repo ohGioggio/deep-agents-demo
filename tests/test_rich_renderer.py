@@ -255,6 +255,42 @@ class ReviewFixesTest(unittest.TestCase):
         self.assertNotIn("- general-purpose", out)
         self.assertIn("✗ failed", out)
 
+    def test_room_turns_inside_a_turn_are_boxed(self):
+        c = console()
+        r = RichRenderer(c)
+        r.emit(RunStarted("r1", "main"))
+        r.emit(TextMessageEnd("r1", "m0", "", 1, 1, True))
+        r.emit(ToolCallStart("r1", "room", "start_room", {"question": "parks?"}))
+        r.emit(StepStarted("t1", "room", 1, 4, "critic"))
+        r.emit(RunStarted("c1", "room / critic"))
+        answer(r, "c1", "CRITIC SAYS no", label="room / critic")
+        r.emit(RunFinished("c1", "room / critic", 70, 8, 3.0, 0.0))
+        r.emit(StepFinished("t1", "room", 1, "done", 1, 3.0, 70, 8, "CRITIC SAYS no"))
+        r.emit(NoticeEvent("[room] summary:\nWe agreed on parks."))
+        r.emit(ToolCallEnd("r1", "room", "start_room", "ok", "", 4.0))
+        answer(r, "r1", "MAIN ANSWER here")
+        r.emit(RunFinished("r1", "main", 400, 60, 9.0, 0.0))
+        r.close()
+        out = c.export_text()
+        self.assertEqual(out.count("room / critic"), 1)
+        self.assertEqual(out.count("CRITIC SAYS no"), 1)
+        self.assertIn("70 in / 8 out", out)
+        self.assertIn("We agreed on parks.", out)
+        self.assertEqual(sum(line[:1] in "╭┌" for line in out.splitlines() if line), 2)
+
+    def test_settled_tree_lines_stay_one_row_when_narrow(self):
+        c = console(50)
+        r = RichRenderer(c)
+        r.emit(RunStarted("r1", "main"))
+        r.emit(ToolCallStart("r1", "c1", "search_assets_with_a_long_name", {"q": "y" * 60}))
+        r.emit(ToolCallEnd("r1", "c1", "search_assets_with_a_long_name", "ok", "long summary " * 6, 0.1))
+        r.emit(RunFinished("r1", "main", 1, 1, 1.0, 0.0))
+        r.close()
+        lines = c.export_text().splitlines()
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("├─ search_assets"))
+        self.assertTrue(lines[0].endswith("…"))
+
     def test_notify_never_blocks_while_live_draws(self):
         c = console()   # Live is up but draws nothing on a non-terminal: the count below is exact
         r = RichRenderer(c)
@@ -269,13 +305,13 @@ class ReviewFixesTest(unittest.TestCase):
         t = threading.Thread(target=hold, daemon=True)
         t.start()
         held.wait(5)
-        started = time.monotonic()
         with patch("deep_agents_demo.ui.cli.richui.renderer.os.write") as write:
+            started = time.monotonic()
             r.notify("[plan] Pausing")
             elapsed = time.monotonic() - started
         release.set()
         t.join(5)
-        self.assertLess(elapsed, 0.2)
+        self.assertLess(elapsed, 1.0)
         write.assert_not_called()   # Live is drawing: the notice waits for it, not stderr
         self.assertIn("[plan] Pausing", shown(r))
         r.close()

@@ -256,7 +256,7 @@ class InputBox:
     def echo(self, label: str, line: str) -> None:
         """The sent line, kept on screen (the box erases itself when done)."""
         if self.console is not None:
-            self.console.print(Text(f"{label} › ", style="prompt") + Text(line))
+            self.console.print(Text.assemble((f"{label} › ", "prompt"), line))  # the text unstyled
 
     @staticmethod
     def _row(item: MenuItem, selected: bool, typed: str, inner: int) -> StyleAndTextTuples:

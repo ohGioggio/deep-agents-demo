@@ -173,7 +173,14 @@ class InputBoxTests(unittest.TestCase):
     def test_sent_line_stays_on_screen(self):
         c = make_console(file=io.StringIO(), width=60, force_terminal=False, record=True)
         self.assertEqual("hello", read_with(["hello\r"], console=c))
+        segments = list(c._record_buffer)
         self.assertIn("parks › hello", c.export_text())
+        [sent] = [s for s in segments if "hello" in s.text]
+        self.assertEqual("hello", sent.text)
+        self.assertFalse(sent.style and sent.style.color, "the sent text is plain")
+        [label] = [s for s in segments if "parks" in s.text]
+        self.assertIsNotNone(c.get_style("prompt").color)
+        self.assertEqual(c.get_style("prompt"), label.style)
 
     def test_nothing_is_echoed_on_ctrl_d(self):
         c = make_console(file=io.StringIO(), width=60, force_terminal=False, record=True)
