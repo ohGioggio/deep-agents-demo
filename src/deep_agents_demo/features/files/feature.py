@@ -8,6 +8,7 @@ chooses whose chat a file lands in: the user comes from code, the chat from the
 run's thread.
 """
 import json
+import re
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime, tool
@@ -45,6 +46,11 @@ def _chat(config, user: str) -> tuple[str | None, str | None]:
     return chat, None
 
 
+def _absolute(path: str) -> bool:
+    """"/x", "\\x" or "C:/x": not resolved from some current folder."""
+    return str(path).startswith(("/", "\\")) or bool(re.match(r"^[A-Za-z]:[\\/]", str(path)))
+
+
 def make_send_file(backend, outputs: OutputStore, user: str):
     @tool(response_format="content_and_artifact")
     def send_file(path: str, runtime: ToolRuntime, caption: str = "") -> tuple[str, dict | None]:
@@ -61,8 +67,11 @@ def make_send_file(backend, outputs: OutputStore, user: str):
         try:
             [found] = backend.download_files([path])
             if found.error or found.content is None:
-                return (f"Can't read {path}: {found.error or 'no content'}. Write the file first "
-                        "(write_file), then send it."), None
+                why = f"Can't read {path}: {found.error or 'no content'}."
+                if not _absolute(path):  # e.g. a sandbox resolves it from another folder
+                    return (f"{why} Use the absolute path you wrote the file to (it starts "
+                            "with /), then send it again."), None
+                return f"{why} Write the file first (write_file), then send it.", None
             problem = validate(name, found.content)
             if problem:
                 return f"Not sent: {problem}.", None

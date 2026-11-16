@@ -58,6 +58,13 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 clean_name(bad)
 
+    def test_letters_of_any_language_are_kept(self):
+        self.assertEqual(clean_name("/w/relazione città.md"), "relazione-città.md")
+        self.assertEqual(clean_name("/w/Übersicht_Größen.csv"), "Übersicht_Größen.csv")
+        self.assertEqual(clean_name("/w/計画.md"), "計画.md")
+        self.assertEqual(clean_name("/w/città.md"), "città.md")  # decomposed è → one letter
+        self.assertEqual(clean_name("/w/a:b*c?.md"), "a_b_c_.md")  # still no unsafe characters
+
     def test_leading_dots_are_refused(self):
         for bad in (".index.json", ".versions.md", "..hidden.md"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
@@ -134,6 +141,31 @@ class SendFileTests(FilesBase):
         sandbox = FakeBackend({"report.md": b"# Report"})
         self.run_turn(call("send_file", {"path": "report.md"}, "s1"), backend=sandbox)
         self.assertEqual(sandbox.asked, ["report.md"])
+
+    def test_an_unreadable_relative_path_asks_for_the_absolute_one(self):
+        sandbox = FakeBackend({"/home/daytona/report.md": b"# Report"})
+        [message] = self.run_turn(call("send_file", {"path": "report.md"}, "s1"), backend=sandbox)
+        self.assertIn("absolute path", message.content)
+        self.assertNotIn("Write the file first", message.content)
+        [message] = self.run_turn(call("send_file", {"path": "/home/daytona/gone.md"}, "s1"), backend=sandbox)
+        self.assertIn("Write the file first", message.content)
+
+    def test_a_caption_is_kept_on_one_line(self):
+        (self.workspace / "plan.md").write_bytes(b"# Plan")
+        self.run_turn(call("send_file", {"path": "/plan.md", "caption": "the plan\nfor the park"}, "s1"))
+        self.assertEqual(self.store.list("alice", "parks")[0].caption, "the plan for the park")
+
+    def test_a_disabled_send_file_takes_its_instructions_with_it(self):
+        (self.workspace / "plan.md").write_bytes(b"# Plan")
+        self.store.save("alice", "parks", "plan.md", b"# Plan")
+        model = Model(responses=[AIMessage(content="done")])
+        agent = build_agent(model, InMemorySaver(), self.backend,
+                            [files_feature(self.backend, self.store, "alice")], disabled_tools=("send_file",))
+        agent.invoke({"messages": [{"role": "user", "content": "go"}]},
+                     {"configurable": {"thread_id": thread_id("alice", "parks")}})
+        [prompt, *_] = [str(m[0].content) for kind, m in SEEN if kind == "messages"]
+        self.assertNotIn("deliver it with send_file", prompt)
+        self.assertIn("Turned off in this setup: send_file", prompt)
 
     def test_identity_comes_from_code(self):
         (self.workspace / "plan.md").write_text("# Plan", encoding="utf-8")

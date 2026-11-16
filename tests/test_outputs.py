@@ -38,6 +38,79 @@ class OutputStoreTests(unittest.TestCase):
         written = [p for p in self.root.parent.rglob("*") if p.is_file()]
         self.assertTrue(written and all(self.root in p.parents for p in written))
 
+    def test_plain_lowercase_names_keep_their_folder(self):
+        self.assertEqual(self.store.folder("demo-user", "parks"), self.root / "demo-user" / "parks")
+
+    def test_chats_differing_in_case_or_symbols_have_their_own_files(self):
+        names = ("parks", "Parks", "PARKS", "a b", "a_b", "città", "citt_")
+        for chat in names:
+            self.store.save("alice", chat, "plan.md", chat.encode("utf-8"))
+        for chat in names:
+            with self.subTest(chat=chat):
+                self.assertEqual(self.store.read("alice", chat, "plan.md"), chat.encode("utf-8"))
+                self.assertEqual([f.version for f in self.store.list("alice", chat)], [1])
+
+    def test_a_chat_keeps_its_files_when_the_look_alike_is_deleted(self):
+        self.store.save("alice", "Parks", "plan.md", b"upper")
+        self.store.save("alice", "parks", "plan.md", b"lower")
+        self.store.delete_thread("alice", "Parks")
+        self.assertEqual(self.store.read("alice", "parks", "plan.md"), b"lower")
+        self.store.delete_thread("alice", "parks")
+        self.assertEqual([p.name for p in (self.root / "alice").iterdir() if p.is_dir()], [])
+
+    def test_users_differing_in_case_have_their_own_files(self):
+        self.store.save("alice", "parks", "plan.md", b"lower")
+        self.store.save("Alice", "parks", "plan.md", b"upper")
+        self.assertEqual(self.store.read("alice", "parks", "plan.md"), b"lower")
+        self.assertEqual(self.store.read("Alice", "parks", "plan.md"), b"upper")
+
+    def test_files_saved_before_owners_stay_with_their_chat(self):
+        old = self.root / "alice" / "My_Chat" / ".versions"  # "My Chat", saved by an older version
+        old.mkdir(parents=True)
+        (old / "x.md.v1").write_bytes(b"x")
+        (old.parent / ".index.json").write_text(json.dumps([{
+            "name": "x.md", "version": 1, "bytes": 1, "kind": "md", "caption": "",
+            "saved_at": "2026-11-12T10:00:00+00:00"}]), encoding="utf-8")
+        self.assertEqual(self.store.folder("alice", "My Chat"), old.parent)
+        self.assertEqual(self.store.read("alice", "My Chat", "x.md"), b"x")
+        self.store.save("alice", "My Chat", "y.md", b"y")  # now it is My Chat's for good
+        self.assertNotEqual(self.store.folder("alice", "My_Chat"), old.parent)
+
+    def test_a_renamed_chat_takes_its_folder_name_with_it(self):
+        self.store.save("alice", "Old", "a.md", b"a")
+        self.store.rename_thread("alice", "Old", "new")
+        self.assertEqual(self.store.read("alice", "new", "a.md"), b"a")
+        self.store.save("alice", "Old", "b.md", b"b")  # a new chat with the old name starts empty
+        self.assertEqual([f.name for f in self.store.list("alice", "Old")], ["b.md"])
+
+    def test_a_broken_index_is_rebuilt_from_the_versions(self):
+        self.store.save("alice", "parks", "plan.md", b"one")
+        self.store.save("alice", "parks", "plan.md", b"two")
+        self.store.save("alice", "parks", "data.csv", b"a,b\n1,2\n")
+        folder = self.store.folder("alice", "parks")
+        (folder / ".index.json").write_text("{not json", encoding="utf-8")
+        self.assertCountEqual([(f.name, f.version) for f in self.store.list("alice", "parks")],
+                              [("plan.md", 2), ("data.csv", 1)])
+        self.assertEqual(self.store.read("alice", "parks", "plan.md", version=1), b"one")
+        third = self.store.save("alice", "parks", "plan.md", b"three")
+        self.assertEqual(third.version, 3)
+        self.assertEqual(len(json.loads((folder / ".index.json").read_text(encoding="utf-8"))), 4)
+        self.assertEqual([p.read_text(encoding="utf-8") for p in folder.glob(".index.json.broken*")],
+                         ["{not json"], "the broken index is kept aside, not lost")
+
+    def test_an_index_of_the_wrong_shape_is_rebuilt(self):
+        self.store.save("alice", "parks", "plan.md", b"one")
+        folder = self.store.folder("alice", "parks")
+        for broken in ('{"a": 1}', '[{"name": "plan.md"}]', "[1, 2]"):
+            with self.subTest(broken=broken):
+                (folder / ".index.json").write_text(broken, encoding="utf-8")
+                self.assertEqual([(f.name, f.version) for f in self.store.list("alice", "parks")],
+                                 [("plan.md", 1)])
+
+    def test_captions_are_one_line(self):
+        saved = self.store.save("alice", "parks", "plan.md", b"x", "the plan\n\nfor  the\tpark")
+        self.assertEqual(saved.caption, "the plan for the park")
+
     def test_delete_and_rename_thread(self):
         self.store.save("alice", "old", "a.md", b"a")
         self.store.save("alice", "taken", "b.md", b"b")

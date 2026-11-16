@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import re
+import unicodedata
 import xml.etree.ElementTree as ElementTree
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
@@ -22,15 +23,16 @@ IMAGE_LIMIT = 20 * 1024 * 1024
 
 
 def clean_name(path: str) -> str:
-    """The file's name as kept: base name only, lowercase extension, spaces as "-",
-    anything else unusual as "_". ValueError when there is no name or extension."""
-    base = PurePosixPath(str(path).replace("\\", "/")).name
+    """The file's name as kept: base name only, lowercase extension, spaces as "-", letters
+    and digits of any language kept (composed, "città" not "citta" + accent), anything
+    else unusual as "_". ValueError when there is no name or extension."""
+    base = unicodedata.normalize("NFC", PurePosixPath(str(path).replace("\\", "/")).name)
     stem, dot, extension = base.rpartition(".")
     if base.startswith("."):
         raise ValueError(f"{path!r}: a file name can't start with a dot; use e.g. report.md")
     if not dot or not stem.strip(" ._") or not extension:
         raise ValueError(f"{path!r} needs a file name with an extension, e.g. report.md")
-    stem = re.sub(r"[^A-Za-z0-9._-]", "_", re.sub(r"\s+", "-", stem.strip()))
+    stem = re.sub(r"[^\w.-]", "_", re.sub(r"\s+", "-", stem.strip()))
     return f"{stem}.{extension.lower()}"
 
 

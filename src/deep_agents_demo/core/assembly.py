@@ -7,7 +7,7 @@ feature in its own module (memory, documents, catalog, sandbox), and
 ``build_agent`` only puts them together. Adding a capability means writing one
 more feature, not editing this file.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from deepagents import create_deep_agent
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
@@ -64,6 +64,13 @@ def system_prompt(features=(), has_researcher=None) -> str:
         has_researcher = any(f.lookups for f in features)
     return (IDENTITY + DELEGATION[has_researcher]
             + "".join(f.prompt for f in features) + CLOSING)
+
+
+def _without_prompts_for_off_tools(features, off) -> tuple:
+    """A feature whose tools are all turned off keeps quiet: its section tells the model
+    to use those tools. Its middleware stays (e.g. memory recall works without them)."""
+    return tuple(replace(f, prompt="") if f.tools and all(tool_name(t) in off for t in f.tools) else f
+                 for f in features)
 
 
 def _skip_blocked(config, off):
@@ -165,7 +172,7 @@ def _assemble(model, features, *, skills_prefix, disabled_tools, agents, model_f
     permissions = [FilesystemPermission(operations=["write"], mode="deny",
                                         paths=[*(f"{source}**" for source in skill_sources),
                                                f"{skills_prefix}/agents/**"])]
-    return _Assembly(features, registry, off, skill_sources, interrupt_on, tools, memory_sources,
+    return _Assembly(_without_prompts_for_off_tools(features, off), registry, off, skill_sources, interrupt_on, tools, memory_sources,
                      access, permissions, [*subagents, *own])
 
 
