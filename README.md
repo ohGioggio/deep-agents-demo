@@ -129,6 +129,8 @@ preference is still there.
 | **Approvals and guardrails** | Skill changes, deletes, forgetting and risky shell commands (`rm -rf`, `git push`, ...) pause for your yes or no |
 | **Tools registry** | Every tool in one list; `DISABLED_TOOLS` hides and refuses tools, skills declare the tools they use |
 | **Delegation** | A read-only `researcher` subagent (documents and catalog lookups) plus a `general-purpose` subagent with the main agent's tools and limits |
+| **Rooms** | Agents talk a question through: blind openings, moderated rounds, positions, and four formats (`moderated`, `roundrobin`, `debate`, `redteam`) ([details](#rooms-agents-talk-a-question-through)) |
+| **Swarms** | Independent tasks on read-only workers in parallel, then one merged answer ([details](#swarms-independent-tasks-in-parallel)) |
 | **Tools** | `search_docs`, `remember`, `list_memories`, `forget`, the skill tools, the example catalog tools `search_assets` and `triangle_budget`, plus Deep Agents' file tools |
 | **Persistence** | Conversations resume by thread from `demo_checkpoints.sqlite` |
 | **Context management** | Built-in summarization and large-output offloading |
@@ -619,82 +621,6 @@ hands them to `run_plan`. Then, one step at a time:
 - **The outcome** lists each step as passed, skipped, failed or stopped, with the
   reviewer's notes; the agent reports it to you.
 
-### Rooms: a moderated discussion
-
-Let several agents talk a question through: `/room critic tester -- Should we cache
-the catalog?`, or ask the agent ("have the critic and the tester discuss X"). The
-built-in `moderator` (or your own agent of that name) picks who speaks next and what
-they should address, and ends the room when they agree or nothing new is said:
-
-```text
-[room] moderator -> critic: What could go wrong with caching?
-...the critic's turn...
-[room] moderator -> tester: How would you test the invalidation?
-...
-[room] summary:
-Agreed: cache with a 10-minute TTL. Open: who owns invalidation. Next: a test plan.
-```
-
-- **Step in:** Ctrl+C pauses after the current turn. Type your own turn (the
-  moderator takes it into account), `/end` for the summary now, `/stop` to end
-  without one, or Enter to go on. Ctrl+C again stops at once.
-- **Limits:** `ROOM_MAX_TURNS` (12) participant turns, and `ORCHESTRATION_MAX_CALLS`
-  (150) model calls per room (then continue or wrap up). The summary is always
-  written, even when the budget runs out.
-- **Participants** keep their own tools, limits and your approvals. Each keeps one
-  conversation for the room: its first turn sees the minutes so far and the latest
-  `ROOM_RECENT_TURNS` (3) turns, word for word (a fixed format has no minutes, so it
-  sees every earlier turn); later turns see the minutes and only what was said since
-  its own last turn.
-- **The opening round** (`ROOM_OPENING_ROUND`, moderated format): every participant
-  answers the question alone before the moderator's first call. The read-only
-  participants open in parallel, up to `SWARM_MAX_PARALLEL` at a time, and their
-  answers are shown after the wave in participant order, each with the tools it used;
-  the others open one after another. A budget cut opening is shown as cut short.
-- **The summary** (agreements, open disagreements, next steps) goes back to the
-  agent, and the full transcript is saved to `demo_workspace/rooms/<user>/`.
-
-#### Room formats
-
-`/room critic tester helper --format debate -- Should we cache the catalog?` runs the
-room in one of four formats. `moderated` (the default, `ROOM_FORMAT`) is the one above.
-The others follow a fixed order and make no moderator calls until the summary:
-`roundrobin` has every participant speak in the order given, round after round;
-`debate` takes exactly three (the first argues for, the second against, the third
-judges, last, and the judge's first line is the room's decision); `redteam` has the
-first propose, the others attack, and the proposer answer, repeating. A fixed format
-ends at `ROOM_MAX_TURNS`, or earlier once every participant's position has stayed the
-same over a full round. The agent can pick a format too (`start_room`'s `format`
-argument). A wrong format or participant count is refused before any agent runs.
-
-### Swarms: independent tasks in parallel
-
-When you ask for it ("check these three things in parallel and merge the results"),
-the agent calls `run_swarm(goal, tasks, merge_with)`: the tasks run at the same time on
-workers, and one agent (`merge_with`, default `general-purpose`) merges their results
-into one answer. Give it only tasks that don't depend on each other.
-
-- **Read-only workers.** A worker can use the read-only file tools and the read-only
-  lookup tools (the documents and the catalog, such as `search_docs`). It can't change
-  files or run commands, and a call that would need your approval is refused for it, not
-  asked. The merge runs on the main thread with its own tools and your approvals.
-- **Limits:** `SWARM_MAX_TASKS` (8) tasks at most, and at least 2. `SWARM_MAX_PARALLEL`
-  workers run at once (blank: `SUBAGENT_MAX_PARALLEL`). One `ORCHESTRATION_MAX_CALLS`
-  (150) budget covers the whole swarm: when it runs out you are asked to continue or
-  wrap up, as for a plan. A task cut short keeps its partial answer, and the merge
-  names it. A task that fails is retried once, then reported; if every task fails,
-  nothing is merged and the swarm ends `failed`. The merge runs even when the budget is
-  spent, since it writes the answer.
-- **Ctrl+C:** the first press starts nothing new and waits for the running workers,
-  then asks `[g]o on, [m]erge now or [s]top`. Go on starts the rest; merge now merges
-  what finished and marks the rest "not started"; stop ends without a merge. A second
-  press stops at once and nothing is merged. The workers still running are not waited
-  for: their model requests finish in the background, the chat notes how many, and
-  quitting the chat waits for them.
-- **The report:** every swarm saves `demo_workspace/swarms/<user>/<time>-<id>-<goal>.md`
-  (each task's agent, status and result, and the merged answer) and a `.json` copy. If
-  the report can't be written, the outcome still comes back, with `report_error`.
-
 ### Agents the agent writes, with your approval
 
 Ask for a new agent ("create an agent called tester that writes unit tests, with
@@ -733,6 +659,88 @@ Agent change requested: CREATE 'tester' (user: demo-user), new, v1
 - **Precedence:** your own agents win over installed marketplace agents, which win
   over folder files, which win over the built-ins. `/agents` shows what overrides
   what.
+
+## Rooms: agents talk a question through
+
+Let several agents talk a question through: `/room critic tester -- Should we cache
+the catalog?`, or ask the agent ("have the critic and the tester discuss X"). The
+built-in `moderator` (or your own agent of that name) picks who speaks next and what
+they should address, a whole round at a time, and ends the room when their positions
+stop changing or nothing new is said. Each participant first answers alone, then speaks
+in rounds, and ends every turn with a `POSITION:` line the moderator tracks:
+
+<p align="center"><img src="assets/room-preview.svg" width="100%" alt="A moderated room: two blind openings with the tools they used, the moderator schedules one round, each turn in its own box with a POSITION line, the summary, and the agent's answer"/></p>
+
+- **Step in:** Ctrl+C pauses after the current turn. Type your own turn (the
+  moderator takes it into account), `/end` for the summary now, `/stop` to end
+  without one, or Enter to go on. Ctrl+C again stops at once.
+- **Limits:** `ROOM_MAX_TURNS` (12) participant turns, and `ORCHESTRATION_MAX_CALLS`
+  (150) model calls per room (then continue or wrap up). The summary is always
+  written, even when the budget runs out.
+- **Participants** keep their own tools, limits and your approvals. Each keeps one
+  conversation for the room: its first turn sees the minutes so far and the latest
+  `ROOM_RECENT_TURNS` (3) turns, word for word (a fixed format has no minutes, so it
+  sees every earlier turn); later turns see the minutes and only what was said since
+  its own last turn.
+- **The opening round** (`ROOM_OPENING_ROUND`, moderated format): every participant
+  answers the question alone before the moderator's first call. The read-only
+  participants open in parallel, up to `SWARM_MAX_PARALLEL` at a time, and their
+  answers are shown after the wave in participant order, each with the tools it used;
+  the others open one after another. A budget cut opening is shown as cut short.
+- **The outcome** goes back to the agent: the summary (the answer to the question,
+  then open disagreements and next steps), the decision, dissent, actions, each
+  participant's last position, and the calls and tokens used. The full transcript is
+  saved to `demo_workspace/rooms/<user>/`, with the outcome as JSON next to it.
+- **When it's worth it:** when a second reader matters (review) or you want the
+  disagreement made visible. For questions one agent answers in a few reads, a room
+  costs about two and a half times the calls; see [Evaluating orchestration](#evaluating-orchestration-one-agent-or-a-room).
+
+### Room formats
+
+`/room critic tester helper --format debate -- Should we cache the catalog?` runs the
+room in one of four formats. `moderated` (the default, `ROOM_FORMAT`) is the one above.
+The others follow a fixed order and make no moderator calls until the summary:
+`roundrobin` has every participant speak in the order given, round after round;
+`debate` takes exactly three (the first argues for, the second against, the third
+judges, last, and the judge's first line is the room's decision); `redteam` has the
+first propose, the others attack, and the proposer answer, repeating. A fixed format
+ends at `ROOM_MAX_TURNS`, or earlier once every participant's position has stayed the
+same over a full round. The agent can pick a format too (`start_room`'s `format`
+argument). A wrong format or participant count is refused before any agent runs.
+
+## Swarms: independent tasks in parallel
+
+When you ask for it ("check these three things in parallel and merge the results"),
+the agent calls `run_swarm(goal, tasks, merge_with)`: the tasks run at the same time on
+workers, and one agent (`merge_with`, default `general-purpose`) merges their results
+into one answer. Give it only tasks that don't depend on each other.
+
+<p align="center"><img src="assets/swarm-preview.svg" width="100%" alt="A swarm: four worker steps run in parallel under run_swarm, one fails after a retry, the merge step combines the rest, and the answer names the task that failed"/></p>
+
+- **Read-only workers.** A worker can use the read-only file tools and the read-only
+  lookup tools (the documents and the catalog, such as `search_docs`). It can't change
+  files or run commands, and a call that would need your approval is refused for it, not
+  asked. The merge runs on the main thread with its own tools and your approvals.
+- **Limits:** `SWARM_MAX_TASKS` (8) tasks at most, and at least 2. `SWARM_MAX_PARALLEL`
+  workers run at once (blank: `SUBAGENT_MAX_PARALLEL`). One `ORCHESTRATION_MAX_CALLS`
+  (150) budget covers the whole swarm: when it runs out you are asked to continue or
+  wrap up, as for a plan. A task cut short keeps its partial answer, and the merge
+  names it. A task that fails is retried once, then reported; if every task fails,
+  nothing is merged and the swarm ends `failed`. The merge runs even when the budget is
+  spent, since it writes the answer.
+- **Ctrl+C:** the first press starts nothing new and waits for the running workers,
+  then asks `[g]o on, [m]erge now or [s]top`. Go on starts the rest; merge now merges
+  what finished and marks the rest "not started"; stop ends without a merge. A second
+  press stops at once and nothing is merged. The workers still running are not waited
+  for: their model requests finish in the background, the chat notes how many, and
+  quitting the chat waits for them.
+- **The report:** every swarm saves `demo_workspace/swarms/<user>/<time>-<id>-<goal>.md`
+  (each task's agent, status and result, and the merged answer) and a `.json` copy. If
+  the report can't be written, the outcome still comes back, with `report_error`.
+- **When it's worth it:** when the tasks are really independent and each is big
+  enough that running them side by side saves more than splitting and merging cost
+  (eight folders took 61 s with three workers). For small questions the single agent
+  is cheaper; see [Evaluating orchestration](#evaluating-orchestration-one-agent-or-a-room).
 
 ## Files the agent delivers
 
@@ -1010,7 +1018,7 @@ src/deep_agents_demo/
 │   ├── events.py        #   MessageEvent, FileEvent, TodosEvent, NoticeEvent, FinalAnswerEvent
 │   ├── approvals.py     #   ApprovalRequest, Decision
 │   ├── agents.py        #   AgentDefinition
-│   └── outcomes.py      #   plan steps and outcomes, room outcomes
+│   └── outcomes.py      #   plan steps and outcomes, room and swarm outcomes
 ├── persistence/         # storage shared by features
 │   ├── versioned_store.py  # versioned items in SQLite (skills and agents), installs
 │   ├── chats.py         #   chats on LangGraph checkpoints: list, messages, rename, delete
@@ -1042,7 +1050,7 @@ src/deep_agents_demo/
 │   ├── guardrails/      #   risky actions (dangerous commands, delete, forget) ask first
 │   ├── skills/          #   SKILL.md format, SkillManager
 │   ├── agents/          #   Claude Code agent files, registry, built-ins, AgentManager
-│   ├── orchestration/   #   run_plan and start_room: runners, budget, plans, rooms
+│   ├── orchestration/   #   run_plan, start_room, run_swarm: runners, budget, plans, rooms, swarms
 │   └── sandbox/         #   local files, OpenShell or Daytona (SANDBOXES registry)
 ├── startup/             # wiring only
 │   ├── resources.py     #   Resources: opened once per process (Mem0, index, stores, checkpoints)
@@ -1063,7 +1071,7 @@ src/deep_agents_demo/
     │   │   ├── tables.py      #   /threads, /files and /agents tables
     │   │   ├── menu.py        #   command menu: items, filtering, argument lists
     │   │   └── input_box.py   #   the framed input box with the / menu (prompt_toolkit)
-    │   ├── interrupts.py  # Ctrl+C: pause, then stop, a running plan or room
+    │   ├── interrupts.py  # Ctrl+C: pause, then stop, a running plan, room or swarm
     │   └── commands.py  #   one-shot commands: index docs, clear sandbox, manage chats
     └── gui/             # reserved: how a GUI plugs in (README)
 ```

@@ -1,0 +1,239 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="835" height="552" viewBox="0 0 835 552" role="img" aria-label="A swarm: four worker steps run in parallel under run_swarm, one fails after a retry, the merge step combines the rest, and the answer names the task that failed">
+<title>A swarm: four worker steps run in parallel under run_swarm, one fails after a retry, the merge step combines the rest, and the answer names the task that failed</title>
+<rect width="835" height="552" rx="12" fill="#0f1115"/>
+<rect width="835" height="34" rx="12" fill="#161b22"/>
+<rect y="22" width="835" height="12" fill="#161b22"/>
+<circle cx="22" cy="17" r="6" fill="#ff5f57"/><circle cx="42" cy="17" r="6" fill="#febc2e"/><circle cx="62" cy="17" r="6" fill="#28c840"/>
+<text x="418" y="22" fill="#7d8590" font-size="13" text-anchor="middle" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif">uv run deep-agents-demo --thread parks</text>
+<g font-family="Cascadia Mono, Consolas, 'DejaVu Sans Mono', Menlo, monospace" font-size="14">
+<text x="22.0 30.6 39.2 47.8 56.4" y="68.0" fill="#ffa657" font-weight="700">parks</text>
+<text x="73.6" y="68.0" fill="#ffa657" font-weight="700">›</text>
+<text x="90.8 99.4 108.0 116.6 125.2 133.8 142.4" y="68.0" fill="#d6d9df">compare</text>
+<text x="159.6 168.2 176.8" y="68.0" fill="#d6d9df">the</text>
+<text x="194.0 202.6 211.2 219.8" y="68.0" fill="#d6d9df">four</text>
+<text x="237.0 245.6 254.2 262.8 271.4 280.0 288.6 297.2" y="68.0" fill="#d6d9df">supplier</text>
+<text x="314.4 323.0 331.6 340.2 348.8 357.4" y="68.0" fill="#d6d9df">sheets</text>
+<text x="374.6 383.2" y="68.0" fill="#d6d9df">in</text>
+<text x="400.4 409.0 417.6 426.2 434.8 443.4 452.0 460.6" y="68.0" fill="#d6d9df">parallel</text>
+<text x="477.8 486.4 495.0" y="68.0" fill="#d6d9df">and</text>
+<text x="512.2 520.8 529.4 538.0" y="68.0" fill="#d6d9df">pick</text>
+<text x="555.2 563.8 572.4" y="68.0" fill="#d6d9df">the</text>
+<text x="589.6 598.2 606.8 615.4" y="68.0" fill="#d6d9df">best</text>
+<text x="632.6 641.2 649.8 658.4" y="68.0" fill="#d6d9df">deal</text>
+<text x="22.0 30.6 39.2 47.8" y="108.0" fill="#a78bfa" font-weight="700">main</text>
+<text x="22.0 30.6" y="128.0" fill="#7d8590">└─</text>
+<text x="47.8 56.4 65.0 73.6 82.2 90.8 99.4 108.0 116.6" y="128.0" fill="#22d3ee">run_swarm</text>
+<text x="142.4 151.0 159.6 168.2 176.8 185.4 194.0" y="128.0" fill="#7d8590">Compare</text>
+<text x="211.2 219.8 228.4 237.0" y="128.0" fill="#7d8590">four</text>
+<text x="254.2 262.8 271.4 280.0 288.6 297.2 305.8 314.4" y="128.0" fill="#7d8590">supplier</text>
+<text x="331.6 340.2 348.8 357.4 366.0 374.6" y="128.0" fill="#7d8590">quotes</text>
+<text x="391.8" y="128.0" fill="#7d8590">·</text>
+<text x="409.0" y="128.0" fill="#7d8590">4</text>
+<text x="426.2 434.8 443.4 452.0 460.6" y="128.0" fill="#7d8590">tasks</text>
+<text x="477.8" y="128.0" fill="#7d8590">·</text>
+<text x="495.0" y="128.0" fill="#7d8590">3</text>
+<text x="512.2 520.8" y="128.0" fill="#7d8590">at</text>
+<text x="538.0" y="128.0" fill="#7d8590">a</text>
+<text x="555.2 563.8 572.4 581.0" y="128.0" fill="#7d8590">time</text>
+<text x="47.8 56.4" y="148.0" fill="#7d8590">├─</text>
+<text x="73.6 82.2 90.8 99.4" y="148.0" fill="#38bdf8" font-weight="700">step</text>
+<text x="116.6 125.2 133.8" y="148.0" fill="#38bdf8" font-weight="700">1/5</text>
+<text x="159.6 168.2 176.8 185.4 194.0 202.6 211.2 219.8 228.4 237.0 245.6 254.2 262.8 271.4 280.0" y="148.0" fill="#d6d9df">general-purpose</text>
+<text x="520.8" y="148.0" fill="#7ee787">✓</text>
+<text x="538.0 546.6 555.2 563.8" y="148.0" fill="#7ee787">done</text>
+<text x="581.0" y="148.0" fill="#7ee787">·</text>
+<text x="598.2" y="148.0" fill="#7ee787">1</text>
+<text x="615.4 624.0 632.6" y="148.0" fill="#7ee787">try</text>
+<text x="649.8" y="148.0" fill="#7ee787">·</text>
+<text x="667.0" y="148.0" fill="#7ee787">9</text>
+<text x="684.2" y="148.0" fill="#7ee787">s</text>
+<text x="47.8" y="168.0" fill="#7d8590">│</text>
+<text x="73.6 82.2" y="168.0" fill="#7d8590">└─</text>
+<text x="99.4 108.0 116.6 125.2 133.8 142.4 151.0 159.6" y="168.0" fill="#7d8590">Oakline:</text>
+<text x="176.8 185.4 194.0" y="168.0" fill="#7d8590">420</text>
+<text x="211.2 219.8 228.4" y="168.0" fill="#7d8590">EUR</text>
+<text x="245.6 254.2 262.8" y="168.0" fill="#7d8590">per</text>
+<text x="280.0 288.6 297.2 305.8 314.4 323.0" y="168.0" fill="#7d8590">bench,</text>
+<text x="340.2 348.8 357.4 366.0 374.6 383.2 391.8 400.4" y="168.0" fill="#7d8590">delivery</text>
+<text x="417.6 426.2" y="168.0" fill="#7d8590">in</text>
+<text x="443.4" y="168.0" fill="#7d8590">3</text>
+<text x="460.6 469.2 477.8 486.4 495.0 503.6" y="168.0" fill="#7d8590">weeks.</text>
+<text x="47.8 56.4" y="188.0" fill="#7d8590">├─</text>
+<text x="73.6 82.2 90.8 99.4" y="188.0" fill="#38bdf8" font-weight="700">step</text>
+<text x="116.6 125.2 133.8" y="188.0" fill="#38bdf8" font-weight="700">2/5</text>
+<text x="159.6 168.2 176.8 185.4 194.0 202.6 211.2 219.8 228.4 237.0 245.6 254.2 262.8 271.4 280.0" y="188.0" fill="#d6d9df">general-purpose</text>
+<text x="520.8" y="188.0" fill="#7ee787">✓</text>
+<text x="538.0 546.6 555.2 563.8" y="188.0" fill="#7ee787">done</text>
+<text x="581.0" y="188.0" fill="#7ee787">·</text>
+<text x="598.2" y="188.0" fill="#7ee787">1</text>
+<text x="615.4 624.0 632.6" y="188.0" fill="#7ee787">try</text>
+<text x="649.8" y="188.0" fill="#7ee787">·</text>
+<text x="667.0" y="188.0" fill="#7ee787">8</text>
+<text x="684.2" y="188.0" fill="#7ee787">s</text>
+<text x="47.8" y="208.0" fill="#7d8590">│</text>
+<text x="73.6 82.2" y="208.0" fill="#7d8590">└─</text>
+<text x="99.4 108.0 116.6 125.2 133.8 142.4 151.0 159.6 168.2" y="208.0" fill="#7d8590">ParkForm:</text>
+<text x="185.4 194.0 202.6" y="208.0" fill="#7d8590">385</text>
+<text x="219.8 228.4 237.0" y="208.0" fill="#7d8590">EUR</text>
+<text x="254.2 262.8 271.4" y="208.0" fill="#7d8590">per</text>
+<text x="288.6 297.2 305.8 314.4 323.0 331.6" y="208.0" fill="#7d8590">bench,</text>
+<text x="348.8 357.4 366.0 374.6 383.2 391.8 400.4 409.0" y="208.0" fill="#7d8590">delivery</text>
+<text x="426.2 434.8" y="208.0" fill="#7d8590">in</text>
+<text x="452.0" y="208.0" fill="#7d8590">5</text>
+<text x="469.2 477.8 486.4 495.0 503.6 512.2" y="208.0" fill="#7d8590">weeks.</text>
+<text x="47.8 56.4" y="228.0" fill="#7d8590">├─</text>
+<text x="73.6 82.2 90.8 99.4" y="228.0" fill="#38bdf8" font-weight="700">step</text>
+<text x="116.6 125.2 133.8" y="228.0" fill="#38bdf8" font-weight="700">3/5</text>
+<text x="159.6 168.2 176.8 185.4 194.0 202.6 211.2 219.8 228.4 237.0 245.6 254.2 262.8 271.4 280.0" y="228.0" fill="#d6d9df">general-purpose</text>
+<text x="520.8" y="228.0" fill="#7ee787">✓</text>
+<text x="538.0 546.6 555.2 563.8" y="228.0" fill="#7ee787">done</text>
+<text x="581.0" y="228.0" fill="#7ee787">·</text>
+<text x="598.2" y="228.0" fill="#7ee787">1</text>
+<text x="615.4 624.0 632.6" y="228.0" fill="#7ee787">try</text>
+<text x="649.8" y="228.0" fill="#7ee787">·</text>
+<text x="667.0 675.6" y="228.0" fill="#7ee787">11</text>
+<text x="692.8" y="228.0" fill="#7ee787">s</text>
+<text x="47.8" y="248.0" fill="#7d8590">│</text>
+<text x="73.6 82.2" y="248.0" fill="#7d8590">└─</text>
+<text x="99.4 108.0 116.6 125.2 133.8 142.4 151.0 159.6" y="248.0" fill="#7d8590">Steelco:</text>
+<text x="176.8 185.4 194.0" y="248.0" fill="#7d8590">510</text>
+<text x="211.2 219.8 228.4" y="248.0" fill="#7d8590">EUR</text>
+<text x="245.6 254.2 262.8" y="248.0" fill="#7d8590">per</text>
+<text x="280.0 288.6 297.2 305.8 314.4 323.0" y="248.0" fill="#7d8590">bench,</text>
+<text x="340.2 348.8 357.4 366.0 374.6 383.2 391.8" y="248.0" fill="#7d8590">10-year</text>
+<text x="409.0 417.6 426.2 434.8 443.4 452.0 460.6 469.2 477.8" y="248.0" fill="#7d8590">warranty.</text>
+<text x="47.8 56.4" y="268.0" fill="#7d8590">├─</text>
+<text x="73.6 82.2 90.8 99.4" y="268.0" fill="#38bdf8" font-weight="700">step</text>
+<text x="116.6 125.2 133.8" y="268.0" fill="#38bdf8" font-weight="700">4/5</text>
+<text x="159.6 168.2 176.8 185.4 194.0 202.6 211.2 219.8 228.4 237.0" y="268.0" fill="#d6d9df">researcher</text>
+<text x="520.8" y="268.0" fill="#ff7b72">✗</text>
+<text x="538.0 546.6 555.2 563.8 572.4 581.0" y="268.0" fill="#ff7b72">failed</text>
+<text x="598.2" y="268.0" fill="#ff7b72">·</text>
+<text x="615.4" y="268.0" fill="#ff7b72">2</text>
+<text x="632.6 641.2 649.8 658.4 667.0" y="268.0" fill="#ff7b72">tries</text>
+<text x="47.8" y="288.0" fill="#7d8590">│</text>
+<text x="73.6 82.2" y="288.0" fill="#7d8590">└─</text>
+<text x="99.4 108.0 116.6" y="288.0" fill="#ff7b72">the</text>
+<text x="133.8 142.4 151.0" y="288.0" fill="#ff7b72">run</text>
+<text x="168.2 176.8 185.4 194.0 202.6 211.2 219.8" y="288.0" fill="#ff7b72">failed:</text>
+<text x="237.0 245.6 254.2 262.8 271.4 280.0 288.6 297.2 305.8 314.4 323.0 331.6" y="288.0" fill="#ff7b72">TimeoutError</text>
+<text x="348.8 357.4 366.0 374.6 383.2" y="288.0" fill="#ff7b72">(both</text>
+<text x="400.4 409.0 417.6 426.2 434.8 443.4 452.0 460.6 469.2" y="288.0" fill="#ff7b72">attempts)</text>
+<text x="47.8 56.4" y="308.0" fill="#7d8590">└─</text>
+<text x="73.6 82.2 90.8 99.4" y="308.0" fill="#38bdf8" font-weight="700">step</text>
+<text x="116.6 125.2 133.8" y="308.0" fill="#38bdf8" font-weight="700">5/5</text>
+<text x="159.6 168.2 176.8 185.4 194.0 202.6 211.2 219.8 228.4 237.0 245.6 254.2 262.8 271.4 280.0" y="308.0" fill="#d6d9df">general-purpose</text>
+<text x="297.2 305.8 314.4 323.0 331.6 340.2 348.8" y="308.0" fill="#d6d9df">(merge)</text>
+<text x="520.8" y="308.0" fill="#7ee787">✓</text>
+<text x="538.0 546.6 555.2 563.8" y="308.0" fill="#7ee787">done</text>
+<text x="581.0" y="308.0" fill="#7ee787">·</text>
+<text x="598.2" y="308.0" fill="#7ee787">1</text>
+<text x="615.4 624.0 632.6" y="308.0" fill="#7ee787">try</text>
+<text x="649.8" y="308.0" fill="#7ee787">·</text>
+<text x="667.0 675.6" y="308.0" fill="#7ee787">12</text>
+<text x="692.8" y="308.0" fill="#7ee787">s</text>
+<text x="73.6 82.2 90.8 99.4 108.0 116.6 125.2 133.8 142.4" y="328.0" fill="#22d3ee">run_swarm</text>
+<text x="168.2" y="328.0" fill="#7d8590">3</text>
+<text x="185.4 194.0 202.6 211.2 219.8" y="328.0" fill="#7d8590">done,</text>
+<text x="237.0" y="328.0" fill="#7d8590">1</text>
+<text x="254.2 262.8 271.4 280.0 288.6 297.2" y="328.0" fill="#7d8590">failed</text>
+<text x="520.8" y="328.0" fill="#7ee787">✓</text>
+<text x="538.0 546.6" y="328.0" fill="#7ee787">14</text>
+<text x="563.8 572.4 581.0 589.6 598.2" y="328.0" fill="#7ee787">calls</text>
+<text x="615.4" y="328.0" fill="#7ee787">·</text>
+<text x="632.6 641.2" y="328.0" fill="#7ee787">31</text>
+<text x="658.4" y="328.0" fill="#7ee787">s</text>
+<text x="73.6 82.2 90.8 99.4 108.0 116.6 125.2" y="348.0" fill="#7ee787">[swarm]</text>
+<text x="142.4 151.0 159.6 168.2 176.8 185.4 194.0" y="348.0" fill="#7ee787">report:</text>
+<text x="211.2 219.8 228.4 237.0 245.6 254.2 262.8 271.4 280.0 288.6 297.2 305.8 314.4 323.0 331.6 340.2 348.8 357.4 366.0 374.6 383.2 391.8 400.4 409.0 417.6 426.2 434.8 443.4 452.0 460.6 469.2 477.8 486.4 495.0 503.6 512.2 520.8 529.4 538.0 546.6 555.2 563.8 572.4 581.0 589.6 598.2 606.8 615.4 624.0 632.6 641.2 649.8 658.4 667.0 675.6" y="348.0" fill="#7ee787">demo_workspace/swarms/demo-user/1502-a1b2c3-compare….md</text>
+<text x="22.0 30.6" y="368.0" fill="#a78bfa">╭─</text>
+<text x="47.8 56.4 65.0 73.6" y="368.0" fill="#a78bfa">main</text>
+<text x="90.8 99.4 108.0 116.6 125.2 133.8 142.4 151.0 159.6 168.2 176.8 185.4 194.0 202.6 211.2 219.8 228.4 237.0 245.6 254.2 262.8 271.4 280.0 288.6 297.2 305.8 314.4 323.0 331.6 340.2 348.8 357.4 366.0 374.6 383.2 391.8 400.4 409.0 417.6 426.2 434.8 443.4 452.0 460.6 469.2 477.8 486.4 495.0 503.6 512.2 520.8 529.4 538.0 546.6 555.2 563.8 572.4 581.0 589.6 598.2 606.8 615.4 624.0 632.6 641.2 649.8 658.4 667.0 675.6 684.2 692.8 701.4 710.0 718.6 727.2 735.8 744.4 753.0 761.6 770.2 778.8 787.4 796.0 804.6" y="368.0" fill="#a78bfa">───────────────────────────────────────────────────────────────────────────────────╮</text>
+<text x="22.0" y="388.0" fill="#a78bfa">│</text>
+<text x="39.2 47.8 56.4 65.0" y="388.0" fill="#d6d9df" font-weight="700">Best</text>
+<text x="82.2 90.8 99.4 108.0 116.6" y="388.0" fill="#d6d9df" font-weight="700">deal:</text>
+<text x="133.8 142.4 151.0 159.6 168.2 176.8 185.4 194.0" y="388.0" fill="#d6d9df" font-weight="700">ParkForm</text>
+<text x="211.2 219.8" y="388.0" fill="#d6d9df">at</text>
+<text x="237.0 245.6 254.2" y="388.0" fill="#d6d9df">385</text>
+<text x="271.4 280.0 288.6" y="388.0" fill="#d6d9df">EUR</text>
+<text x="305.8 314.4 323.0" y="388.0" fill="#d6d9df">per</text>
+<text x="340.2 348.8 357.4 366.0 374.6 383.2" y="388.0" fill="#d6d9df">bench,</text>
+<text x="400.4 409.0" y="388.0" fill="#d6d9df">if</text>
+<text x="426.2" y="388.0" fill="#d6d9df">5</text>
+<text x="443.4 452.0 460.6 469.2 477.8 486.4" y="388.0" fill="#d6d9df">weeks'</text>
+<text x="503.6 512.2 520.8 529.4 538.0 546.6 555.2 563.8" y="388.0" fill="#d6d9df">delivery</text>
+<text x="581.0 589.6 598.2 606.8" y="388.0" fill="#d6d9df">fits</text>
+<text x="624.0 632.6 641.2" y="388.0" fill="#d6d9df">the</text>
+<text x="658.4 667.0 675.6 684.2 692.8" y="388.0" fill="#d6d9df">plan.</text>
+<text x="804.6" y="388.0" fill="#a78bfa">│</text>
+<text x="22.0" y="408.0" fill="#a78bfa">│</text>
+<text x="39.2 47.8 56.4 65.0 73.6 82.2 90.8" y="408.0" fill="#d6d9df">Oakline</text>
+<text x="108.0 116.6" y="408.0" fill="#d6d9df">is</text>
+<text x="133.8 142.4" y="408.0" fill="#d6d9df">35</text>
+<text x="159.6 168.2 176.8" y="408.0" fill="#d6d9df">EUR</text>
+<text x="194.0 202.6 211.2 219.8" y="408.0" fill="#d6d9df">more</text>
+<text x="237.0 245.6 254.2" y="408.0" fill="#d6d9df">but</text>
+<text x="271.4 280.0 288.6 297.2 305.8 314.4 323.0 331.6" y="408.0" fill="#d6d9df">delivers</text>
+<text x="348.8 357.4" y="408.0" fill="#d6d9df">in</text>
+<text x="374.6" y="408.0" fill="#d6d9df">3</text>
+<text x="391.8 400.4 409.0 417.6 426.2 434.8" y="408.0" fill="#d6d9df">weeks;</text>
+<text x="452.0 460.6 469.2 477.8 486.4 495.0 503.6" y="408.0" fill="#d6d9df">Steelco</text>
+<text x="520.8 529.4 538.0 546.6 555.2" y="408.0" fill="#d6d9df">costs</text>
+<text x="572.4 581.0 589.6 598.2" y="408.0" fill="#d6d9df">most</text>
+<text x="615.4 624.0 632.6" y="408.0" fill="#d6d9df">but</text>
+<text x="649.8 658.4 667.0" y="408.0" fill="#d6d9df">has</text>
+<text x="684.2 692.8 701.4" y="408.0" fill="#d6d9df">the</text>
+<text x="718.6 727.2 735.8 744.4 753.0 761.6 770.2" y="408.0" fill="#d6d9df">longest</text>
+<text x="804.6" y="408.0" fill="#a78bfa">│</text>
+<text x="22.0" y="428.0" fill="#a78bfa">│</text>
+<text x="39.2 47.8 56.4 65.0 73.6 82.2 90.8 99.4 108.0" y="428.0" fill="#d6d9df">warranty.</text>
+<text x="804.6" y="428.0" fill="#a78bfa">│</text>
+<text x="22.0" y="448.0" fill="#a78bfa">│</text>
+<text x="39.2 47.8 56.4" y="448.0" fill="#ff7b72" font-weight="700">Not</text>
+<text x="73.6 82.2 90.8 99.4 108.0 116.6 125.2 133.8" y="448.0" fill="#ff7b72" font-weight="700">checked:</text>
+<text x="151.0 159.6 168.2" y="448.0" fill="#d6d9df">the</text>
+<text x="185.4 194.0 202.6 211.2 219.8 228.4" y="448.0" fill="#d6d9df">fourth</text>
+<text x="245.6 254.2 262.8 271.4 280.0" y="448.0" fill="#d6d9df">sheet</text>
+<text x="297.2 305.8 314.4 323.0 331.6 340.2 348.8 357.4 366.0 374.6 383.2 391.8" y="448.0" fill="#d6d9df">(Brightline)</text>
+<text x="409.0" y="448.0" fill="#d6d9df">—</text>
+<text x="426.2 434.8 443.4" y="448.0" fill="#d6d9df">its</text>
+<text x="460.6 469.2 477.8 486.4 495.0 503.6" y="448.0" fill="#d6d9df">worker</text>
+<text x="520.8 529.4 538.0 546.6 555.2 563.8" y="448.0" fill="#d6d9df">failed</text>
+<text x="581.0 589.6 598.2 606.8 615.4 624.0" y="448.0" fill="#d6d9df">twice,</text>
+<text x="641.2 649.8" y="448.0" fill="#d6d9df">so</text>
+<text x="667.0 675.6" y="448.0" fill="#d6d9df">it</text>
+<text x="692.8 701.4 710.0 718.6 727.2" y="448.0" fill="#d6d9df">isn't</text>
+<text x="804.6" y="448.0" fill="#a78bfa">│</text>
+<text x="22.0" y="468.0" fill="#a78bfa">│</text>
+<text x="39.2 47.8 56.4 65.0 73.6 82.2 90.8 99.4 108.0" y="468.0" fill="#d6d9df">compared.</text>
+<text x="125.2 133.8 142.4" y="468.0" fill="#d6d9df">Ask</text>
+<text x="159.6 168.2 176.8 185.4 194.0" y="468.0" fill="#d6d9df">again</text>
+<text x="211.2 219.8" y="468.0" fill="#d6d9df">to</text>
+<text x="237.0 245.6 254.2 262.8 271.4" y="468.0" fill="#d6d9df">retry</text>
+<text x="288.6 297.2 305.8" y="468.0" fill="#d6d9df">it.</text>
+<text x="804.6" y="468.0" fill="#a78bfa">│</text>
+<text x="22.0 30.6 39.2 47.8 56.4 65.0 73.6 82.2 90.8 99.4 108.0 116.6 125.2 133.8 142.4 151.0 159.6 168.2 176.8 185.4 194.0 202.6 211.2 219.8 228.4 237.0 245.6 254.2 262.8 271.4 280.0 288.6 297.2 305.8 314.4 323.0 331.6 340.2 348.8 357.4 366.0 374.6 383.2 391.8 400.4 409.0 417.6 426.2 434.8 443.4 452.0 460.6 469.2 477.8" y="488.0" fill="#a78bfa">╰─────────────────────────────────────────────────────</text>
+<text x="495.0 503.6 512.2 520.8 529.4" y="488.0" fill="#7d8590">15:03</text>
+<text x="546.6" y="488.0" fill="#7d8590">·</text>
+<text x="563.8 572.4 581.0 589.6 598.2" y="488.0" fill="#7d8590">41.2k</text>
+<text x="615.4 624.0" y="488.0" fill="#7d8590">in</text>
+<text x="641.2" y="488.0" fill="#7d8590">/</text>
+<text x="658.4 667.0 675.6 684.2" y="488.0" fill="#7d8590">1.3k</text>
+<text x="701.4 710.0 718.6" y="488.0" fill="#7d8590">out</text>
+<text x="735.8" y="488.0" fill="#7d8590">·</text>
+<text x="753.0 761.6" y="488.0" fill="#7d8590">34</text>
+<text x="778.8" y="488.0" fill="#7d8590">s</text>
+<text x="796.0 804.6" y="488.0" fill="#a78bfa">─╯</text>
+<text x="47.8 56.4 65.0 73.6 82.2 90.8" y="528.0" fill="#7d8590" font-style="italic">Ctrl+C</text>
+<text x="108.0 116.6 125.2 133.8 142.4" y="528.0" fill="#7d8590" font-style="italic">while</text>
+<text x="159.6 168.2" y="528.0" fill="#7d8590" font-style="italic">it</text>
+<text x="185.4 194.0 202.6 211.2 219.8" y="528.0" fill="#7d8590" font-style="italic">runs:</text>
+<text x="245.6 254.2 262.8 271.4 280.0 288.6 297.2" y="528.0" fill="#fbbf24">[swarm]</text>
+<text x="314.4 323.0 331.6 340.2" y="528.0" fill="#fbbf24">[g]o</text>
+<text x="357.4 366.0 374.6" y="528.0" fill="#fbbf24">on,</text>
+<text x="391.8 400.4 409.0 417.6 426.2 434.8 443.4" y="528.0" fill="#fbbf24">[m]erge</text>
+<text x="460.6 469.2 477.8" y="528.0" fill="#fbbf24">now</text>
+<text x="495.0 503.6" y="528.0" fill="#fbbf24">or</text>
+<text x="520.8 529.4 538.0 546.6 555.2 563.8" y="528.0" fill="#fbbf24">[s]top</text>
+<text x="581.0" y="528.0" fill="#fbbf24">&gt;</text>
+</g></svg>
