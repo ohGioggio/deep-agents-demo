@@ -1,14 +1,16 @@
-"""Live eval: the main agent alone (single) against a room of agents (room) on the same tasks.
+"""Live eval: the main agent alone (single) against a room of agents (room) and a swarm of
+read-only workers (swarm) on the same tasks.
 
     uv run python evals/orchestration.py                       # every mode, 1 run
-    uv run python evals/orchestration.py --modes single room --runs 3
+    uv run python evals/orchestration.py --modes single room swarm --runs 3
     uv run python evals/orchestration.py --families review --tasks review-config
     uv run python evals/orchestration.py --help                # usage only, no model call
     uv run python evals/orchestration.py --rescore FILE.json   # re-score a saved run, no model call
 
 Uses the real chat model from .env, so it makes paid API calls: one run of single is
 13 agent turns (a few calls each); one run of room is 13 rooms of up to 12 participant
-turns plus moderator calls, a few hundred model calls. Every task gets a fresh
+turns plus moderator calls, a few hundred model calls; one run of swarm is 13 lead turns
+plus the workers and one merge per task. Every task gets a fresh
 temporary workspace: your real files and chats are untouched. Each run prints a line
 per task and a table (calls, tokens, time, score). Results are also saved as JSON in
 data/evals/.
@@ -37,8 +39,11 @@ from deep_agents_demo.config import Settings  # noqa: E402
 from deep_agents_demo.core.approvals import Approvals  # noqa: E402
 from deep_agents_demo.core.assembly import build_agent, worker_factory  # noqa: E402
 from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS  # noqa: E402
+from deep_agents_demo.core.turns import run_turn  # noqa: E402
+from deep_agents_demo.core.feature import Feature  # noqa: E402
 from deep_agents_demo.features.orchestration.rooms import RoomRunner  # noqa: E402
 from deep_agents_demo.features.orchestration.runner import RECURSION_LIMIT  # noqa: E402
+from deep_agents_demo.features.orchestration.swarms import SWARM_PROMPT, SwarmRunner, run_swarm  # noqa: E402
 from deep_agents_demo.models.agents import READ_ONLY, AgentDefinition  # noqa: E402
 from deep_agents_demo.providers.chat import chat_model  # noqa: E402
 from deep_agents_demo.startup.workspace import seed_files  # noqa: E402
@@ -107,7 +112,8 @@ def run_room(model, backend, task, settings, tmp: Path, label: str, keep: Path |
                       describe=lambda name: DESCRIPTIONS.get(name, ""),
                       # the room settings the app passes (ui/cli/repl.py runners_for)
                       recent_turns=settings.room_recent_turns,
-                      opening_round=settings.room_opening_round, format=settings.room_format)
+                      opening_round=settings.room_opening_round, format=settings.room_format,
+                      max_parallel=settings.swarm_max_parallel)
     room.quiet = True
     outcome = room.run({"type": "start_room", "question": full_prompt(task),
                         "participants": ["analyst", "skeptic"]})
@@ -124,7 +130,47 @@ def run_room(model, backend, task, settings, tmp: Path, label: str, keep: Path |
     return outcome["summary"], info
 
 
-MODES = {"single": run_single, "room": run_room}
+SWARM_INSTRUCTION = "\n\nSplit this into independent tasks with run_swarm (read-only workers), then answer."
+
+
+def run_swarm_mode(model, backend, task, settings, tmp: Path, label: str, keep: Path | None):
+    """The main agent asked to split the task with run_swarm (read-only workers, then a merge);
+    its last answer is scored, the swarm's outcome goes into the row."""
+    # The lead is the single mode's agent plus run_swarm only (no run_plan or start_room).
+    swarm_only = Feature(name="swarm", prompt=SWARM_PROMPT, tools=(run_swarm,))
+    lead = build_agent(model, InMemorySaver(), backend, [swarm_only],
+                       max_calls=settings.subagent_max_calls, max_parallel=settings.subagent_max_parallel)
+    make = worker_factory(model, InMemorySaver(), backend, [], agents=PARTICIPANTS,
+                          builtins=tuple(BUILTIN_AGENTS.values()), max_calls=settings.subagent_max_calls)
+    reports = (keep if keep is not None else tmp) / "swarms"
+    swarm = SwarmRunner(make, Approvals(interactive=False), None, NullSink(), thread=label,
+                        budget=settings.orchestration_max_calls, interactive=False,
+                        max_tasks=settings.swarm_max_tasks, max_parallel=settings.swarm_max_parallel,
+                        reports=reports)
+    swarm.quiet = True
+    outcomes = []
+
+    def answer(request):  # the lead's run_swarm; every outcome is kept for the row
+        outcomes.append(swarm.run(request))
+        return outcomes[-1]
+
+    config = {"configurable": {"thread_id": label}, "recursion_limit": RECURSION_LIMIT}
+    run_turn(lead, full_prompt(task) + SWARM_INSTRUCTION, config, NullSink(),
+             Approvals(interactive=False).decide, {"run_swarm": answer}, quiet=True)
+    if outcomes and outcomes[-1].get("ended_by") == "stopped":  # Ctrl+C: the eval stops too
+        raise KeyboardInterrupt
+    answer_text = _last_ai_text(lead.get_state(config).values.get("messages", []))
+    if not outcomes:  # the lead answered without a swarm
+        return answer_text, {}
+    last = outcomes[-1]
+    info = {"tasks": [{"status": item["status"]} for item in last.get("tasks", [])],
+            "ended_by": last.get("ended_by", ""), "merged": bool(last.get("merged"))}
+    if last.get("error"):
+        info["error"] = last["error"]
+    return answer_text, {"swarm": info}
+
+
+MODES = {"single": run_single, "room": run_room, "swarm": run_swarm_mode}
 
 
 def run_task(mode: str, model, counter: UsageCounter, backend, task, settings, tmp: Path,

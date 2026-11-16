@@ -93,6 +93,8 @@ class Settings:
     plan_max_attempts: int = 2        # reviews a plan step may fail before the user is asked
     orchestration_max_calls: int = 150  # model calls one plan (or room) may use before asking
     subagent_max_parallel: int = 3    # subagents running at the same time
+    swarm_max_tasks: int = 8          # tasks one swarm may run (at least 2)
+    swarm_max_parallel: int = 3       # swarm workers running at the same time
     room_max_turns: int = 12          # participant turns in a moderated room
     room_recent_turns: int = 3        # turns a room's participants see verbatim (the rest is minutes)
     room_opening_round: bool = True   # each participant answers alone before the moderator's first call
@@ -143,6 +145,12 @@ class Settings:
             return value
 
         max_calls = at_least_one("SUBAGENT_MAX_CALLS", 25)
+        swarm_max_tasks = number("SWARM_MAX_TASKS", 8)
+        if swarm_max_tasks < 2:
+            raise ValueError("SWARM_MAX_TASKS must be at least 2")
+        # blank: the same as SUBAGENT_MAX_PARALLEL
+        swarm_max_parallel = (at_least_one("SWARM_MAX_PARALLEL", 3) if get("SWARM_MAX_PARALLEL")
+                              else at_least_one("SUBAGENT_MAX_PARALLEL", 3))
         try:
             agent_dirs = tuple(Path(part.strip()).expanduser()
                                for part in get("AGENT_DIRS", "").split(os.pathsep) if part.strip())
@@ -184,6 +192,8 @@ class Settings:
             plan_max_attempts=at_least_one("PLAN_MAX_ATTEMPTS", 2),
             orchestration_max_calls=at_least_one("ORCHESTRATION_MAX_CALLS", 150),
             subagent_max_parallel=at_least_one("SUBAGENT_MAX_PARALLEL", 3),
+            swarm_max_tasks=swarm_max_tasks,
+            swarm_max_parallel=swarm_max_parallel,
             room_max_turns=at_least_one("ROOM_MAX_TURNS", 12),
             room_recent_turns=at_least_one("ROOM_RECENT_TURNS", 3),
             room_opening_round=flag("ROOM_OPENING_ROUND"),

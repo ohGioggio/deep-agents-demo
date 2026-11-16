@@ -152,6 +152,13 @@ class WorkerTests(Workspace):
         self.assertNotIn("write_file", self.bound()[0])
         self.assertIsNotNone(make("general-purpose"))
 
+    def test_workers_cannot_run_swarms(self):
+        from deep_agents_demo.features.orchestration.swarms import run_swarm
+        make = self.make(call("run_swarm", {"goal": "g", "tasks": [{"task": "a"}]}, "s"),
+                         features=[Feature("orchestration", tools=(run_swarm,))], agents=[agent_from(ALL_AGENT)])
+        self.run_worker(make("helper"))
+        self.assertNotIn("run_swarm", self.bound()[0])
+
     def test_workers_cannot_start_plans(self):
         make = self.make(call("run_plan", {"goal": "g", "steps": [{"task": "a"}]}, "p"),
                          features=[Feature("orchestration", tools=(run_plan,))], agents=[agent_from(ALL_AGENT)])
@@ -204,6 +211,54 @@ class RunPlanToolTests(Workspace):
                                     say=lambda *_: None))
         self.assertTrue(asked)
         self.assertTrue((self.root / "notes.md").exists())
+
+
+class RunSwarmToolTests(Workspace):
+    def turn(self, *responses, runners=None):
+        from deep_agents_demo.features.orchestration.feature import orchestration_feature
+        model = Model(responses=[*responses, AIMessage(content="done")])
+        agent = build_agent(model, InMemorySaver(), self.backend(), [orchestration_feature()])
+        with patch("builtins.print"):
+            stream_turn(agent, "go", {"configurable": {"thread_id": "t"}},
+                        approver=Approver(interactive=False), runners=runners)
+        last = [m for kind, m in SEEN if kind == "messages"][-1]
+        return [str(m.content) for m in last if m.type == "tool"]
+
+    def test_run_swarm_pauses_and_returns_the_runner_answer(self):
+        asked = []
+
+        def runner(request):
+            asked.append(request)
+            return {"ended_by": "done", "merged": "the answer"}
+        results = self.turn(call("run_swarm", {"goal": "g", "tasks": [{"task": "a"}, {"task": "b"}]}, "s"),
+                            runners={"run_swarm": runner})
+        self.assertEqual(asked, [{"type": "run_swarm", "goal": "g",
+                                  "tasks": [{"task": "a", "agent": "general-purpose"},
+                                            {"task": "b", "agent": "general-purpose"}],
+                                  "merge_with": "general-purpose"}])
+        self.assertEqual(results, [json.dumps({"ended_by": "done", "merged": "the answer"})])
+
+    def test_invalid_tasks_are_refused_without_pausing(self):
+        for tasks in ([{"agent": "x"}], [{"task": "  "}], []):
+            with self.subTest(tasks=tasks):
+                asked = []
+                results = self.turn(call("run_swarm", {"goal": "g", "tasks": tasks}, "s"),
+                                    runners={"run_swarm": asked.append})
+                self.assertEqual(asked, [])
+                self.assertIn("task", json.loads(results[0])["error"])
+
+    def test_a_string_for_tasks_is_refused_by_the_schema_without_pausing(self):
+        asked = []
+        results = self.turn(call("run_swarm", {"goal": "g", "tasks": "a"}, "s"),
+                            runners={"run_swarm": asked.append})
+        self.assertEqual(asked, [])
+        self.assertEqual(results[0], "Error invoking tool 'run_swarm' with kwargs {'goal': 'g', 'tasks': 'a'} "
+                                     "with error:\n tasks: Input should be a valid list\n"
+                                     " Please fix the error and try again.")
+
+    def test_without_a_runner_the_swarm_is_refused(self):
+        results = self.turn(call("run_swarm", {"goal": "g", "tasks": [{"task": "a"}, {"task": "b"}]}, "s"))
+        self.assertIn("can't run here", results[0])
 
 
 def reply(text):

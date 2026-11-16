@@ -29,6 +29,11 @@ class Budget:
         with self.lock:
             self.limit += self.size
 
+    def drain(self) -> None:
+        """Use up what is left: every run that makes a model call from now on is cut short."""
+        with self.lock:
+            self.limit = self.used
+
 
 BUDGET_STOP = "[Stopped: the plan's request budget is used up.]"
 

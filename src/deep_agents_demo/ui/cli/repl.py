@@ -63,17 +63,23 @@ class _NewestWorkers:
     def names(self):
         return getattr(self._current(), "names", None)
 
+    @property
+    def read_only(self):
+        return getattr(self._current(), "read_only", frozenset())
+
     def __call__(self, name, extra=()):
         return self._current()(name, extra)
 
 
 def runners_for(runtime, settings, thread: str, approver, interactive: bool, quiet: bool = False,
                 interaction=None, sink=None, notify=None) -> dict:
-    """What answers non-approval pauses in a turn: the plan runner (run_plan) and the
-    room runner (start_room), both on this thread so approvals and Ctrl+C work."""
+    """What answers non-approval pauses in a turn: the plan runner (run_plan), the room runner
+    (start_room) and the swarm runner (run_swarm), all on this thread so approvals and Ctrl+C work."""
 
     from deep_agents_demo.features.orchestration.plans import PlanRunner
     from deep_agents_demo.features.orchestration.rooms import RoomRunner
+    from deep_agents_demo.features.orchestration.swarms import SwarmRunner
+    from deep_agents_demo.models.agents import READ_ONLY
     if runtime.make_worker is None:
         return {}
     interaction, sink = interaction or CliInteraction(), sink or CliRenderer()
@@ -91,8 +97,16 @@ def runners_for(runtime, settings, thread: str, approver, interactive: bool, qui
                        max_turns=settings.room_max_turns, budget=settings.orchestration_max_calls,
                        interactive=interactive, transcripts=settings.paths.workspace / "rooms" / folder,
                        describe=describe, recent_turns=settings.room_recent_turns,
-                       opening_round=settings.room_opening_round, format=settings.room_format)
+                       opening_round=settings.room_opening_round, format=settings.room_format,
+                       max_parallel=settings.swarm_max_parallel)
     rooms.quiet = quiet
+    # A swarm's workers may read what the read-only tools and the enabled lookups read.
+    swarms = SwarmRunner(workers, approver, interaction, sink, thread=thread,
+                         budget=settings.orchestration_max_calls, interactive=interactive,
+                         max_tasks=settings.swarm_max_tasks, max_parallel=settings.swarm_max_parallel,
+                         reports=settings.paths.workspace / "swarms" / folder,
+                         allowed_tools=frozenset(READ_ONLY) | getattr(runtime, "lookup_tools", frozenset()))
+    swarms.quiet = quiet
 
     def with_ctrl_c(runner):
         """Ctrl+C pauses the runner (twice: stops it) while it runs."""
@@ -100,7 +114,8 @@ def runners_for(runtime, settings, thread: str, approver, interactive: bool, qui
             with ctrl_c_controls(runner, interactive, runner.label, notify=notify):
                 return runner.run(request)
         return run
-    return {"run_plan": with_ctrl_c(plans), "start_room": with_ctrl_c(rooms)}
+    return {"run_plan": with_ctrl_c(plans), "start_room": with_ctrl_c(rooms),
+            "run_swarm": with_ctrl_c(swarms)}
 
 
 def command(*names, usage, summary):

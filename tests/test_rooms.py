@@ -1,9 +1,11 @@
 """Rooms: a moderated discussion between agents, with the user able to step in."""
 import json
+import threading
 import unittest
 from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 from recording_ui import Approver, RecordingUI
 from test_agents import ALL_AGENT, SEEN, Model, agent_from, call
@@ -11,6 +13,7 @@ from test_orchestration import Boom, Workspace, reply
 
 from deep_agents_demo.core.assembly import worker_factory
 from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
+from deep_agents_demo.models.events import StepFinished, StepStarted
 from deep_agents_demo.ui.cli.repl import stream_turn
 
 BUILTINS = tuple(BUILTIN_AGENTS.values())  # what the composition root passes
@@ -40,6 +43,34 @@ class CleanupTests(Workspace):
             Chats(saver, compiled, "alice").delete("c1")
             left = saver.conn.execute("SELECT DISTINCT thread_id FROM checkpoints").fetchall()
         self.assertEqual(left, [])
+
+    def test_deleting_a_chat_removes_its_swarm_threads(self):
+        from deep_agents_demo.persistence.chats import Chats, thread_id
+        graph, saver_cm = chat_threads(self.root, ":swarm:")
+        with saver_cm as saver:
+            compiled = graph.compile(checkpointer=saver)
+            chat = thread_id("alice", "c1")
+            for tid in (chat, f"{chat}:swarm:abc:1", f"{chat}:swarm:abc:merge"):
+                compiled.invoke({"messages": [{"role": "user", "content": "x"}]},
+                                {"configurable": {"thread_id": tid}})
+            Chats(saver, compiled, "alice").delete("c1")
+            left = saver.conn.execute("SELECT DISTINCT thread_id FROM checkpoints").fetchall()
+        self.assertEqual(left, [])
+
+    def test_renaming_a_chat_moves_its_swarm_threads(self):
+        from deep_agents_demo.persistence.chats import Chats, thread_id
+        graph, saver_cm = chat_threads(self.root, ":swarm:")
+        with saver_cm as saver:
+            compiled = graph.compile(checkpointer=saver)
+            chat = thread_id("alice", "c1")
+            for tid in (chat, f"{chat}:swarm:abc:1"):
+                compiled.invoke({"messages": [{"role": "user", "content": "x"}]},
+                                {"configurable": {"thread_id": tid}})
+            Chats(saver, compiled, "alice").rename("c1", "c2")
+            left = sorted(row[0] for row in
+                          saver.conn.execute("SELECT DISTINCT thread_id FROM checkpoints").fetchall())
+        target = thread_id("alice", "c2")
+        self.assertEqual(left, sorted([target, f"{target}:swarm:abc:1"]))
 
 
 class StartRoomToolTests(Workspace):
@@ -105,19 +136,21 @@ CRITIC = "---\nname: critic\ndescription: Finds weaknesses.\ntools: Read, Grep, 
 class RoomBase(Workspace):
     def runner(self, *responses, answers=(), approvals=(), interactive=True, max_turns=12,
                features=(), transcripts=None, recent_turns=3, opening_round=False, room_format="moderated",
-               extra_agents=()):
+               extra_agents=(), model=None, max_parallel=1):
         from deep_agents_demo.features.orchestration.rooms import RoomRunner
-        model = Model(responses=[*responses, reply("UNEXPECTED EXTRA CALL")])
+        if model is None:
+            model = Model(responses=[*responses, reply("UNEXPECTED EXTRA CALL")])
         make = worker_factory(model, InMemorySaver(), self.backend(), features, builtins=BUILTINS,
                               agents=[agent_from(CRITIC), agent_from(ALL_AGENT),
                                       *(agent_from(text) for text in extra_agents)])
         approve = iter(approvals)
         ui = RecordingUI(answers)
-        self.said = ui.lines
+        self.said, self.asked = ui.lines, ui.asked
         return RoomRunner(make, Approver(ask=lambda _: next(approve), say=lambda *_: None), ui, ui,
                           thread="t", max_turns=max_turns, interactive=interactive, transcripts=transcripts,
                           recent_turns=recent_turns, opening_round=opening_round, format=room_format,
-                          describe=lambda name: {"critic": "Finds weaknesses.", "helper": "Helps."}.get(name, ""))
+                          describe=lambda name: {"critic": "Finds weaknesses.", "helper": "Helps."}.get(name, ""),
+                          max_parallel=max_parallel)
 
     def room(self, runner, question="Ship it?", participants=("critic", "helper")):
         return runner.run({"type": "start_room", "question": question,
@@ -723,6 +756,311 @@ class FixedHistoryTests(RoomBase):
         self.room(runner, participants=("critic", "helper", "general-purpose", "reviewer", "tester"))
         for index in (1, 2, 3, 4):  # the four attackers, each on its first run
             self.assertIn("**critic:** Proposal.", self.inputs()[index], index)
+
+
+SCOUT = ("---\nname: scout\ndescription: Scouts.\ntools: Read, Grep, Glob\nmodel: sonnet\n"
+         "color: red\nmemory: project\n---\nYou are a scout.\n")
+WRITER = "---\nname: writer\ndescription: Writes.\n---\nYou are a writer.\n"  # all tools: not read-only
+
+
+class Overlap:
+    """Participant runs in flight at once, and the order they start and end in, on a clock of the test's
+    own (no run waits for the time). In ``ends_after`` (later: earlier), the later persona's run ends only
+    once the earlier one's has ended, and the earlier one's run does not end until the later one's has
+    started, so the two are in flight together. ``peak`` is the most runs in flight at once."""
+
+    def __init__(self, personas, ends_after=None):
+        self.personas, self.ends_after = personas, ends_after or {}
+        self.lock, self.running, self.peak, self.spans, self.clock = threading.Lock(), 0, 0, {}, 0
+        self.started = {persona: threading.Event() for persona in personas}
+        self.ended = {persona: threading.Event() for persona in personas}
+        self.on_first_run = None  # called once, during the first participant run (e.g. to press Ctrl+C)
+
+    def tick(self) -> int:
+        """The next step of the clock (called with ``lock`` held)."""
+        self.clock += 1
+        return self.clock
+
+    def await_(self, event: threading.Event, persona: str) -> None:
+        if not event.wait(10):  # a failed run, which the test shows as a missing or wrong order
+            raise RuntimeError(f"{persona} did not get its turn in the wave")
+
+
+def overlapping(overlap):
+    """A model whose participants' runs overlap as ``Overlap`` says. The moderator and the summary answer
+    at once."""
+
+    class OverlapModel(Model):
+        def _generate(self, messages, *args, **kwargs):
+            SEEN.append(("messages", list(messages)))
+            system = str(messages[0].content) if messages else ""
+            persona = next((name for name in overlap.personas if f"You are a {name}." in system), None)
+            if persona is None:
+                return ChatResult(generations=[ChatGeneration(message=reply("Summary."))])
+            with overlap.lock:
+                overlap.running += 1
+                overlap.peak = max(overlap.peak, overlap.running)
+                start = overlap.tick()
+                first, overlap.on_first_run = overlap.on_first_run, None
+            overlap.started[persona].set()
+            try:
+                if first is not None:
+                    first()
+                if persona in overlap.ends_after:
+                    overlap.await_(overlap.ended[overlap.ends_after[persona]], overlap.ends_after[persona])
+                for later, earlier in overlap.ends_after.items():
+                    if earlier == persona:
+                        overlap.await_(overlap.started[later], later)
+                return ChatResult(generations=[ChatGeneration(message=reply(f"{persona} opening."))])
+            finally:
+                with overlap.lock:
+                    overlap.running -= 1
+                    overlap.spans[persona] = (start, overlap.tick())
+                overlap.ended[persona].set()
+    return OverlapModel(responses=[reply("UNEXPECTED EXTRA CALL")])
+
+
+class Tap:
+    """A sink that keeps every event, then passes it on."""
+
+    def __init__(self, inner):
+        self.inner, self.events = inner, []
+
+    def emit(self, event) -> None:
+        self.events.append(event)
+        self.inner.emit(event)
+
+
+WATCHER = ("---\nname: watcher\ndescription: Watches.\ntools: Read, Grep, Glob\nmodel: sonnet\n"
+           "color: red\nmemory: project\n---\nYou are a watcher.\n")
+
+
+class ParallelOpeningTests(RoomBase):
+    def opening_runner(self, personas, *, ends_after=None, max_parallel=2, budget=None, answers=(), interactive=True):
+        overlap = Overlap(personas, ends_after)
+        runner = self.runner(model=overlapping(overlap), opening_round=True, max_turns=len(personas),
+                             extra_agents=[SCOUT, WRITER, WATCHER], max_parallel=max_parallel,
+                             answers=answers, interactive=interactive)
+        if budget is not None:
+            runner.budget_size = budget
+        return runner, overlap
+
+    def test_read_only_openings_run_side_by_side(self):
+        runner, overlap = self.opening_runner(("critic", "scout"), ends_after={"critic": "scout"})
+        self.room(runner, participants=("critic", "scout"))
+        self.assertEqual(overlap.peak, 2)
+        self.assertLess(overlap.spans["scout"][1], overlap.spans["critic"][1])  # scout finished first...
+        text = runner.transcript_text()
+        self.assertLess(text.index("**critic (opening):**"), text.index("**scout (opening):**"))  # ...recorded second
+
+    def test_one_at_a_time_when_max_parallel_is_one(self):
+        runner, overlap = self.opening_runner(("critic", "scout"), max_parallel=1)
+        self.room(runner, participants=("critic", "scout"))
+        self.assertEqual(overlap.peak, 1)
+
+    def test_openings_are_recorded_in_participant_order_with_a_writer(self):
+        # The writer (not read-only) opens after the parallel pair, but is recorded in its place in the list.
+        runner, overlap = self.opening_runner(("writer", "critic", "scout"), ends_after={"critic": "scout"})
+        self.room(runner, participants=("writer", "critic", "scout"))
+        self.assertEqual(overlap.peak, 2)
+        self.assertGreater(overlap.spans["writer"][0], max(overlap.spans["critic"][1], overlap.spans["scout"][1]))
+        text = runner.transcript_text()
+        self.assertLess(text.index("**writer (opening):**"), text.index("**critic (opening):**"))
+        self.assertLess(text.index("**critic (opening):**"), text.index("**scout (opening):**"))
+
+    def test_parallel_openings_are_shown_whole_once_in_participant_order(self):
+        from deep_agents_demo.models.events import NoticeEvent, TextMessageContent
+        runner, _ = self.opening_runner(("critic", "scout"), ends_after={"critic": "scout"})
+        tap = runner.sink = Tap(runner.sink)
+        self.room(runner, participants=("critic", "scout"))
+        streamed = [e.delta for e in tap.events if isinstance(e, TextMessageContent)]
+        self.assertFalse([delta for delta in streamed if "opening." in delta])  # nothing streams from the wave
+        shown = [e.text for e in tap.events if isinstance(e, NoticeEvent) and "(opening)" in e.text]
+        self.assertEqual(shown, ["critic (opening):\ncritic opening.", "scout (opening):\nscout opening."])
+
+    def test_a_mixed_wave_with_a_pause_records_each_opening_once(self):
+        # The writer (not read-only) is listed first and opens after the parallel pair; the pause
+        # comes during the wave, so the user's turn falls between the wave and the writer.
+        runner, overlap = self.opening_runner(("writer", "critic", "scout"), ends_after={"critic": "scout"},
+                                              answers=["Hello"])
+        overlap.on_first_run = runner.request_pause
+        self.room(runner, participants=("writer", "critic", "scout"))
+        text = runner.transcript_text()
+        self.assertEqual(text.count("(opening):"), 3, text)
+        self.assertLess(text.index("**critic (opening):**"), text.index("**scout (opening):**"))
+        self.assertLess(text.index("**scout (opening):**"), text.index("**You:** Hello"))
+        self.assertLess(text.index("**You:** Hello"), text.index("**writer (opening):**"))
+
+    def test_a_second_ctrl_c_in_the_wave_shows_nothing_more_from_the_openings(self):
+        from types import SimpleNamespace
+        from deep_agents_demo.models.events import NoticeEvent, TextMessageContent
+        runner, _ = self.opening_runner(("critic", "scout"))
+        tap = runner.sink = Tap(runner.sink)
+        started, gate, emitted = threading.Event(), threading.Event(), threading.Event()
+        self.addCleanup(gate.set)  # the critic's run is let go, and finished, whatever the test does
+
+        class Late:
+            """The critic's graph: it waits for ``gate``, then emits a notice to the sink it was built with,
+            as a run still going after the stop would."""
+
+            def __init__(self, sink):
+                self.sink = sink
+
+            def stream(self, *args, **kwargs):
+                started.set()
+                gate.wait(10)
+                self.sink.emit(NoticeEvent("late notice"))
+                emitted.set()
+                return iter(())
+
+            def get_state(self, config):
+                return SimpleNamespace(values={})
+
+        real_make = runner.make
+
+        def make(name, extra=()):
+            if name == "critic" and extra:  # the critic's opening, in the wave
+                return Late(runner.sink)  # the sink the openings share, as its run would see it
+            return real_make(name, extra)
+        make.names, make.read_only = real_make.names, real_make.read_only
+        runner.make = make
+
+        def wait_until_running_then_interrupt(futures):  # the second Ctrl+C, while the critic's run is going
+            self.assertTrue(started.wait(5))
+            raise KeyboardInterrupt
+        runner._wait = wait_until_running_then_interrupt
+        outcome = self.room(runner, participants=("critic", "scout"))
+        self.assertEqual(outcome["ended_by"], "stopped")
+        gate.set()  # the critic's run goes on after the stop: its notice must not reach the real sink
+        self.assertTrue(emitted.wait(5))
+        leaked = [e for e in tap.events
+                  if (isinstance(e, TextMessageContent) and "opening." in e.delta)
+                  or (isinstance(e, NoticeEvent) and ("(opening)" in e.text or e.text == "late notice"))]
+        self.assertEqual(leaked, [])
+
+    def test_a_read_only_opening_is_refused_an_approval_without_asking(self):
+        from deep_agents_demo.core.feature import Feature
+        from deep_agents_demo.features.orchestration.swarms import WORKER_NO_APPROVAL
+        feature = Feature("reading", approvals=("read_file",))
+        runner = self.runner(call("read_file", {"file_path": "/notes.md"}, "r1"), reply("Critic opening."),
+                             reply("Summary."), opening_round=True, max_turns=1, features=(feature,),
+                             max_parallel=2)
+        self.room(runner, participants=("critic", "helper"))  # one turn: only the read-only critic opens
+        self.assertEqual(self.asked, [])  # nobody was asked
+        refusals = [m for kind, msgs in SEEN if kind == "messages" for m in msgs
+                    if m.type == "tool" and WORKER_NO_APPROVAL in str(m.content)]
+        self.assertEqual(len(refusals), 1)  # the paused call was refused, and the opening went on
+        self.assertIn("**critic (opening):** Critic opening.", runner.transcript_text())
+
+    def test_a_parallel_opening_shows_the_tools_it_used_before_its_text(self):
+        from deep_agents_demo.models.events import NoticeEvent
+        runner = self.runner(call("ls", {"path": "/"}, "l1"), call("read_file", {"file_path": "/a.md"}, "r1"),
+                             call("read_file", {"file_path": "/b.md"}, "r2"), reply("Critic opening."),
+                             reply("Summary."), opening_round=True, max_turns=1, max_parallel=2)
+        tap = runner.sink = Tap(runner.sink)
+        self.room(runner, participants=("critic", "helper"))  # one turn: only the read-only critic opens
+        shown = [e.text for e in tap.events if isinstance(e, NoticeEvent) and "(opening" in e.text]
+        self.assertEqual(shown, ["critic (opening):\ntools: ls, read_file ×2\nCritic opening."])
+
+    def test_a_refused_call_is_not_listed_among_the_tools_used(self):
+        from deep_agents_demo.core.feature import Feature
+        from deep_agents_demo.models.events import NoticeEvent
+        feature = Feature("reading", approvals=("read_file",))
+        runner = self.runner(call("ls", {"path": "/"}, "l1"), call("read_file", {"file_path": "/notes.md"}, "r1"),
+                             reply("Critic opening."), reply("Summary."), opening_round=True, max_turns=1,
+                             features=(feature,), max_parallel=2)
+        tap = runner.sink = Tap(runner.sink)
+        self.room(runner, participants=("critic", "helper"))  # one turn: only the read-only critic opens
+        shown = [e.text for e in tap.events if isinstance(e, NoticeEvent) and "(opening" in e.text]
+        self.assertEqual(shown, ["critic (opening):\ntools: ls\nCritic opening."])  # read_file was refused
+
+    def test_a_budget_cut_opening_asks_nobody_when_not_interactive(self):
+        runner, _ = self.opening_runner(("critic", "scout"), budget=1, interactive=False)
+        outcome = self.room(runner, participants=("critic", "scout"))
+        self.assertEqual(self.asked, [])  # no question from a worker thread, nor from the room
+        self.assertEqual(outcome["ended_by"], "budget")
+        self.assertIn("turn was cut short", runner.transcript_text())
+
+    def test_a_cut_parallel_opening_is_replayed_as_cut_short(self):
+        from deep_agents_demo.models.events import NoticeEvent
+        runner = self.runner(AIMessage(content="Looking at the files.",
+                                       tool_calls=[{"name": "ls", "id": "l1", "args": {"path": "/"}}]),
+                             reply("Summary."), opening_round=True, max_turns=1, max_parallel=2,
+                             interactive=False)
+        runner.budget_size = 1  # the one call is spent; the next is cut, after its partial answer
+        tap = runner.sink = Tap(runner.sink)
+        self.room(runner, participants=("critic", "helper"))
+        notices = [e.text for e in tap.events if isinstance(e, NoticeEvent) and "(opening" in e.text]
+        self.assertEqual(len(notices), 1, notices)
+        self.assertTrue(notices[0].startswith("critic (opening, cut short):\n"), notices[0])
+        self.assertIn("Looking at the files.", notices[0])
+        self.assertIn("**critic (opening):** Looking at the files.", runner.transcript_text())  # its label stays
+
+    def test_a_budget_cut_opening_is_rerun_when_the_user_continues(self):
+        runner, _ = self.opening_runner(("critic", "scout"), budget=1, answers=["continue"])
+        outcome = self.room(runner, participants=("critic", "scout"))
+        self.assertEqual(len(self.asked), 1)  # asked once, on the room's thread
+        text = runner.transcript_text()
+        self.assertNotIn("cut short", text)
+        self.assertIn("**critic (opening):** critic opening.", text)
+        self.assertIn("**scout (opening):** scout opening.", text)
+        self.assertEqual(outcome["ended_by"], "turn limit")  # the room goes on, to its turn limit
+
+    def test_a_budget_cut_opening_ends_the_room_when_the_user_wraps_up(self):
+        runner, _ = self.opening_runner(("critic", "scout"), budget=1, answers=["wrap up"])
+        outcome = self.room(runner, participants=("critic", "scout"))
+        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(outcome["ended_by"], "budget")
+        self.assertIn("turn was cut short", runner.transcript_text())
+
+    def test_a_queued_opening_starts_its_timer_when_it_runs_with_one_attempt(self):
+        runner, _ = self.opening_runner(("critic", "scout", "watcher"), ends_after={"critic": "scout"}, max_parallel=2)
+        tap = runner.sink = Tap(runner.sink)
+        self.room(runner, participants=("critic", "scout", "watcher"))
+        steps = [e for e in tap.events if isinstance(e, (StepStarted, StepFinished)) and e.kind == "room"]
+        started = {e.run_id: (i, e.agent) for i, e in enumerate(steps) if isinstance(e, StepStarted)}
+        finished = {e.run_id: i for i, e in enumerate(steps) if isinstance(e, StepFinished)}
+        watcher_start = next(i for i, agent in started.values() if agent == "watcher")
+        first_finish = min(finished.values())
+        self.assertGreater(watcher_start, first_finish)  # queued until a worker was free
+        self.assertTrue(all(e.attempts == 1 for e in steps if isinstance(e, StepFinished)))
+
+    def test_ctrl_c_between_sequential_openings_gives_the_user_a_turn(self):
+        runner, overlap = self.opening_runner(("critic", "scout"), max_parallel=1, answers=["/stop"])
+        overlap.on_first_run = runner.request_pause  # Ctrl+C during the first opening
+        outcome = self.room(runner, participants=("critic", "scout"))
+        self.assertEqual(len(self.asked), 1)  # the user is asked before the second opening
+        self.assertNotIn("scout", overlap.spans)  # /stop: it never runs
+        self.assertEqual(outcome["ended_by"], "stopped")
+        self.assertIn("**critic (opening):**", runner.transcript_text())  # the held opening is kept
+
+    def test_go_on_between_sequential_openings_runs_the_rest(self):
+        runner, overlap = self.opening_runner(("critic", "scout"), max_parallel=1, answers=["Hi"])
+        overlap.on_first_run = runner.request_pause
+        outcome = self.room(runner, participants=("critic", "scout"))
+        self.assertEqual(len(self.asked), 1)
+        self.assertIn("scout", overlap.spans)
+        self.assertEqual(outcome["ended_by"], "turn limit")
+        text = runner.transcript_text()  # the user was asked between the two openings
+        self.assertLess(text.index("**critic (opening):**"), text.index("**You:** Hi"))
+        self.assertLess(text.index("**You:** Hi"), text.index("**scout (opening):**"))
+
+    def test_a_remark_at_a_pause_comes_after_the_openings_before_it(self):
+        runner, overlap = self.opening_runner(("critic", "scout"), max_parallel=1,
+                                              answers=["Hello from me"])
+        overlap.on_first_run = runner.request_pause
+        self.room(runner, participants=("critic", "scout"))
+        text = runner.transcript_text()
+        self.assertLess(text.index("**critic (opening):**"), text.index("**You:** Hello from me"))
+        self.assertLess(text.index("**You:** Hello from me"), text.index("**scout (opening):**"))
+
+    def test_a_rerun_gets_its_own_step_number(self):
+        runner, _ = self.opening_runner(("critic", "scout"), budget=1, answers=["continue"])
+        tap = runner.sink = Tap(runner.sink)
+        self.room(runner, participants=("critic", "scout"))
+        numbers = [e.number for e in tap.events if isinstance(e, StepStarted) and e.kind == "room"]
+        self.assertEqual(len(numbers), 3)  # two openings, then the rerun
+        self.assertEqual(len(set(numbers)), 3, numbers)
 
 
 class OpeningAndContinuityTests(RoomBase):

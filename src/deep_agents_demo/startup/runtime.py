@@ -14,7 +14,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from deep_agents_demo.config import Settings
 from deep_agents_demo.core.assembly import build_agent, worker_factory
-from deep_agents_demo.core.tools import ToolRegistry
+from deep_agents_demo.core.tools import ToolRegistry, tool_name
 from deep_agents_demo.features.agents.builtins import BUILTIN_AGENTS
 from deep_agents_demo.features.agents.manager import AgentManager
 from deep_agents_demo.features.agents.registry import AgentRegistry
@@ -53,6 +53,7 @@ class Runtime:
     say: object = _quiet    # notes for the user outside a turn
     make_worker: object = None  # (name, extra_middleware) -> a standalone agent, for plan runners
     outputs: object = None  # the OutputStore: files the agent delivered, for front ends to list
+    lookup_tools: frozenset = frozenset()  # the enabled lookup tools (swarm workers may use them too)
 
     def refresh(self) -> bool:
         """After an approved agent change, rebuild so it's available from the next message."""
@@ -158,7 +159,9 @@ def build_runtime(resources: Resources, user: str, notify=None) -> Runtime:
     return Runtime(agent=agent, chats=Chats(saver, agent, user, outputs=resources.outputs), preview=preview,
                    uploads=Uploads(settings.paths.workspace, user, setup.skills_prefix),
                    agents=agents, agent_manager=my_agents, rebuild=make_agent, say=say,
-                   make_worker=make, outputs=resources.outputs)
+                   make_worker=make, outputs=resources.outputs,
+                   lookup_tools=frozenset(tool_name(tool) for f in enabled for tool in f.lookups)
+                   - frozenset(settings.disabled_tools))
 
 
 def history_runtime(settings: Settings, user: str, stack: ExitStack) -> Runtime:

@@ -84,7 +84,7 @@ def _skip_blocked(config, off):
 
 
 # Tools only the main agent may use: a subagent starting plans or rooms would nest.
-MAIN_ONLY = ("run_plan", "start_room", "send_file")
+MAIN_ONLY = ("run_plan", "start_room", "run_swarm", "send_file")
 
 
 def _spec(agent, *, model, model_for, tools, skill_sources, access, max_calls) -> dict:
@@ -248,4 +248,9 @@ def worker_factory(model, checkpointer, backend, features=(), *, skills_prefix="
                             system_prompt=spec["system_prompt"], middleware=middleware,
                             checkpointer=checkpointer)
     make.names = frozenset(specs)  # check a name without building its agent
+    # The agents that only read: a definition marked read-only, or one whose listed tools are all
+    # read-only. The default general-purpose and researcher have no definition, so they are not.
+    read_only = {agent.name for agent in by_name.values()
+                 if agent.read_only or (agent.tools is not None and set(agent.tools) <= set(READ_ONLY))}
+    make.read_only = frozenset(name for name in specs if name in read_only)
     return make

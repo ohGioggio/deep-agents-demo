@@ -51,3 +51,32 @@ class RoomOutcome(TypedDict):
     input_tokens: NotRequired[int]
     output_tokens: NotRequired[int]
     decision_sources: NotRequired[dict]   # how each moderator decision was read (json, text, ...)
+
+
+class SwarmTask(TypedDict):
+    """One task of a swarm, as the outcome reports it."""
+    task: str
+    agent: str
+    status: str            # done, failed, cut, stopped or not started
+    result: str            # the first line; the report has the whole result
+    input_tokens: int
+    output_tokens: int
+    seconds: float
+
+
+class SwarmOutcome(TypedDict):
+    """What ``run_swarm`` returns to the agent (as JSON)."""
+    goal: str
+    tasks: list[SwarmTask]
+    merged: str
+    merge_with: str
+    ended_by: str          # done, budget, user, stopped or failed (every task failed)
+    model_calls: int       # every model call the swarm made, merge included
+    input_tokens: int
+    output_tokens: int
+    seconds: float
+    error: str
+    report: str            # the saved Markdown report's path ("" when none was saved)
+    report_error: NotRequired[str]  # why the report could not be saved; the outcome is still returned
+    note: str
+

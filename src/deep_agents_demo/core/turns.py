@@ -397,6 +397,8 @@ def run_turn(agent, prompt, config, sink, decide=None, runners=None, reload_skil
             return {"error": "plans can't run here (nobody to run them); do the steps yourself"}
         if kind == "start_room":
             return {"error": "rooms can't run here (nobody to run them)"}
+        if kind == "run_swarm":
+            return {"error": "swarms can't run here (nobody to run them)"}
         ids = progress.approval_requested(value, target.emit)
         response = decide(value)
         progress.approval_answered(ids, response)

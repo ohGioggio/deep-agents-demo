@@ -14,8 +14,11 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
 from deep_agents_demo.config import ChatSettings, Paths, Settings  # noqa: E402
+from deep_agents_demo.features.orchestration.plans import PLAN_PROMPT  # noqa: E402
+from deep_agents_demo.features.orchestration.rooms import ROOM_PROMPT  # noqa: E402
 from deep_agents_demo.features.orchestration.runner import RECURSION_LIMIT, _RunFailed  # noqa: E402
-from test_agents import Model  # noqa: E402
+from deep_agents_demo.features.orchestration.swarms import SWARM_PROMPT  # noqa: E402
+from test_agents import SEEN, Model, call  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "evals"))
@@ -574,6 +577,111 @@ class RunnerTests(unittest.TestCase):
                     AIMessage(content="", tool_calls=[{"name": "ls", "id": "1", "args": {}}])]
         self.assertEqual(runner._last_ai_text(messages), "first answer")
         self.assertEqual(runner._last_ai_text([]), "")
+
+    def test_swarm_mode_runs_the_lead_swarm_and_scores_its_answer(self):
+        """The lead calls run_swarm; two workers and the merge answer; the lead's final answer is scored."""
+        settings = replace(self.settings, swarm_max_parallel=1)
+        script = [
+            call("run_swarm", {"goal": "find the time", "tasks": [{"task": "read part one"},
+                                                                 {"task": "read part two"}]}, "s1"),
+            AIMessage(content="part one says 17:00"),
+            AIMessage(content="part two says 18:00"),
+            AIMessage(content="merged: 18:00"),
+            AIMessage(content="FINAL ANSWER: 18:00"),
+        ]
+        model = Model(responses=script)
+        counter = scoring.UsageCounter()
+        model.callbacks = [counter]
+        rows = self.quiet_run(["swarm"], [BY_NAME["safety-injection"]], model=model, counter=counter,
+                              settings=settings)
+        row = rows[0]
+        self.assertIsNone(row["error"])
+        self.assertEqual(row["score"], 1.0)
+        self.assertEqual([t["status"] for t in row["info"]["swarm"]["tasks"]], ["done", "done"])
+        self.assertEqual(row["info"]["swarm"]["ended_by"], "done")
+        self.assertTrue(row["info"]["swarm"]["merged"])
+        self.assertEqual(row["answer"], "FINAL ANSWER: 18:00")
+        self.assertEqual(row["calls"], 5)  # the lead twice, two workers, one merge
+
+    def test_swarm_lead_gets_only_run_swarm(self):
+        """The lead is the single mode's agent plus run_swarm: no run_plan or start_room, nor their prompts."""
+        SEEN.clear()
+        model = Model(responses=[
+            call("run_swarm", {"goal": "g", "tasks": [{"task": "a"}, {"task": "b"}]}, "s1"),
+            AIMessage(content="a"), AIMessage(content="b"), AIMessage(content="m"),
+            AIMessage(content="FINAL ANSWER: 18:00"),
+        ])
+        counter = scoring.UsageCounter()
+        model.callbacks = [counter]
+        self.quiet_run(["swarm"], [BY_NAME["safety-injection"]], model=model, counter=counter,
+                       settings=replace(self.settings, swarm_max_parallel=1))
+        tool_sets = [names for kind, names in SEEN if kind == "tools"]
+        lead_tools = tool_sets[0]
+        self.assertIn("run_swarm", lead_tools)
+        self.assertNotIn("run_plan", lead_tools)
+        self.assertNotIn("start_room", lead_tools)
+        self.assertFalse(any("run_plan" in names or "start_room" in names for names in tool_sets))
+        lead_messages = next(messages for kind, messages in SEEN if kind == "messages")
+        system = " ".join(str(m.content) for m in lead_messages if m.type == "system")
+        self.assertIn(SWARM_PROMPT.strip(), system)
+        self.assertNotIn(PLAN_PROMPT.strip(), system)
+        self.assertNotIn(ROOM_PROMPT.strip(), system)
+
+    def test_swarm_mode_without_run_swarm_still_gets_a_row(self):
+        model, counter = self.model("FINAL ANSWER: 18:00")
+        rows = self.quiet_run(["swarm"], [BY_NAME["safety-injection"]], model=model, counter=counter)
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["error"])
+        self.assertEqual(rows[0]["score"], 1.0)
+        self.assertEqual(rows[0]["info"], {})
+
+    def test_swarm_mode_keeps_its_report_when_asked(self):
+        kept = self.root / "kept"
+        settings = replace(self.settings, swarm_max_parallel=1)
+        model = Model(responses=[
+            call("run_swarm", {"goal": "g", "tasks": [{"task": "a"}, {"task": "b"}]}, "s1"),
+            AIMessage(content="a"), AIMessage(content="b"), AIMessage(content="m"),
+            AIMessage(content="FINAL ANSWER: 18:00"),
+        ])
+        counter = scoring.UsageCounter()
+        model.callbacks = [counter]
+        self.quiet_run(["swarm"], [BY_NAME["safety-injection"]], model=model, counter=counter,
+                       settings=settings, keep=kept)
+        self.assertEqual(len(list((kept / "swarms").glob("*.json"))), 1)
+
+    def test_swarm_mode_records_the_swarms_error_in_its_row(self):
+        model = Model(responses=[
+            call("run_swarm", {"goal": "g", "tasks": [{"task": "only one"}]}, "s1"),
+            AIMessage(content="FINAL ANSWER: 18:00"),
+        ])
+        counter = scoring.UsageCounter()
+        model.callbacks = [counter]
+        rows = self.quiet_run(["swarm"], [BY_NAME["safety-injection"]], model=model, counter=counter)
+        self.assertIsNone(rows[0]["error"])  # the lead still answered; the swarm refused the run
+        self.assertEqual(rows[0]["info"]["swarm"]["error"], "a swarm needs at least 2 tasks")
+        self.assertEqual(rows[0]["info"]["swarm"]["tasks"], [])
+
+    def test_a_swarm_failing_outright_is_a_zero_row(self):
+        model = Model(responses=[call("run_swarm", {"goal": "g", "tasks": [{"task": "a"}, {"task": "b"}]}, "s1")])
+        counter = scoring.UsageCounter()
+        model.callbacks = [counter]
+        with patch.object(runner.SwarmRunner, "run", side_effect=RuntimeError("boom")):
+            rows = self.quiet_run(["swarm"], [BY_NAME["safety-injection"]], model=model, counter=counter)
+        self.assertEqual(rows[0]["score"], 0.0)
+        self.assertEqual(rows[0]["error"], "RuntimeError: boom")
+
+    def test_ctrl_c_in_a_swarm_stops_the_eval(self):
+        # The swarm's own handler turns Ctrl+C into ended_by "stopped"; the run must not go on.
+        model = Model(responses=[
+            call("run_swarm", {"goal": "g", "tasks": [{"task": "a"}, {"task": "b"}]}, "s1"),
+            AIMessage(content="FINAL ANSWER: 18:00"),
+        ])
+        counter = scoring.UsageCounter()
+        model.callbacks = [counter]
+        stopped = {"ended_by": "stopped", "tasks": [], "merged": "", "error": ""}
+        with patch.object(runner.SwarmRunner, "run", return_value=stopped):
+            with self.assertRaises(KeyboardInterrupt):
+                self.quiet_run(["swarm"], [BY_NAME["safety-injection"]], model=model, counter=counter)
 
 
 if __name__ == "__main__":

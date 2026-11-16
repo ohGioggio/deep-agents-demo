@@ -11,8 +11,10 @@ Ctrl+C pauses between turns, here to let the user speak.
 """
 import json
 import re
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
@@ -36,7 +38,10 @@ from deep_agents_demo.features.orchestration.room_formats import (
     format_problem,
     fixed_policy,
 )
-from deep_agents_demo.features.orchestration.runner import Runner, _RunFailed
+from deep_agents_demo.features.orchestration.runner import LockedSink, Runner, _RunFailed, _StepRun
+from deep_agents_demo.features.orchestration.swarms import WorkerAccess, _RefuseApprovals
+from deep_agents_demo.models.agents import READ_ONLY
+from deep_agents_demo.models.events import StepStarted
 
 POSITION_INSTRUCTION = ("End with a line POSITION: <your position in one sentence> "
                         "(confidence: low|medium|high).")
@@ -153,17 +158,66 @@ class ModeratorPolicy:
         return decision
 
 
+def _tools_line(names: list[str]) -> str:
+    """Tool names in first-use order, a count where one was called more than once: "ls, read_file ×2"."""
+    counts: dict[str, int] = {}
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+    return ", ".join(f"{name} ×{count}" if count > 1 else name for name, count in counts.items())
+
+
+class _Ended(Exception):
+    """The user ended the room (or stopped it) between openings: the room's ``ended_by``."""
+
+    def __init__(self, choice: str):
+        super().__init__(choice)
+        self.choice = choice
+
+
+class _Openings:
+    """The steps of the openings, as the threads that run them see them: a step starts when its
+    opening does (on its own thread), and finishes once, whichever comes first: its run's end or a stop."""
+
+    def __init__(self, runner: "RoomRunner"):
+        self.runner, self.lock, self.started, self.closed = runner, threading.Lock(), [], set()
+
+    def start(self, name: str, number: int, total: int) -> _StepRun:
+        step = _StepRun("room", number, total, name)
+        step.attempts = 1  # an opening is one attempt
+        with self.lock:
+            self.started.append(step)
+        if not self.runner.quiet:
+            self.runner.sink.emit(StepStarted(step.id, "room", number, total, name))
+        return step
+
+    def finish(self, step: _StepRun, status: str, text: str = "") -> None:
+        with self.lock:
+            if step.id in self.closed:
+                return
+            self.closed.add(step.id)
+        self.runner.finish_step(step, status, text)
+
+    def abandon(self) -> None:
+        """A stop: every opening that started and has not finished is finished as stopped."""
+        with self.lock:
+            pending = [step for step in self.started if step.id not in self.closed]
+        for step in pending:
+            self.finish(step, "stopped")
+
+
 class RoomRunner(Runner):
     label = "[room]"
 
     def __init__(self, make, approvals, interaction, sink, *, thread: str, max_turns: int = 12,
                  budget: int = 150, interactive: bool = True, transcripts=None, describe=None,
-                 recent_turns: int = 3, opening_round: bool = False, format: str = "moderated"):
+                 recent_turns: int = 3, opening_round: bool = False, format: str = "moderated",
+                 max_parallel: int = 1):
         super().__init__(make, approvals, interaction, sink, thread=thread, budget=budget,
                          interactive=interactive)
         self.max_turns = max_turns
         self.recent_turns = recent_turns
         self.opening_round = opening_round
+        self.max_parallel = max_parallel      # threads for the read-only participants' openings
         format = str(format).strip().lower()
         if format not in FORMATS:  # the config and the tools check first; this is for other callers
             raise ValueError(format_problem(format, []))
@@ -294,16 +348,16 @@ class RoomRunner(Runner):
                 f"{self._asked(prompt)}\n\n"
                 "Reply with your contribution only: a few short paragraphs.\n\n" + POSITION_INSTRUCTION)
 
-    def _participant_run(self, name: str, question: str, prompt: str | None) -> str:
+    def _participant_run(self, name: str, question: str, prompt: str | None, **options) -> str:
         """One run of a participant (``prompt`` None: its opening). The participant keeps one
         thread for the room; its first run, and its first run after a failed one (on a fresh
-        thread), get the full input. Raises _RunFailed or _WrapUp."""
+        thread), get the full input. ``options`` go to ``_run_agent``. Raises _RunFailed or _WrapUp."""
         full = self._opening_input(question) if prompt is None else self._turn_input(question, prompt)
         sent_full = prompt is None or name not in self.continuing
         text = full if sent_full else self._new_input(name, prompt)
         thread = self.threads.get(name, f"{self.thread}:room:{self.room_id}:{name}")
         try:
-            answer = self._run_agent(name, text, thread, fresh_text=full)
+            answer = self._run_agent(name, text, thread, fresh_text=full, **options)
         except _RunFailed:
             self.threads[name] = self.last_thread_id + "+"  # the next run starts fresh
             self.continuing.discard(name)
@@ -316,6 +370,158 @@ class RoomRunner(Runner):
         self.threads[name] = self.last_thread_id
         self.continuing.add(name)
         return answer
+
+    def _open_round(self, question: str, names: list[str], turns: int) -> tuple[int, BaseException | None]:
+        """The opening round. The read-only participants open side by side on up to ``max_parallel``
+        threads; the rest open one by one after them, and Ctrl+C is honoured before each of those (the
+        user's turn, as between any two turns). Every opening is held and recorded at the end, in
+        participant order, whatever the finish order. A budget cut in the wave is the user's question,
+        asked here on the room's thread: "continue" reruns the cut openings, anything else (or no
+        interaction) ends the room the way a cut turn does. Returns (turns used, the exception that
+        ends the room or None)."""
+        read_only = getattr(self.make, "read_only", frozenset()) if self.max_parallel > 1 else frozenset()
+        parallel = [name for name in names if name in read_only][:max(0, self.max_turns - turns)]
+        others = [name for name in names if name not in parallel]
+        held: dict[str, tuple[str, str]] = {}  # participant -> (status, text) of its opening
+        ledger = _Openings(self)
+        stop: BaseException | None = None
+        counter = turns  # the step numbers: one per opening, and one more for each rerun
+        original, self.sink = self.sink, LockedSink(self.sink)  # the openings share the sink
+        try:
+            try:
+                if parallel:
+                    counter = self._open_parallel(question, parallel, counter, held, ledger)
+                    turns += len(parallel)
+                cut = [name for name in parallel if held[name][0] == "cut"]
+                if cut and self._continue_after_budget():
+                    self.budget.extend()
+                    for name in cut:  # runs again on a fresh thread, as a budget continue does
+                        self.threads[name] = self.threads.get(name, f"{self.thread}:room:{self.room_id}:{name}") + "+"
+                        counter += 1
+                        self._open_one(name, question, counter, held, ledger)
+                        if held[name][0] == "cut":
+                            break
+                    cut = [name for name in cut if held[name][0] == "cut"]
+                if cut:  # the user wrapped up, or cannot be asked: the room ends with what it has
+                    stop = _WrapUp(held[cut[0]][1])
+                else:
+                    for name in others:
+                        if turns >= self.max_turns:
+                            break
+                        if self.pause_requested:  # Ctrl+C: the user's turn before this opening
+                            self._record_openings(names, held)  # the openings so far come before the user's words
+                            held.clear()
+                            choice = self._step_in()
+                            if choice in ("user", "stopped"):
+                                stop = _Ended(choice)
+                                break
+                        turns += 1
+                        counter += 1
+                        self._open_one(name, question, counter, held, ledger)
+                        if held[name][0] == "cut":
+                            stop = _WrapUp(held[name][1])
+                            break
+            except KeyboardInterrupt:  # a second Ctrl+C: nothing waits for the openings, nothing more shows
+                self.budget.drain()
+                ledger.abandon()
+                self.sink.close()
+                raise
+        finally:
+            self._record_openings(names, held)
+            self.sink = original
+        return turns, stop
+
+    def _open_parallel(self, question: str, names: list[str], turns: int, held: dict, ledger) -> int:
+        """The wave: each read-only opening on a pool thread, at most ``max_parallel`` at a time.
+        Their text is not streamed (the openings would garble the one answer box); once the wave
+        is done, each held opening is shown whole, in participant order. Returns the turns counted."""
+        pool = ThreadPoolExecutor(max_workers=self.max_parallel)
+        futures = {}
+        for offset, name in enumerate(names):
+            self.say(f"{self.label} opening: {name}")
+            futures[name] = pool.submit(self._worker_opening, name, question, turns + offset + 1, ledger)
+        try:
+            self._wait(list(futures.values()))
+        except KeyboardInterrupt:  # the openings still running are not waited for
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        pool.shutdown(wait=True)  # every future is done
+        for name in names:
+            status, text, tools = futures[name].result()
+            held[name] = (status, text)
+            used = f"tools: {_tools_line(tools)}\n" if tools else ""  # the tools it called, unseen while it ran
+            if status == "done":
+                self.say(f"{name} (opening):\n{used}{text.strip()}")
+            elif status == "cut" and text.strip():
+                self.say(f"{name} (opening, cut short):\n{used}{text.strip()}")
+            elif status == "failed":
+                self.say(f"{name} (opening) could not answer: {text}")
+        return turns + len(names)
+
+    def _worker_opening(self, name: str, question: str, number: int, ledger) -> tuple[str, str, list[str]]:
+        """One read-only opening, on a pool thread. Its step starts here (so its timer runs from when it
+        runs), with its one attempt, refused approvals, the read-only tool limit, and no question about
+        the budget. Returns (status, text, tools it called); a stop is reported as "stopped", not raised."""
+        step = ledger.start(name, number, self.max_turns)
+        try:
+            status, text = self._opening(name, question, step, approvals=_RefuseApprovals(),
+                                         extra=(WorkerAccess(allowed=READ_ONLY),), ask_on_budget=False,
+                                         shown=False)  # shown whole after the wave (see _open_parallel)
+        except KeyboardInterrupt:  # the room was stopped while this ran
+            status, text = "stopped", ""
+        ledger.finish(step, status, text)
+        return status, text, step.tools_used()
+
+    def _open_one(self, name: str, question: str, number: int, held: dict, ledger) -> None:
+        """A sequential opening, on the room's own thread (its budget questions are asked as usual)."""
+        self.say(f"{self.label} opening: {name}")
+        step = ledger.start(name, number, self.max_turns)
+        status, text = self._opening(name, question, step)
+        ledger.finish(step, status, text)
+        held[name] = (status, text)
+
+    def _opening(self, name: str, question: str, step, **options) -> tuple[str, str]:
+        """One opening's run: (status, text) with status done, failed or cut (text: a budget wrap-up's
+        partial). A KeyboardInterrupt is not caught here."""
+        try:
+            return "done", self._participant_run(name, question, None, step=step, **options)
+        except _RunFailed as error:
+            return "failed", str(error)
+        except _WrapUp as wrap:
+            return "cut", str(wrap.args[0]) if wrap.args else ""
+
+    def _hold_position(self, name: str, text: str) -> None:
+        held = parse_position(text)
+        if held is not None:  # a reply without a POSITION line keeps the last one
+            self.positions[name] = {"position": held[0], "confidence": held[1]}
+
+    def _record_openings(self, names: list[str], held: dict) -> None:
+        """The openings that ran, into the transcript in participant order."""
+        for name in names:
+            if name not in held:
+                continue
+            status, text = held[name]
+            who = f"{name} (opening)"
+            if status == "done":
+                self.answers[name] = text
+                self._hold_position(name, text)
+                self._record(who, text, author=name)
+            elif status == "cut":
+                partial = text.strip()
+                if partial:
+                    self._hold_position(name, partial)
+                    self._record(who, partial, author=name)
+                self.lines.append(f"*({who}'s turn was cut short: the request budget ran out)*")
+            elif status == "failed":
+                self.lines.append(f"*({who} could not answer: {text})*")
+
+    @staticmethod
+    def _wait(futures) -> None:
+        """Waits for every future in short steps: on Windows a wait without a timeout ignores Ctrl+C."""
+        pending = list(futures)
+        while pending:
+            _, not_done = wait(pending, timeout=0.2)
+            pending = list(not_done)
 
     def _speak(self, name: str, question: str, prompt: str | None, turns: int, verdict: bool = False) -> None:
         """A participant's opening (``prompt`` None) or turn, as one step. A budget wrap-up keeps
@@ -387,6 +593,10 @@ class RoomRunner(Runner):
             policy = fixed_policy(self.room_format.policy, lambda who: self.answers.get(who, ""))
         ended_by, summary = "", ""
         try:
+            if openings:  # the opening round, before the first moderator call; counts towards max_turns
+                turns, stop = self._open_round(question, openings, turns)
+                if stop is not None:
+                    raise stop
             while True:
                 if self.pause_requested:
                     choice = self._step_in()
@@ -396,16 +606,6 @@ class RoomRunner(Runner):
                 if turns >= self.max_turns:
                     ended_by = "turn limit"
                     break
-                if openings:  # before the first moderator call; counts towards max_turns
-                    name = openings.pop(0)
-                    self.say(f"{self.label} opening: {name}")
-                    try:
-                        self._speak(name, question, None, turns)
-                    except _WrapUp:
-                        turns += 1
-                        raise
-                    turns += 1
-                    continue
                 state = RoomState(question=question, participants=participants, turns_used=turns,
                                   max_turns=self.max_turns, minutes=self.minutes, recent=self._recent(),
                                   user_said=self.user_said, positions=dict(self.positions),
@@ -450,6 +650,8 @@ class RoomRunner(Runner):
                     break
         except _WrapUp:
             ended_by = "budget"
+        except _Ended as ended:  # the user ended or stopped the room between openings
+            ended_by = ended.choice
         except KeyboardInterrupt:  # a second Ctrl+C: stop the room, keep the chat
             self.lines.append("*(stopped by the user)*")
             self.say(f"{self.label} Stopped.")

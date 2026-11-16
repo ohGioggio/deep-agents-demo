@@ -88,6 +88,21 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, name):
                 Settings.from_env({**base, name: "0"})
 
+    def test_swarm_settings(self):
+        base = {"OPENAI_API_KEY": "k", "AGENT_MODEL": "m"}
+        settings = Settings.from_env(base)
+        self.assertEqual((settings.swarm_max_tasks, settings.swarm_max_parallel), (8, 3))
+        self.assertEqual(Settings.from_env({**base, "SWARM_MAX_TASKS": "5"}).swarm_max_tasks, 5)
+        # a blank SWARM_MAX_PARALLEL takes SUBAGENT_MAX_PARALLEL; a value of its own wins
+        self.assertEqual(Settings.from_env({**base, "SUBAGENT_MAX_PARALLEL": "5"}).swarm_max_parallel, 5)
+        self.assertEqual(Settings.from_env({**base, "SUBAGENT_MAX_PARALLEL": "5",
+                                            "SWARM_MAX_PARALLEL": " "}).swarm_max_parallel, 5)
+        self.assertEqual(Settings.from_env({**base, "SUBAGENT_MAX_PARALLEL": "5",
+                                            "SWARM_MAX_PARALLEL": "2"}).swarm_max_parallel, 2)
+        for name, value in (("SWARM_MAX_TASKS", "1"), ("SWARM_MAX_PARALLEL", "0")):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, name):
+                Settings.from_env({**base, name: value})
+
     def test_room_max_turns(self):
         base = {"OPENAI_API_KEY": "k", "AGENT_MODEL": "m"}
         self.assertEqual(Settings.from_env(base).room_max_turns, 12)

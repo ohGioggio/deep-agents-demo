@@ -26,7 +26,8 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 MARKS = {"ok": ("✓", "ok"), "error": ("✗", "error"), "rejected": ("✗", "error"),
          "cut": ("✗", "error"), "stopped": ("✗", "error")}
 TODO_MARKS = {"completed": ("✓", "ok"), "in_progress": ("▸", "approval"), "pending": ("○", "muted")}
-STEP_PASSED = {"ok", "passed"}
+STEP_PASSED = {"ok", "passed", "done"}  # "done": a swarm's worker that finished its task
+STEP_CALLS = {"plan": "run_plan", "swarm": "run_swarm"}  # the call a step kind's steps go under
 
 
 def _one_row(line: Text) -> Text:
@@ -85,6 +86,7 @@ class _Node:
         self.number = 0
         self.total = 0
         self.attempts = 0
+        self.group = ""             # a step's kind: "plan" or "swarm"
         self.merged = False         # a subagent that is also the `task` tool call
 
     def settled(self) -> bool:
@@ -123,10 +125,10 @@ class Timeline:
         return None
 
     def _running_group_call(self) -> _Node | None:
-        """The running ``start_room`` / ``run_plan`` call: runs that start meanwhile (room
-        turns, plan workers) belong to it and never end the turn."""
+        """The running ``start_room`` / ``run_plan`` / ``run_swarm`` call: runs that start meanwhile
+        (room turns, plan workers, the swarm's merge) belong to it and never end the turn."""
         for node in reversed(self._root.children):
-            if node.kind == "tool" and node.name in ("start_room", "run_plan") and not node.done:
+            if node.kind == "tool" and node.name in ("start_room", "run_plan", "run_swarm") and not node.done:
                 return node
         return None
 
@@ -189,29 +191,31 @@ class Timeline:
             node.done = True
             node.duration = time.monotonic() - node.started
 
-    def _plan_call(self) -> _Node:
-        """Where plan steps go: under the running ``run_plan`` call, else at the top."""
+    def _step_call(self, kind: str) -> _Node:
+        """Where a step goes: under the running call of its kind (``run_plan`` or ``run_swarm``),
+        else at the top."""
+        name = STEP_CALLS[kind]
         for node in reversed(self._root.children):
-            if node.kind == "tool" and node.name == "run_plan" and not node.done:
+            if node.kind == "tool" and node.name == name and not node.done:
                 return node
         return self._root
 
     def _on_StepStarted(self, event: StepStarted) -> None:
-        if event.kind != "plan":
+        if event.kind not in STEP_CALLS:
             return
-        parent = self._plan_call()
+        parent = self._step_call(event.kind)
         node = _Node("step", parent, event.agent)
-        node.number, node.total = event.number, event.total
+        node.number, node.total, node.group = event.number, event.total, event.kind
         parent.children.append(node)
         self._runs[event.run_id] = node
 
     def _on_StepFinished(self, event: StepFinished) -> None:
-        if event.kind != "plan":
+        if event.kind not in STEP_CALLS:
             return
         node = self._runs.get(event.run_id)
         if node is None or node.kind != "step":   # a stopped plan's steps never started
-            node = _Node("step", self._plan_call(), "")
-            node.number = event.number
+            node = _Node("step", self._step_call(event.kind), "")
+            node.number, node.group = event.number, event.kind
             node.parent.children.append(node)
         node.done = True
         node.status, node.attempts, node.duration = event.status, event.attempts, event.duration
@@ -428,7 +432,7 @@ class Timeline:
                         style="approval")
         elif node.status in STEP_PASSED:
             tries = f"{node.attempts} {'try' if node.attempts == 1 else 'tries'}"
-            line.append("  ✓ passed review", style="ok")
+            line.append("  ✓ done" if node.group == "swarm" else "  ✓ passed review", style="ok")
             line.append(f" · {tries} · {_seconds(node.duration)}", style="muted")
         else:
             line.append(f"  ✗ {node.status}", style="error")

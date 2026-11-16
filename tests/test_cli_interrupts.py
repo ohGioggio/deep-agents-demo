@@ -62,6 +62,16 @@ class RunnersForTests(unittest.TestCase):
         self.assertEqual(plan["steps"][0]["status"], "stopped")
         self.assertEqual(room["ended_by"], "stopped")
 
+    def test_swarm_runs_under_ctrl_c_too(self):
+        before = signal.getsignal(signal.SIGINT)
+        runners = runners_for(self.runtime, self.settings, "t", Approvals(), interactive=True, quiet=True)
+        self.assertIn("run_swarm", runners)
+        outcome = runners["run_swarm"]({"type": "run_swarm", "goal": "g",
+                                        "tasks": [{"task": "a"}, {"task": "b"}]})
+        self.assertEqual(outcome["ended_by"], "stopped")  # the graph is cut by a second Ctrl+C
+        self.assertTrue(self.seen and all(handler is not before for handler in self.seen))
+        self.assertIs(signal.getsignal(signal.SIGINT), before)
+
     def test_one_shot_runs_leave_ctrl_c_alone(self):
         before = signal.getsignal(signal.SIGINT)
         self.run_both(interactive=False)
@@ -116,6 +126,51 @@ class NewAgentsInTheSameMessageTests(unittest.TestCase):
         room = runners["start_room"]({"type": "start_room", "question": "q", "participants": ["critic", "helper"]})
         self.assertIn("needs exactly 3 participants", room["error"])  # debate: refused before any agent runs
         self.assertEqual(built, [])
+
+
+class ParallelOpeningWiringTests(unittest.TestCase):
+    """The room runner in the app sees which agents only read, so its openings can run side by side."""
+
+    def test_the_room_runner_sees_the_read_only_agents(self):
+        from unittest.mock import patch
+
+        from deep_agents_demo.features.orchestration.rooms import RoomRunner
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
+                            paths=Paths(data=root / "data", workspace=root / "ws",
+                                        checkpoints=root / "data" / "c.sqlite"))
+
+        def make(name, extra=()):
+            return Stopping()
+        make.names = frozenset({"moderator", "critic", "writer"})
+        make.read_only = frozenset({"critic"})
+        runtime = SimpleNamespace(make_worker=make, agents=None, chats=SimpleNamespace(user="u"))
+        with patch("deep_agents_demo.features.orchestration.rooms.RoomRunner", wraps=RoomRunner) as room_runner:
+            runners_for(runtime, settings, "t", Approvals(), interactive=False, quiet=True)
+        workers = room_runner.call_args.args[0]
+        self.assertEqual(workers.read_only, frozenset({"critic"}))
+
+    def test_swarm_workers_may_use_the_read_only_and_lookup_tools(self):
+        from unittest.mock import patch
+
+        from deep_agents_demo.features.orchestration.swarms import SwarmRunner
+        from deep_agents_demo.models.agents import READ_ONLY
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
+                            paths=Paths(data=root / "data", workspace=root / "ws",
+                                        checkpoints=root / "data" / "c.sqlite"))
+
+        def make(name, extra=()):
+            return Stopping()
+        make.names = frozenset({"general-purpose"})
+        runtime = SimpleNamespace(make_worker=make, agents=None, chats=SimpleNamespace(user="u"),
+                                  lookup_tools=frozenset({"search_assets"}))
+        with patch("deep_agents_demo.features.orchestration.swarms.SwarmRunner", wraps=SwarmRunner) as swarm_runner:
+            runners_for(runtime, settings, "t", Approvals(), interactive=False, quiet=True)
+        self.assertEqual(swarm_runner.call_args.kwargs["allowed_tools"],
+                         frozenset(READ_ONLY) | {"search_assets"})
 
 
 class CtrlCControlsTests(unittest.TestCase):

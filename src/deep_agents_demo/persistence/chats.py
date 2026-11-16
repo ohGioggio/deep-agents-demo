@@ -47,8 +47,8 @@ class ChatInfo:
     last: str
 
 
-# Agent runs of a chat's plans and rooms live on threads named "<chat thread><marker>...".
-ORCHESTRATION_THREADS = (":plan:", ":room:")
+# Agent runs of a chat's plans, rooms and swarms live on threads named "<chat thread><marker>...".
+ORCHESTRATION_THREADS = (":plan:", ":room:", ":swarm:")
 
 
 class Chats:

@@ -5,6 +5,7 @@ import unittest
 from test_agents import SEEN, call
 from test_orchestration import RunnerBase, reply
 from test_rooms import RoomBase
+from test_swarms import SwarmBase, request
 
 from deep_agents_demo.core.ports import Interruptible
 from deep_agents_demo.features.orchestration.runner import Runner
@@ -78,6 +79,22 @@ class RoomRunnerContract(RunnerContract, RoomBase, unittest.TestCase):
 
     def start(self, runner):
         return self.room(runner)
+
+    def stopped(self, outcome):
+        return outcome["ended_by"] == "stopped"
+
+    def budget_ended(self, outcome):
+        return outcome["ended_by"] == "budget"
+
+
+class SwarmRunnerContract(RunnerContract, SwarmBase, unittest.TestCase):
+    def make_runner(self, *responses, answers=(), interactive=True):
+        runner, _ = self.swarm(self.make(*responses), answers=answers, interactive=interactive,
+                               max_parallel=1)
+        return runner
+
+    def start(self, runner):
+        return runner.run(request("a", "b"))
 
     def stopped(self, outcome):
         return outcome["ended_by"] == "stopped"

@@ -256,6 +256,30 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual(t.take_settled(), [])
         self.assertTrue(t.active())
 
+    def test_swarm_runs_inside_run_swarm_keep_the_turn_open(self):
+        t = Timeline()
+        t.handle(RunStarted("r1", "main"))
+        t.handle(ToolCallStart("r1", "c1", "run_swarm", {"goal": "g"}))
+        t.handle(RunStarted("m1", "swarm / merger"))  # the merge runs while the call is open
+        t.handle(RunFinished("m1", "swarm / merger", 1, 1, 1.0, 0.0))
+        self.assertEqual(t.take_settled(), [])
+        self.assertTrue(t.active())
+
+    def test_swarm_steps_go_under_the_running_run_swarm_call(self):
+        t = Timeline()
+        t.handle(RunStarted("r1", "main"))
+        t.handle(ToolCallStart("r1", "c1", "run_swarm", {"goal": "g"}))
+        t.handle(StepStarted("s1", "swarm", 1, 2, "general-purpose"))
+        t.handle(StepStarted("s2", "swarm", 2, 2, "general-purpose"))
+        t.handle(StepFinished("s1", "swarm", 1, "done", 1, 3.0, 10, 2, "Found it."))
+        t.handle(StepFinished("s2", "swarm", 2, "cut", 1, 5.0, 10, 2, "ran out"))
+        t.handle(ToolCallEnd("r1", "c1", "run_swarm", "ok", "done", 9.0))
+        out = draw(t.take_settled())
+        self.assertIn("step 1/2  general-purpose  ✓ done", out)
+        self.assertIn("step 2/2  general-purpose  ✗ cut: ran out", out)
+        self.assertNotIn("passed review", out)
+        self.assertLess(out.index("run_swarm"), out.index("step 1/2"))
+
     def test_tall_branch_shows_its_newest_lines(self):
         c = Console(file=io.StringIO(), width=100, height=10, force_terminal=False, theme=THEME,
                     record=True)

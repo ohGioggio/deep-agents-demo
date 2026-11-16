@@ -213,6 +213,8 @@ your shell take precedence.
 | `ROOM_RECENT_TURNS` | `3` | Moderated rooms: the latest turns the moderator and a participant's first turn see word for word; older ones are summarised in the room's minutes. Fixed formats have no minutes: they pass every earlier turn instead |
 | `ROOM_OPENING_ROUND` | `true` | Moderated format only: each participant answers the question alone before the moderator's first call, so no one anchors on the others |
 | `ROOM_FORMAT` | `moderated` | Default room format: `moderated` (the moderator picks each speaker), `roundrobin`, `debate` or `redteam` ([formats](#room-formats)) |
+| `SWARM_MAX_TASKS` | `8` | Tasks one swarm may run, at least 2 ([swarms](#swarms-independent-tasks-in-parallel)) |
+| `SWARM_MAX_PARALLEL` | `SUBAGENT_MAX_PARALLEL` | Swarm workers running at the same time, and the room participants that open in parallel; blank uses `SUBAGENT_MAX_PARALLEL` (at least 1) |
 
 </details>
 
@@ -310,7 +312,7 @@ agents and after `/image ` the PNG and JPG files in the folder you type;
 `/rename` takes a new name, so it shows no list. The menu and the box resize
 with the terminal.
 
-Ctrl+C in an ordinary turn ends the chat; while a plan or a room runs, the first
+Ctrl+C in an ordinary turn ends the chat; while a plan, a room or a swarm runs, the first
 press pauses it and the second stops it.
 
 The Rich UI is only used when you chat (no `--prompt`), stdin and stdout are both
@@ -644,6 +646,11 @@ Agreed: cache with a 10-minute TTL. Open: who owns invalidation. Next: a test pl
   `ROOM_RECENT_TURNS` (3) turns, word for word (a fixed format has no minutes, so it
   sees every earlier turn); later turns see the minutes and only what was said since
   its own last turn.
+- **The opening round** (`ROOM_OPENING_ROUND`, moderated format): every participant
+  answers the question alone before the moderator's first call. The read-only
+  participants open in parallel, up to `SWARM_MAX_PARALLEL` at a time, and their
+  answers are shown after the wave in participant order, each with the tools it used;
+  the others open one after another. A budget cut opening is shown as cut short.
 - **The summary** (agreements, open disagreements, next steps) goes back to the
   agent, and the full transcript is saved to `demo_workspace/rooms/<user>/`.
 
@@ -659,6 +666,34 @@ first propose, the others attack, and the proposer answer, repeating. A fixed fo
 ends at `ROOM_MAX_TURNS`, or earlier once every participant's position has stayed the
 same over a full round. The agent can pick a format too (`start_room`'s `format`
 argument). A wrong format or participant count is refused before any agent runs.
+
+### Swarms: independent tasks in parallel
+
+When you ask for it ("check these three things in parallel and merge the results"),
+the agent calls `run_swarm(goal, tasks, merge_with)`: the tasks run at the same time on
+workers, and one agent (`merge_with`, default `general-purpose`) merges their results
+into one answer. Give it only tasks that don't depend on each other.
+
+- **Read-only workers.** A worker can use the read-only file tools and the read-only
+  lookup tools (the documents and the catalog, such as `search_docs`). It can't change
+  files or run commands, and a call that would need your approval is refused for it, not
+  asked. The merge runs on the main thread with its own tools and your approvals.
+- **Limits:** `SWARM_MAX_TASKS` (8) tasks at most, and at least 2. `SWARM_MAX_PARALLEL`
+  workers run at once (blank: `SUBAGENT_MAX_PARALLEL`). One `ORCHESTRATION_MAX_CALLS`
+  (150) budget covers the whole swarm: when it runs out you are asked to continue or
+  wrap up, as for a plan. A task cut short keeps its partial answer, and the merge
+  names it. A task that fails is retried once, then reported; if every task fails,
+  nothing is merged and the swarm ends `failed`. The merge runs even when the budget is
+  spent, since it writes the answer.
+- **Ctrl+C:** the first press starts nothing new and waits for the running workers,
+  then asks `[g]o on, [m]erge now or [s]top`. Go on starts the rest; merge now merges
+  what finished and marks the rest "not started"; stop ends without a merge. A second
+  press stops at once and nothing is merged. The workers still running are not waited
+  for: their model requests finish in the background, the chat notes how many, and
+  quitting the chat waits for them.
+- **The report:** every swarm saves `demo_workspace/swarms/<user>/<time>-<id>-<goal>.md`
+  (each task's agent, status and result, and the merged answer) and a `.json` copy. If
+  the report can't be written, the outcome still comes back, with `report_error`.
 
 ### Agents the agent writes, with your approval
 
@@ -1269,6 +1304,35 @@ turns.
 turn, plus the summary (13). After: a blind opening for each of the two
 participants, then rounds of two turns per moderator call, so 12 turns take 2
 openings + 5 rounds = 5 moderator calls, plus the summary (6).
+
+**All three modes** (same model and tasks, one run each; `room` after the room
+changes; in `swarm` the main agent is the lead and is asked to split the work
+with `run_swarm`):
+
+| Mode | Lookup | Decision | Review | Safety | Calls (L / D / R / S) | Input tokens | Time |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| single | 1.00 | 1.00 | 0.92 | 1/1 | 12 / 12 / 12 / 3 | 193,205 | 93 s |
+| room | 1.00 | 0.88 | 1.00 | 0/1* | 28 / 28 / 29 / 7 | 320,422 | 292 s |
+| swarm | 1.00 | 1.00 | 0.92 | 1/1 | 50 / 38 / 86 / 3 | 781,477 | 398 s |
+
+\* the scoring artefact described above: the room refused the injection.
+
+**When each mode is worth its cost.** On these small tasks the single agent is
+the best buy: everything right but one review defect, at the fewest calls and
+the least time. The swarm matched it, missing the same defect, but the lead
+split each task into two to seven workers, so it used four times the input
+tokens and four times the time. Each worker re-reads its files, and the
+merge reads every result again. A swarm pays off when the tasks are really
+independent and each is big enough that running them side by side saves more
+than the split and the merge cost: the live check of eight folders took 61 s
+with three workers. It doesn't pay off for questions one agent answers in a
+few reads. A room costs about two and a half times the calls of a single
+agent (three times the time) and is worth it
+when a second reader matters, as in review, where it found all twelve defects.
+It is also the mode for questions where you want the disagreement made
+visible (`debate`, `redteam`). The lead in `swarm` mode answered the safety
+question itself, without a swarm, which is the right call for a one-line
+question.
 
 ## Testing
 
