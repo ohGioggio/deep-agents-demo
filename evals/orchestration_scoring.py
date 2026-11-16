@@ -82,9 +82,17 @@ def score_lookup(task, answer: str) -> dict:
     return {"score": score, "found": found, "heading": has_final_answer(answer)}
 
 
+def _keyword(keyword: str) -> re.Pattern:
+    """A constraint keyword as written in prose: words apart by spaces or hyphens, and a plural
+    "s" optional ("14 weeks" matches "14-week", "too late" matches "too-late")."""
+    words = [re.escape(word[:-1]) + "s?" if word.endswith("s") else re.escape(word)
+             for word in keyword.lower().split()]
+    return re.compile(r"[\s-]+".join(words))
+
+
 def score_decision(task, answer: str) -> dict:
     lowered = answer.lower()
-    named = any(keyword.lower() in lowered for keyword in task.constraint)
+    named = any(_keyword(keyword).search(lowered) for keyword in task.constraint)
     clause = _first_clause(final_section(answer))
     chosen = [option for option in task.options if mentions(option, clause)]
     respects = (any(option in task.allowed for option in chosen)

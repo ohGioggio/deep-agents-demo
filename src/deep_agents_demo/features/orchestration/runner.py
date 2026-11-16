@@ -16,6 +16,7 @@ from deep_agents_demo.models.events import (
     RunFinished,
     StepFinished,
     StepStarted,
+    TextMessageEnd,
 )
 
 
@@ -39,17 +40,28 @@ class _StepRun:
         self.attempts = self.input_tokens = self.output_tokens = 0
 
 
-class _Tally:
-    """The sink an agent run emits to: passes events on and adds the run's tokens to the open step."""
+def _new_usage() -> dict:
+    return {"model_calls": 0, "input_tokens": 0, "output_tokens": 0}
 
-    def __init__(self, sink, step: "_StepRun | None"):
-        self.sink, self.step = sink, step
+
+class _Tally:
+    """The sink an agent run emits to. Counts the run's model calls and tokens (every model message
+    is a ``TextMessageEnd``) into ``usage``, and its tokens into the open step; passes the events on
+    only when ``forward`` (a quiet runner shows nothing, but still counts)."""
+
+    def __init__(self, sink, step: "_StepRun | None", usage: dict, forward: bool = True):
+        self.sink, self.step, self.usage, self.forward = sink, step, usage, forward
 
     def emit(self, event) -> None:
         if isinstance(event, RunFinished) and self.step is not None:
             self.step.input_tokens += event.input_tokens
             self.step.output_tokens += event.output_tokens
-        self.sink.emit(event)
+        elif isinstance(event, TextMessageEnd) and event.text.strip() != BUDGET_STOP:  # no model call made
+            self.usage["model_calls"] += 1
+            self.usage["input_tokens"] += event.input_tokens
+            self.usage["output_tokens"] += event.output_tokens
+        if self.forward:
+            self.sink.emit(event)
 
 
 def first_line(text: str) -> str:
@@ -87,6 +99,8 @@ class Runner:
         self.stopped = False          # checked before every agent run
         self.quiet = False  # one-shot runs: show nothing but the answer
         self.step: _StepRun | None = None  # the plan step or room turn being run
+        self.last_thread_id = thread  # the thread the latest agent run used (see _run_agent)
+        self.usage = _new_usage()  # model calls and tokens of the current run (reset by run())
 
     # Interruptible ------------------------------------------------------------------------
     def request_pause(self) -> None:
@@ -122,6 +136,7 @@ class Runner:
                 self.sink.emit(StepFinished(uuid.uuid4().hex, kind, number, "stopped", 0, 0.0, 0, 0, ""))
 
     def run(self, request: dict) -> dict:
+        self.usage = _new_usage()
         try:
             return self._run(request)
         finally:  # a late pause or stop must not reach the next run
@@ -145,20 +160,26 @@ class Runner:
             raise KeyboardInterrupt  # handled like a second Ctrl+C: stop, keep the chat
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
         try:
-            run_turn(graph, text, config, _Tally(self.sink, self.step), self.approvals.decide, reload_skills=True,
-                     label=label, show=not self.quiet)
+            tally = _Tally(self.sink, self.step, self.usage, forward=not self.quiet)
+            run_turn(graph, text, config, tally, self.approvals.decide, reload_skills=True,
+                     label=label, show=True)
             return _last_text(graph, config)
         except (KeyboardInterrupt, _WrapUp):
             raise
         except Exception as error:  # a provider error or a bug: this attempt fails, not the chat
             raise _RunFailed(f"the run failed: {type(error).__name__}: {error}") from error
 
-    def _run_agent(self, name: str, text: str, thread_id: str, capped: bool = True) -> str:
+    def _run_agent(self, name: str, text: str, thread_id: str, capped: bool = True,
+                   fresh_text: str | None = None) -> str:
         """Run one agent within the budget; when it runs out, ask to continue or wrap up.
-        ``capped=False`` runs outside the budget (a room's final summary)."""
+        ``capped=False`` runs outside the budget (a room's final summary). The interrupted
+        attempt runs again on a fresh thread (``thread_id`` + "+") with ``fresh_text`` when
+        given, else ``text``; ``last_thread_id`` is the thread the latest attempt used."""
         if not capped:
+            self.last_thread_id = thread_id
             return self._invoke(self.make(name), text, thread_id, label=self._speaker(name))
         while True:
+            self.last_thread_id = thread_id
             cap = BudgetCap(self.budget)
             result = self._invoke(self.make(name, (cap,)), text, thread_id, label=self._speaker(name))
             if not cap.fired:
@@ -167,6 +188,8 @@ class Runner:
                 raise _WrapUp(result)
             self.budget.extend()
             thread_id += "+"  # run the interrupted attempt again, from a fresh start
+            if fresh_text is not None:
+                text = fresh_text
 
     def _continue_after_budget(self) -> bool:
         self.say(f"{self.label} The request budget ({self.budget.size} model calls) is used up.")

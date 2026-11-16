@@ -69,6 +69,14 @@ class StartRoomToolTests(Workspace):
         self.assertEqual(asked, [{"type": "start_room", "question": "q", "participants": ["critic", "helper"]}])
         self.assertEqual(self.results(calls), [json.dumps({"summary": "agreed"})])
 
+    def test_start_room_passes_format(self):
+        asked = []
+        self.turn(call("start_room", {"question": "q", "participants": ["critic", "helper", "researcher"],
+                                       "format": "debate"}, "r"),
+                  runners={"start_room": lambda request: asked.append(request) or {"summary": "ok"}})
+        self.assertEqual(asked, [{"type": "start_room", "question": "q",
+                                  "participants": ["critic", "helper", "researcher"], "format": "debate"}])
+
     def test_room_needs_two_participants_and_no_moderator(self):
         asked = []
         for participants in (["critic"], ["critic", "moderator"], ["critic", "critic"]):
@@ -96,16 +104,19 @@ CRITIC = "---\nname: critic\ndescription: Finds weaknesses.\ntools: Read, Grep, 
 
 class RoomBase(Workspace):
     def runner(self, *responses, answers=(), approvals=(), interactive=True, max_turns=12,
-               features=(), transcripts=None):
+               features=(), transcripts=None, recent_turns=3, opening_round=False, room_format="moderated",
+               extra_agents=()):
         from deep_agents_demo.features.orchestration.rooms import RoomRunner
         model = Model(responses=[*responses, reply("UNEXPECTED EXTRA CALL")])
         make = worker_factory(model, InMemorySaver(), self.backend(), features, builtins=BUILTINS,
-                              agents=[agent_from(CRITIC), agent_from(ALL_AGENT)])
+                              agents=[agent_from(CRITIC), agent_from(ALL_AGENT),
+                                      *(agent_from(text) for text in extra_agents)])
         approve = iter(approvals)
         ui = RecordingUI(answers)
         self.said = ui.lines
         return RoomRunner(make, Approver(ask=lambda _: next(approve), say=lambda *_: None), ui, ui,
                           thread="t", max_turns=max_turns, interactive=interactive, transcripts=transcripts,
+                          recent_turns=recent_turns, opening_round=opening_round, format=room_format,
                           describe=lambda name: {"critic": "Finds weaknesses.", "helper": "Helps."}.get(name, ""))
 
     def room(self, runner, question="Ship it?", participants=("critic", "helper")):
@@ -113,7 +124,8 @@ class RoomBase(Workspace):
                            "participants": list(participants)})
 
     def inputs(self):
-        return [next(str(m.content) for m in msgs if m.type == "human")
+        """The newest human message of each model call (a participant's thread keeps its history)."""
+        return [next(str(m.content) for m in reversed(msgs) if m.type == "human")
                 for kind, msgs in SEEN if kind == "messages"]
 
 
@@ -161,16 +173,6 @@ class RoomTests(RoomBase):
         self.assertIn("helper could not answer", runner.transcript_text())
         self.assertEqual(outcome["ended_by"], "moderator")
 
-    def test_long_transcripts_are_trimmed(self):
-        long = "x" * 4000
-        runner = self.runner(reply("NEXT: critic\nA"), reply(long), reply("NEXT: helper\nB"), reply(long),
-                             reply("NEXT: critic\nC"), reply(long), reply("NEXT: helper\nD"), reply("short"),
-                             reply("END\nok"))
-        self.room(runner)
-        last_turn_input = self.inputs()[7]
-        self.assertIn("(earlier turns omitted)", last_turn_input)
-        self.assertLess(len(last_turn_input), 6000 + 1000)
-
     def test_transcript_file(self):
         folder = self.root / "rooms"
         runner = self.runner(reply("NEXT: critic\nGo."), reply("A point."), reply("NEXT: helper\nAnd?"),
@@ -192,6 +194,148 @@ class RoomTests(RoomBase):
                              approvals=["a"])
         self.room(runner)
         self.assertFalse((self.root / "notes.md").exists())
+
+
+class MinutesAndRoundsTests(RoomBase):
+    def test_round_runs_without_extra_moderator_calls(self):
+        runner = self.runner(
+            reply(json.dumps({"action": "next", "turns": [{"speaker": "critic", "ask": "What breaks?"},
+                                                         {"speaker": "helper", "ask": "What would you fix?"}]})),
+            reply("The cache breaks."),
+            reply("Add a TTL."),
+            reply(json.dumps({"action": "end", "summary": "Agreed: add a TTL."})))
+        outcome = self.room(runner)
+        self.assertEqual((outcome["turns"], outcome["ended_by"]), (2, "moderator"))
+        self.assertEqual(len(self.inputs()), 4)  # moderator, critic, helper, moderator: nothing else
+        self.assertIn("The cache breaks.", self.inputs()[2])
+        self.assertIn("The moderator asks you: What would you fix?", self.inputs()[2])
+
+    def test_step_in_discards_the_rest_of_the_round(self):
+        runner = self.runner(
+            reply(json.dumps({"action": "next", "turns": [{"speaker": "critic", "ask": "What breaks?"},
+                                                         {"speaker": "helper", "ask": "Fix it?"}]})),
+            reply("The cache breaks."),
+            reply(json.dumps({"action": "end", "summary": "Done."})),
+            answers=["focus on cost"])
+        real = runner.make
+
+        def make(name, extra=()):
+            # extra holds the budget cap only on a capped participant run (not on the existence check)
+            if name == "critic" and extra:  # Ctrl+C while the critic speaks
+                runner.pause_requested = True
+            return real(name, extra)
+        runner.make = make
+        outcome = self.room(runner)
+        self.assertEqual(outcome["ended_by"], "moderator")
+        self.assertEqual(len(self.inputs()), 3)  # moderator, critic, moderator: no helper turn
+        self.assertFalse(any("Fix it?" in text for text in self.inputs()))
+        self.assertIn("**You:** focus on cost", runner.transcript_text())
+        self.assertIn("The user just said: focus on cost", self.inputs()[2])
+
+    def test_budget_mid_round_wraps_up(self):
+        runner = self.runner(
+            reply(json.dumps({"action": "next", "turns": [{"speaker": "critic", "ask": "What breaks?"},
+                                                         {"speaker": "helper", "ask": "Fix it?"}]})),
+            AIMessage(content="Partial point.",
+                      tool_calls=[{"name": "ls", "id": "l1", "args": {"path": "/"}}]),
+            reply("The summary."),
+            interactive=False)
+        runner.budget_size = 2  # the moderator's call and the critic's first call use it up
+        outcome = self.room(runner)
+        self.assertEqual((outcome["ended_by"], outcome["summary"]), ("budget", "The summary."))
+        self.assertIn("**critic:** Partial point.", runner.transcript_text())
+        self.assertFalse(any("Fix it?" in text for text in self.inputs()))  # the helper never ran
+        self.assertNotIn("[room] moderator -> helper: Fix it?", self.said)  # its turn never started
+        self.assertNotIn("helper's turn was cut short", runner.transcript_text())
+
+    def test_round_is_cut_at_max_turns(self):
+        runner = self.runner(
+            reply(json.dumps({"action": "next", "turns": [{"speaker": "critic", "ask": "Go."},
+                                                         {"speaker": "helper", "ask": "Fix it?"}]})),
+            reply("One point."),
+            reply("Summary: one point."),
+            max_turns=1)
+        outcome = self.room(runner)
+        self.assertEqual((outcome["turns"], outcome["ended_by"]), (1, "turn limit"))
+        self.assertEqual(len(self.inputs()), 3)  # moderator, critic, summary
+        self.assertFalse(any("Fix it?" in text for text in self.inputs()))
+        self.assertIn("Write the summary now", self.inputs()[2])
+
+    def test_turn_input_has_minutes_and_recent_turns_only(self):
+        responses = [
+            reply(json.dumps({"action": "next", "turns": [{"speaker": "critic", "ask": "Ask 1"}],
+                              "minutes": {"agreed": ["scope"]}})),
+            reply("Alpha point."),
+            reply("NEXT: helper\nAsk 2"), reply("Bravo point."),
+            reply("NEXT: critic\nAsk 3"), reply("Charlie point."),
+            reply("NEXT: helper\nAsk 4"), reply("Delta point."),
+            reply("NEXT: critic\nAsk 5"), reply("Echo point."),
+            reply("NEXT: helper\nAsk 6"), reply("Foxtrot point."),
+            reply("END\nDone.")]
+        runner = self.runner(*responses, recent_turns=3)
+        self.room(runner)
+        moderator_input, helper_input = self.inputs()[10], self.inputs()[11]
+        # a later turn of a participant: what was said since its own last turn, and the minutes
+        for text in ("Minutes so far:\nAgreed:\n- scope", "Since your last turn:\n**critic:** Echo point.",
+                     "The moderator asks you: Ask 6"):
+            self.assertIn(text, helper_input)
+        for old in ("Alpha point.", "Bravo point.", "Charlie point.", "Delta point.", "Recent turns:"):
+            self.assertNotIn(old, helper_input)
+        for old in ("Alpha point.", "Bravo point."):
+            self.assertNotIn(old, moderator_input)
+        self.assertIn("Minutes so far:\nAgreed:\n- scope", moderator_input)
+        self.assertIn("Echo point.", moderator_input)
+
+    def test_recent_turns_setting_is_the_window(self):
+        runner = self.runner(reply("NEXT: critic\nA"), reply("Alpha point."), reply("NEXT: helper\nB"),
+                             reply("Bravo point."), reply("NEXT: critic\nC"), reply("Charlie point."),
+                             reply("END\nDone."), recent_turns=1)
+        self.room(runner)
+        helper_input, critic_input = self.inputs()[3], self.inputs()[5]
+        self.assertIn("Alpha point.", helper_input)            # the last entry
+        self.assertIn("Bravo point.", critic_input)            # the last entry, now the helper's
+        self.assertNotIn("Alpha point.", critic_input)         # older than the window
+
+
+class TypedDecisionTests(RoomBase):
+    def test_json_decisions_drive_the_room(self):
+        runner = self.runner(
+            reply(json.dumps({"action": "next", "turns": [{"speaker": "critic", "ask": "What breaks?"}],
+                              "minutes": {"agreed": ["ship"], "open": ["ttl"]}})),
+            reply("The cache breaks."),
+            reply(json.dumps({"action": "end", "summary": "Agreed: add a TTL.", "decision": "Add a TTL.",
+                              "dissent": ["helper: no"], "actions": ["write the TTL"]})))
+        outcome = self.room(runner)
+        self.assertEqual((outcome["turns"], outcome["ended_by"], outcome["summary"]),
+                         (1, "moderator", "Agreed: add a TTL."))
+        self.assertIn("[room] moderator -> critic: What breaks?", self.said)
+        self.assertEqual(runner.decision_sources, {"json": 2})
+        self.assertEqual(runner.minutes.agreed, ("ship",))  # an end without minutes keeps them
+        self.assertEqual((runner.ending.decision, runner.ending.dissent, runner.ending.actions),
+                         ("Add a TTL.", ("helper: no",), ("write the TTL",)))
+
+    def test_minutes_on_the_closing_decision_are_kept(self):
+        runner = self.runner(
+            reply(json.dumps({"action": "end", "summary": "Done.",
+                              "minutes": {"agreed": ["ship"], "open": ["ttl"]}})))
+        self.room(runner)
+        self.assertEqual((runner.minutes.agreed, runner.minutes.open), (("ship",), ("ttl",)))
+
+    def test_moderator_is_asked_for_json(self):
+        runner = self.runner(reply("END\nDone."))
+        self.room(runner)
+        self.assertIn("Reply with one JSON object", self.inputs()[0])
+
+    def test_text_decisions_are_counted_as_text(self):
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("A point."), reply("END\nDone."))
+        self.room(runner)
+        self.assertEqual(runner.decision_sources, {"text": 2})
+
+    def test_unparseable_decision_takes_its_turn_in_rotation(self):
+        runner = self.runner(reply("Let's hear from someone"), reply("I object."), reply("END\nDone."))
+        self.room(runner)
+        self.assertEqual(runner.decision_sources, {"rotation": 1, "text": 1})
+        self.assertIn("*(the moderator named no participant; critic speaks next)*", runner.transcript_text())
 
 
 class SteppingInTests(RoomBase):
@@ -296,10 +440,33 @@ class ThreadPrefixTests(Workspace):
 class CommandTests(Workspace):
     def test_parse_room_command(self):
         from deep_agents_demo.features.orchestration.rooms import parse_room_command
-        self.assertEqual(parse_room_command("critic, helper -- Is X safe?"), (["critic", "helper"], "Is X safe?"))
+        self.assertEqual(parse_room_command("critic, helper -- Is X safe?"), (["critic", "helper"], "Is X safe?", None))
         self.assertIn("--", parse_room_command("critic helper"))
         self.assertIn("at least 2", parse_room_command("critic -- q"))
         self.assertIn("moderator", parse_room_command("critic moderator -- q"))
+
+    def test_parse_room_command_format(self):
+        from deep_agents_demo.features.orchestration.rooms import ROOM_USAGE, parse_room_command
+        self.assertEqual(parse_room_command("critic helper --format debate -- Is X safe?"),
+                         (["critic", "helper"], "Is X safe?", "debate"))
+        self.assertEqual(parse_room_command("--format roundrobin critic helper -- q"),
+                         (["critic", "helper"], "q", "roundrobin"))
+        self.assertEqual(parse_room_command("critic helper --format -- q"), ROOM_USAGE)
+        self.assertIn("[--format moderated|roundrobin|debate|redteam]", ROOM_USAGE)
+
+    def test_parse_room_command_format_with_equals(self):
+        from deep_agents_demo.features.orchestration.rooms import ROOM_USAGE, parse_room_command
+        self.assertEqual(parse_room_command("critic helper --format=debate -- Is X safe?"),
+                         (["critic", "helper"], "Is X safe?", "debate"))
+        self.assertEqual(parse_room_command("--format=redteam critic helper -- q"),
+                         (["critic", "helper"], "q", "redteam"))
+        self.assertEqual(parse_room_command("critic helper --format= -- q"), ROOM_USAGE)
+
+    def test_the_menu_usage_is_the_room_usage(self):
+        from deep_agents_demo.features.orchestration.rooms import ROOM_USAGE
+        from deep_agents_demo.ui.cli.repl import ChatSession
+        _names, usage, _summary = ChatSession.room_command.command
+        self.assertTrue(ROOM_USAGE.startswith("Usage: " + usage), usage)
 
     def test_room_command_checks_agents_first(self):
         from test_agents import KNOWN
@@ -308,11 +475,12 @@ class CommandTests(Workspace):
         from deep_agents_demo.ui.cli.repl import ChatSession
         said, rooms = [], []
         session = ChatSession(chats=None, current="c", say=said.append,
-                              agents=AgentRegistry.load([], KNOWN), room=lambda n, q: rooms.append((n, q)))
+                              agents=AgentRegistry.load([], KNOWN),
+                              room=lambda n, q, f: rooms.append((n, q, f)))
         session.handle("/room reviewer nobody -- q")
         self.assertIn("no agent named 'nobody'", said[-1])
         session.handle("/room reviewer general-purpose -- Is it safe?")
-        self.assertEqual(rooms, [(["reviewer", "general-purpose"], "Is it safe?")])
+        self.assertEqual(rooms, [(["reviewer", "general-purpose"], "Is it safe?", None)])
 
 
 class WiringTests(Workspace):
@@ -348,6 +516,567 @@ class WiringTests(Workspace):
         outcome = json.loads([m for m in last if m.type == "tool"][-1].content)
         self.assertEqual((outcome["ended_by"], outcome["summary"]), ("moderator", "Agreed: ship."))
         self.assertTrue(outcome["transcript"].startswith(str(self.root / "ws" / "rooms" / "alice")))
+
+
+def recorded_invokes(runner):
+    """Every agent run the room makes: (thread id, text), in order (the real run still happens)."""
+    calls = []
+    real = runner._invoke
+
+    def invoke(graph, text, thread_id, label=None):
+        calls.append((thread_id, text))
+        return real(graph, text, thread_id, label)
+    runner._invoke = invoke
+    return calls
+
+
+def model_inputs():
+    """The newest human message of every model call, in order."""
+    return [next(str(m.content) for m in reversed(msgs) if m.type == "human")
+            for kind, msgs in SEEN if kind == "messages"]
+
+
+class FormatRoomTests(RoomBase):
+    def speakers(self):
+        """"name: ask" of every turn, from the "[room] <moderator or format> -> name: ask" lines."""
+        return [line.split(" -> ", 1)[1] for line in self.said if line.startswith("[room] ") and " -> " in line]
+
+    def test_roundrobin_order_and_no_moderator_calls(self):
+        runner = self.runner(reply("A1"), reply("B1"), reply("Summary: agreed."),
+                             room_format="roundrobin", max_turns=2)
+        outcome = self.room(runner)
+        self.assertEqual(self.speakers(), ["critic: Give your view, building on what was said.",
+                                           "helper: Give your view, building on what was said."])
+        self.assertEqual((outcome["turns"], outcome["ended_by"], outcome["summary"]),
+                         (2, "turn limit", "Summary: agreed."))
+        self.assertEqual([i for i, text in enumerate(self.inputs()) if "Turns used" in text], [2])
+
+    def test_fixed_format_ends_when_positions_settle(self):
+        held = "POSITION: keep the cache (confidence: high)"
+        runner = self.runner(reply(f"A1\n{held}"), reply(f"B1\n{held}"), reply(f"A2\n{held}"),
+                             reply(f"B2\n{held}"), reply("Summary: keep it."), room_format="roundrobin")
+        outcome = self.room(runner)
+        self.assertEqual((outcome["turns"], outcome["ended_by"]), (4, "moderator"))
+        self.assertEqual(outcome["summary"], "Summary: keep it.")
+
+    def test_debate_order_and_judge_last(self):
+        runner = self.runner(reply("For it."), reply("Against it."), reply("Pro wins: the cache is safe.\nWhy."),
+                             reply("Summary: the judge decided."), room_format="debate", max_turns=4)
+        outcome = self.room(runner, participants=("critic", "helper", "general-purpose"))
+        self.assertEqual(self.speakers(), [
+            "critic: Argue for: answer the last argument against.",
+            "helper: Argue against: answer the last argument for.",
+            "general-purpose: Weigh both sides and give your verdict: which side wins, and why."])
+        self.assertEqual(outcome["decision"], "Pro wins: the cache is safe.")
+        self.assertEqual((outcome["ended_by"], outcome["summary"]), ("moderator", "Summary: the judge decided."))
+
+    def judge_failing(self, runner, times):
+        """Make the debate's judge (general-purpose) fail its first ``times`` runs, like a provider error."""
+        real, failures = runner.make, []
+
+        def make(name, extra=()):
+            if name == "general-purpose" and extra and len(failures) < times:
+                failures.append(name)
+                return Boom()
+            return real(name, extra)
+        runner.make = make
+
+    def test_a_judge_that_fails_once_is_retried_and_gives_the_decision(self):
+        runner = self.runner(reply("For it."), reply("Against it."), reply("Pro wins: the cache is safe.\nWhy."),
+                             reply("Summary."), room_format="debate", max_turns=4)
+        self.judge_failing(runner, times=1)
+        outcome = self.room(runner, participants=("critic", "helper", "general-purpose"))
+        self.assertEqual(outcome["decision"], "Pro wins: the cache is safe.")
+        self.assertNotIn("could not", runner.transcript_text())
+        self.assertEqual(runner.transcript_text().count("**Ask (debate):**"), 3)  # the retry is not a new turn
+
+    def test_a_judge_that_fails_twice_leaves_no_decision_and_says_why(self):
+        runner = self.runner(reply("For it."), reply("Against it."), reply("Summary."), room_format="debate",
+                             max_turns=4)
+        self.judge_failing(runner, times=2)
+        outcome = self.room(runner, participants=("critic", "helper", "general-purpose"))
+        self.assertEqual((outcome["decision"], outcome["ended_by"]), ("", "moderator"))
+        self.assertIn("*(the judge could not give a verdict: the run failed: RuntimeError: provider down)*",
+                      runner.transcript_text())
+        self.assertNotIn("could not answer", runner.transcript_text())
+
+    def test_redteam_order(self):
+        runner = self.runner(*[reply(f"R{i}") for i in range(6)], reply("Summary."), room_format="redteam",
+                             max_turns=6)
+        self.room(runner, participants=("critic", "helper", "general-purpose"))
+        self.assertEqual(self.speakers(), [
+            "critic: Propose an answer to the question.",
+            "helper: Find the weaknesses in the proposal.",
+            "general-purpose: Find the weaknesses in the proposal.",
+            "critic: Answer the attacks: defend or revise your proposal.",
+            "helper: Attack the revised proposal.",
+            "general-purpose: Attack the revised proposal."])
+
+    def test_a_fixed_format_names_no_moderator(self):
+        runner = self.runner(reply("A1"), reply("B1"), reply("A2"), reply("Summary."),
+                             room_format="roundrobin", max_turns=3)
+        self.room(runner)
+        ask = "Give your view, building on what was said."
+        self.assertNotIn("Moderator", runner.transcript_text())
+        self.assertIn(f"**Ask (roundrobin):** {ask}", runner.transcript_text())
+        self.assertIn(f"[room] roundrobin -> critic: {ask}", self.said)
+        self.assertIn(f"You are asked: {ask}", self.inputs()[0])
+        second = self.inputs()[2]  # a later turn of the same participant: incremental, still "You are asked"
+        self.assertIn("Since your last turn:", second)
+        self.assertIn(f"You are asked: {ask}", second)
+        self.assertNotIn("The moderator asks you", second)
+
+    def test_unknown_format_costs_no_model_call(self):
+        runner = self.runner(reply("never"))
+        outcome = runner.run({"type": "start_room", "question": "q", "participants": ["critic", "helper"],
+                              "format": "nope"})
+        self.assertEqual(outcome["error"],
+                         "unknown room format 'nope'; use one of moderated, roundrobin, debate, redteam")
+        self.assertNotIn("summary", outcome)
+        self.assertEqual([k for k, _ in SEEN if k == "messages"], [])
+
+    def test_the_format_name_is_read_without_case_and_an_unknown_one_is_a_value_error(self):
+        runner = self.runner(reply("A1"), reply("B1"), reply("C1"), reply("Summary."), room_format="Debate",
+                             max_turns=3)
+        outcome = self.room(runner, participants=("critic", "helper", "general-purpose"))
+        self.assertEqual(outcome["format"], "debate")
+        with self.assertRaises(ValueError) as caught:
+            self.runner(reply("never"), room_format="nope")
+        self.assertEqual(str(caught.exception),
+                         "unknown room format 'nope'; use one of moderated, roundrobin, debate, redteam")
+
+    def test_wrong_participant_count_costs_no_model_call(self):
+        runner = self.runner(reply("never"), room_format="debate")
+        outcome = self.room(runner, participants=("critic", "helper"))
+        self.assertEqual(outcome["error"], "the debate format needs exactly 3 participants")
+        self.assertEqual([k for k, _ in SEEN if k == "messages"], [])
+
+    def test_debate_needs_max_turns_of_three_before_any_model_call(self):
+        runner = self.runner(reply("never"), room_format="debate", max_turns=2)
+        outcome = self.room(runner, participants=("critic", "helper", "general-purpose"))
+        self.assertEqual(outcome["error"], "the debate format needs ROOM_MAX_TURNS of at least 3")
+        self.assertEqual([k for k, _ in SEEN if k == "messages"], [])
+
+    def test_the_judge_never_speaks_before_the_debaters(self):
+        from deep_agents_demo.features.orchestration.room_decisions import RoomState
+        from deep_agents_demo.features.orchestration.room_formats import DebatePolicy
+        policy = DebatePolicy(lambda name: "")
+        decision = policy.pick(RoomState(participants=["pro", "con", "judge"], turns_used=0, max_turns=2))
+        self.assertEqual([turn.speaker for turn in decision.turns], ["pro", "con"])
+
+    def test_the_format_instruction_reaches_participants_and_the_summary(self):
+        runner = self.runner(reply("A1"), reply("B1"), reply("Summary."), room_format="roundrobin", max_turns=2)
+        self.room(runner)
+        instruction = "Everyone speaks in turn, in the order given, round after round."
+        self.assertIn(instruction, self.inputs()[0])
+        self.assertIn(instruction, self.inputs()[2])
+
+    def assert_no_openings(self, runner, first_ask):
+        """A fixed format built with opening_round runs no openings: the first turn is a normal one."""
+        self.assertFalse([line for line in self.said if line.startswith("[room] ") and "opening" in line])
+        self.assertNotIn("Give your own answer first", runner.transcript_text())
+        self.assertIn(f"You are asked: {first_ask}", self.inputs()[0])
+
+    def test_a_roundrobin_with_an_opening_round_runs_no_openings(self):
+        runner = self.runner(reply("A1"), reply("B1"), reply("Summary."), room_format="roundrobin", max_turns=2,
+                             opening_round=True)
+        self.room(runner)
+        self.assert_no_openings(runner, "Give your view, building on what was said.")
+
+    def test_a_debate_with_an_opening_round_runs_no_openings(self):
+        runner = self.runner(reply("For it."), reply("Against it."), reply("Pro wins."), reply("Summary."),
+                             room_format="debate", max_turns=4, opening_round=True)
+        self.room(runner, participants=("critic", "helper", "general-purpose"))
+        self.assert_no_openings(runner, "Argue for: answer the last argument against.")
+
+    def test_a_redteam_with_an_opening_round_runs_no_openings(self):
+        runner = self.runner(reply("Proposal."), reply("Attack."), reply("Summary."), room_format="redteam",
+                             max_turns=2, opening_round=True)
+        self.room(runner)
+        self.assert_no_openings(runner, "Propose an answer to the question.")
+
+    def test_a_debate_capped_right_after_the_judge_keeps_the_verdict(self):
+        runner = self.runner(reply("For it."), reply("Against it."), reply("Pro wins: the cache is safe.\nWhy."),
+                             reply("The judge decided."), room_format="debate", max_turns=3)
+        outcome = self.room(runner, participants=("critic", "helper", "general-purpose"))
+        self.assertEqual((outcome["ended_by"], outcome["decision"], outcome["summary"]),
+                         ("turn limit", "Pro wins: the cache is safe.", "The judge decided."))
+
+
+TESTER = "---\nname: tester\ndescription: Tests.\n---\nYou test.\n"
+
+
+class FixedHistoryTests(RoomBase):
+    """A fixed format's participant sees every earlier turn on its first run, not a window."""
+
+    def test_roundrobin_fifth_participant_sees_the_first_answer(self):
+        runner = self.runner(*[reply(f"A{i}") for i in range(1, 6)], reply("Summary."),
+                             room_format="roundrobin", max_turns=5, extra_agents=[TESTER])
+        self.room(runner, participants=("critic", "helper", "general-purpose", "reviewer", "tester"))
+        self.assertIn("A1", self.inputs()[4])  # the fifth participant's first input
+        self.assertIn("**critic:** A1", self.inputs()[4])
+
+    def test_redteam_every_attacker_sees_the_proposal(self):
+        runner = self.runner(reply("Proposal."), reply("Attack 2."), reply("Attack 3."), reply("Attack 4."),
+                             reply("Attack 5."), reply("Summary."), room_format="redteam", max_turns=5,
+                             extra_agents=[TESTER])
+        self.room(runner, participants=("critic", "helper", "general-purpose", "reviewer", "tester"))
+        for index in (1, 2, 3, 4):  # the four attackers, each on its first run
+            self.assertIn("**critic:** Proposal.", self.inputs()[index], index)
+
+
+class OpeningAndContinuityTests(RoomBase):
+    def test_openings_dont_see_each_other(self):
+        runner = self.runner(reply("Critic opening."), reply("Helper opening."), reply("END\nDone."),
+                             opening_round=True)
+        self.room(runner)
+        self.assertTrue(self.inputs()[0].startswith("Question: Ship it?"))
+        self.assertIn("Give your own answer first. The others answer separately", self.inputs()[0])
+        self.assertIn("Reply with your answer only: a few short paragraphs.", self.inputs()[0])
+        self.assertNotIn("Critic opening.", self.inputs()[1])
+        self.assertIn("Critic opening.", self.inputs()[2])
+        self.assertIn("Helper opening.", self.inputs()[2])
+        self.assertIn("**critic (opening):** Critic opening.", runner.transcript_text())
+
+    def test_openings_count_towards_max_turns(self):
+        runner = self.runner(reply("Critic opening."), reply("Helper opening."), reply("Summary."),
+                             opening_round=True, max_turns=2)
+        outcome = self.room(runner)
+        self.assertEqual((outcome["turns"], outcome["ended_by"]), (2, "turn limit"))
+        self.assertEqual(len(self.inputs()), 3)  # two openings, then the summary: no moderator call
+        self.assertIn("Write the summary now", self.inputs()[2])
+
+    def test_second_turn_gets_only_new_turns(self):
+        runner = self.runner(reply("NEXT: critic\nFirst?"), reply("First point."),
+                             reply("NEXT: helper\nSecond?"), reply("Helper says more."),
+                             reply("NEXT: critic\nAnd now?"), reply("Second point."),
+                             reply("END\nDone."))
+        calls = recorded_invokes(runner)
+        self.room(runner)
+        base = f"t:room:{runner.room_id}:critic"
+        self.assertEqual([tid for tid, _ in calls if tid.startswith(base)], [base, base])
+        second = model_inputs()[5]  # moderator, critic, moderator, helper, moderator, critic
+        self.assertIn("Since your last turn:\n**helper:** Helper says more.", second)
+        self.assertIn("The moderator asks you: And now?", second)
+        self.assertNotIn("First point.", second)
+        self.assertNotIn("Recent turns:", second)
+
+    def test_failed_participant_restarts_with_full_input(self):
+        runner = self.runner(reply("NEXT: critic\nWhat breaks?"), reply("NEXT: critic\nTry again?"),
+                             reply("Second try."), reply("END\nDone."))
+        calls = recorded_invokes(runner)
+        real = runner.make
+        failed = []
+
+        def make(name, extra=()):
+            if name == "critic" and extra and not failed:  # the first critic run fails
+                failed.append(name)
+                return Boom()
+            return real(name, extra)
+        runner.make = make
+        self.room(runner)
+        base = f"t:room:{runner.room_id}:critic"
+        self.assertEqual([tid for tid, _ in calls if tid.startswith(base)], [base, base + "+"])
+        retry = [text for tid, text in calls if tid == base + "+"][0]
+        self.assertIn("Recent turns:", retry)  # the full turn input, not the incremental one
+        self.assertIn("The moderator asks you: Try again?", retry)
+        self.assertNotIn("Since your last turn", retry)
+
+    def test_budget_retry_uses_the_full_input(self):
+        # moderator, critic, moderator, helper, moderator = 5 calls; the critic's next call is cut
+        runner = self.runner(reply("NEXT: critic\nFirst?"), reply("First point."),
+                             reply("NEXT: helper\nFix it?"), reply("Fix it with a TTL."),
+                             reply("NEXT: critic\nAnd now?"), reply("Second point."), reply("END\nDone."),
+                             answers=["continue"])
+        runner.budget_size = 5
+        calls = recorded_invokes(runner)
+        self.room(runner)
+        base = f"t:room:{runner.room_id}:critic"
+        self.assertEqual([tid for tid, _ in calls if tid.startswith(base)], [base, base, base + "+"])
+        retry = [text for tid, text in calls if tid == base + "+"][0]
+        self.assertIn("Recent turns:", retry)
+        self.assertNotIn("Since your last turn", retry)
+        self.assertIn("**helper:** Fix it with a TTL.", retry)
+
+
+class ClosingSummaryTests(RoomBase):
+    FORMAT = "the full answer to the question, stated in the format the question asks for, then the open disagreements and next steps"
+
+    def test_moderator_decision_asks_for_the_answer_in_the_question_format(self):
+        runner = self.runner(reply("END\nDone."))
+        self.room(runner)
+        self.assertIn(f'"summary": "<only when ending: {self.FORMAT}>"', self.inputs()[0])
+
+    def test_final_summary_asks_for_the_answer_in_the_question_format(self):
+        runner = self.runner(reply("Summary."), max_turns=0)
+        self.room(runner)
+        self.assertIn("Write the summary now: the full answer to the question, stated in the format the question "
+                      "asks for, then the open disagreements and the next steps.", self.inputs()[0])
+
+
+class OpeningVisibilityTests(RoomBase):
+    def test_the_moderators_first_input_has_every_opening(self):
+        runner = self.runner(reply("Opening 1."), reply("Opening 2."), reply("Opening 3."), reply("Opening 4."),
+                             reply("END\nDone."), opening_round=True, recent_turns=3, extra_agents=[TESTER])
+        self.room(runner, participants=("critic", "helper", "general-purpose", "tester"))
+        moderator = self.inputs()[4]
+        for number in (1, 2, 3, 4):  # the window is 3, but the first call lists all four
+            self.assertIn(f"Opening {number}.", moderator)
+
+
+    def test_each_participant_sees_the_others_openings(self):
+        runner = self.runner(reply("Critic opening."), reply("Helper opening."),
+                             reply("NEXT: critic\nWhat breaks?"), reply("Critic answer."),
+                             reply("NEXT: helper\nFix?"), reply("Helper answer."),
+                             reply("END\nDone."), opening_round=True)
+        self.room(runner)
+        critic_turn, helper_turn = self.inputs()[3], self.inputs()[5]
+        self.assertIn("**helper (opening):** Helper opening.", critic_turn)
+        self.assertNotIn("Critic opening.", critic_turn)
+        self.assertIn("**critic (opening):** Critic opening.", helper_turn)
+        self.assertNotIn("Helper opening.", helper_turn)
+
+    def test_a_failure_after_a_turn_restarts_with_the_full_input(self):
+        runner = self.runner(reply("NEXT: critic\nFirst?"), reply("First point."),
+                             reply("NEXT: helper\nFix it?"), reply("Fix it."),
+                             reply("NEXT: critic\nAnd now?"),
+                             reply("NEXT: critic\nRetry?"), reply("Third point."),
+                             reply("END\nDone."))
+        calls = recorded_invokes(runner)
+        real = runner.make
+        capped = []
+
+        def make(name, extra=()):
+            if name == "critic" and extra:
+                capped.append(name)
+                if len(capped) == 2:  # the critic's second turn fails, after a good first one
+                    return Boom()
+            return real(name, extra)
+        runner.make = make
+        self.room(runner)
+        base = f"t:room:{runner.room_id}:critic"
+        self.assertEqual([tid for tid, _ in calls if tid.startswith(base)], [base, base, base + "+"])
+        retry = [text for tid, text in calls if tid == base + "+"][0]
+        self.assertIn("Recent turns:", retry)
+        self.assertIn("The moderator asks you: Retry?", retry)
+        self.assertNotIn("Since your last turn", retry)
+
+
+class FullInputDrainTests(RoomBase):
+    def test_a_full_input_turn_is_not_repeated_by_the_next_turn(self):
+        runner = self.runner(reply("NEXT: critic\nFirst?"), reply("Critic first."),
+                             reply("NEXT: helper\nH?"), reply("Helper one."),
+                             reply("NEXT: critic\nSecond?"), reply("Critic second."),
+                             reply("NEXT: helper\nAgain?"), reply("Helper two."),
+                             reply("END\nDone."))
+        self.room(runner)
+        # calls: moderator, critic (full), moderator, helper (full), moderator, critic, moderator, helper
+        helper_second = self.inputs()[7]
+        self.assertIn("Since your last turn:\n**critic:** Critic second.", helper_second)
+        self.assertNotIn("Critic first.", helper_second)
+
+    def test_a_restart_with_full_input_is_not_repeated_by_the_next_turn(self):
+        runner = self.runner(reply("NEXT: helper\nH?"), reply("NEXT: critic\nC?"), reply("Critic one."),
+                             reply("NEXT: helper\nH again?"), reply("Helper two."),
+                             reply("NEXT: critic\nC again?"), reply("Critic two."),
+                             reply("NEXT: helper\nH third?"), reply("Helper three."),
+                             reply("END\nDone."))
+        real = runner.make
+        failed = []
+
+        def make(name, extra=()):
+            if name == "helper" and extra and not failed:  # the helper's first run fails
+                failed.append(name)
+                return Boom()
+            return real(name, extra)
+        runner.make = make
+        self.room(runner)
+        # calls: moderator, moderator, critic, moderator, helper (restart, full), moderator, critic, moderator, helper
+        helper_third = self.inputs()[8]
+        self.assertIn("Critic two.", helper_third)
+        self.assertNotIn("Critic one.", helper_third)
+
+
+class PositionsUsageOutcomeTests(RoomBase):
+    POSITION = ("End with a line POSITION: <your position in one sentence> "
+                "(confidence: low|medium|high).")
+
+    def test_positions_reach_the_moderator_and_the_outcome(self):
+        runner = self.runner(reply("NEXT: critic\nWhat breaks?"),
+                             reply("TTL is missing.\nPOSITION: Needs a TTL (confidence: HIGH)"),
+                             reply("NEXT: helper\nFix?"),
+                             reply("Add a TTL.\n**POSITION:** Ship with a TTL (confidence: medium)"),
+                             reply("END\nDone."))
+        outcome = self.room(runner)
+        moderator = self.inputs()[4]
+        self.assertIn("Positions:\n- critic: Needs a TTL (high)\n- helper: Ship with a TTL (medium)", moderator)
+        self.assertLess(moderator.index("Positions:"), moderator.index("Reply with one JSON object"))
+        self.assertIn("Positions:\n(none yet)", self.inputs()[0])
+        self.assertEqual(outcome["positions"], {
+            "critic": {"position": "Needs a TTL", "confidence": "high"},
+            "helper": {"position": "Ship with a TTL", "confidence": "medium"},
+        })
+
+    def test_every_participant_input_ends_with_the_position_instruction(self):
+        runner = self.runner(reply("Critic opening."), reply("Helper opening."),
+                             reply("NEXT: critic\nWhat breaks?"), reply("Critic one."),
+                             reply("NEXT: helper\nFix?"), reply("Helper one."),
+                             reply("NEXT: critic\nAgain?"), reply("Critic two."),
+                             reply("END\nDone."), opening_round=True)
+        self.room(runner)
+        inputs = self.inputs()
+        # calls: critic opening, helper opening, moderator, critic, moderator, helper, moderator, critic
+        participant_inputs = [inputs[i] for i in (0, 1, 3, 5, 7)]
+        for text in participant_inputs:
+            self.assertTrue(text.endswith("\n\n" + self.POSITION), text)
+
+    def test_outcome_has_decision_dissent_actions(self):
+        end = json.dumps({"action": "end", "summary": "Ship.", "decision": "Ship it with a TTL.",
+                          "dissent": ["critic: no TTL yet"], "actions": ["add the TTL"]})
+        runner = self.runner(reply(end))
+        outcome = self.room(runner)
+        self.assertEqual(outcome["decision"], "Ship it with a TTL.")
+        self.assertEqual(outcome["dissent"], ["critic: no TTL yet"])
+        self.assertEqual(outcome["actions"], ["add the TTL"])
+        self.assertEqual(outcome["decision_sources"], {"json": 1})
+
+    def test_quiet_room_counts_usage(self):
+        usage = {"usage_metadata": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}}
+        runner = self.runner(AIMessage(content="NEXT: critic\nFirst?", **usage),
+                             AIMessage(content="First.", **usage),
+                             AIMessage(content="END\nDone.", **usage))
+        runner.quiet = True
+        outcome = self.room(runner)
+        self.assertEqual((outcome["model_calls"], outcome["input_tokens"], outcome["output_tokens"]),
+                         (3, 30, 6))
+        self.assertEqual(self.said, [])  # a quiet room shows nothing
+        runner.run({"type": "start_room", "question": "q", "participants": ["critic", "nobody"]})
+        self.assertEqual(runner.usage, {"model_calls": 0, "input_tokens": 0, "output_tokens": 0})
+
+    def test_outcome_json_saved_next_to_transcript(self):
+        folder = self.root / "rooms"
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("A point."), reply("END\nDone."),
+                             transcripts=folder)
+        outcome = self.room(runner, question="Save it?")
+        (md_path,) = list(folder.glob("*.md"))
+        self.assertEqual(outcome["transcript"], str(md_path))
+        saved = json.loads(md_path.with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, outcome)
+
+
+class SummaryOutcomeTests(RoomBase):
+    """The forced summary asks for the end JSON, so the outcome's decision, dissent and actions fill."""
+
+    def test_the_summary_input_has_minutes_positions_and_the_end_json(self):
+        runner = self.runner(
+            reply(json.dumps({"action": "next", "turns": [{"speaker": "critic", "ask": "What breaks?"}],
+                              "minutes": {"agreed": ["scope"]}})),
+            reply("Needs a TTL.\nPOSITION: Needs a TTL (confidence: high)"),
+            reply("Summary."), max_turns=1)
+        self.room(runner)
+        summary_input = self.inputs()[2]
+        self.assertIn("Minutes so far:\nAgreed:\n- scope", summary_input)
+        self.assertIn("Positions:\n- critic: Needs a TTL (high)", summary_input)
+        self.assertIn('{"action": "end", "summary"', summary_input)
+        self.assertIn("Write the summary now", summary_input)
+
+    def test_the_summary_json_fills_the_outcome(self):
+        summary = json.dumps({"action": "end", "summary": "Ship with a TTL.", "decision": "Add a TTL.",
+                              "dissent": ["helper: no"], "actions": ["write it"]})
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("A point."), reply(summary), max_turns=1)
+        outcome = self.room(runner)
+        self.assertEqual((outcome["ended_by"], outcome["summary"], outcome["decision"], outcome["dissent"],
+                          outcome["actions"]),
+                         ("turn limit", "Ship with a TTL.", "Add a TTL.", ["helper: no"], ["write it"]))
+
+    def test_an_end_json_with_no_summary_uses_its_decision(self):
+        summary = json.dumps({"action": "end", "summary": "", "decision": "Add a TTL."})
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("A point."), reply(summary), max_turns=1)
+        outcome = self.room(runner)
+        self.assertEqual(outcome["summary"], "Add a TTL.")
+
+    def test_an_end_json_with_nothing_says_so_not_raw_json(self):
+        summary = json.dumps({"action": "end", "summary": "", "decision": ""})
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("A point."), reply(summary), max_turns=1)
+        outcome = self.room(runner)
+        self.assertEqual(outcome["summary"], "(the moderator wrote no summary)")
+
+    def test_a_plain_text_summary_is_the_summary(self):
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("A point."), reply("Summary: one point made."),
+                             max_turns=1)
+        outcome = self.room(runner)
+        self.assertEqual((outcome["summary"], outcome["decision"], outcome["dissent"]),
+                         ("Summary: one point made.", "", []))
+
+    def test_a_text_summary_whose_first_word_is_end_keeps_its_first_line(self):
+        cases = [("END\nAgreed: ship.", "Agreed: ship."),
+                 ("**END**\nShip.", "Ship."),
+                 ("End result: ship it.", "End result: ship it."),
+                 ("END of discussion: we agreed to ship.", "END of discussion: we agreed to ship.")]
+        for text, summary in cases:
+            with self.subTest(text=text):
+                runner = self.runner(reply("NEXT: critic\nGo."), reply("A point."), reply(text), max_turns=1)
+                self.assertEqual(self.room(runner)["summary"], summary)
+
+    def test_a_debate_verdict_stays_unless_the_summary_gives_one(self):
+        summary = json.dumps({"action": "end", "summary": "The judge decided."})
+        runner = self.runner(reply("For it."), reply("Against it."), reply("Pro wins: the cache is safe.\nWhy."),
+                             reply(summary), room_format="debate", max_turns=3)
+        outcome = self.room(runner, participants=("critic", "helper", "general-purpose"))
+        self.assertEqual((outcome["summary"], outcome["decision"]), ("The judge decided.", "Pro wins: the cache is safe."))
+
+
+class FinalFixTests(RoomBase):
+    def test_a_moderator_failure_adds_both_lines_once(self):
+        runner = self.runner(reply("I object."), reply("END\nDone."))
+        real = runner.make
+        failed = []
+
+        def make(name, extra=()):
+            if name == "moderator" and extra and not failed:  # the first moderator run fails
+                failed.append(name)
+                return Boom()
+            return real(name, extra)
+        runner.make = make
+        self.room(runner)
+        text = runner.transcript_text()
+        self.assertEqual(text.count("*(the moderator could not answer: the run failed: RuntimeError: provider down)*"), 1)
+        self.assertEqual(text.count("*(the moderator named no participant; critic speaks next)*"), 1)
+        self.assertIn("**critic:** I object.", text)  # the rotation speaker still takes the turn
+
+    def test_the_budget_stop_message_is_not_a_model_call(self):
+        runner = self.runner(reply("NEXT: critic\nGo."), reply("Point one."), reply("The summary."),
+                             interactive=False)
+        runner.budget_size = 2  # the moderator's call and the critic's: the next moderator call is cut
+        outcome = self.room(runner)
+        self.assertEqual((outcome["ended_by"], outcome["summary"]), ("budget", "The summary."))
+        self.assertEqual(outcome["model_calls"], 3)  # moderator, critic, summary: not the budget's stop
+
+    def test_a_budget_cut_partial_answer_records_its_position(self):
+        runner = self.runner(
+            reply(json.dumps({"action": "next", "turns": [{"speaker": "critic", "ask": "What breaks?"},
+                                                         {"speaker": "helper", "ask": "Fix it?"}]})),
+            AIMessage(content="Partial point.\nPOSITION: Keep the cache (confidence: low)",
+                      tool_calls=[{"name": "ls", "id": "l1", "args": {"path": "/"}}]),
+            reply("The summary."),
+            interactive=False)
+        runner.budget_size = 2
+        outcome = self.room(runner)
+        self.assertEqual(outcome["positions"], {"critic": {"position": "Keep the cache", "confidence": "low"}})
+
+    def test_the_outcome_and_transcript_name_the_format(self):
+        folder = self.root / "rooms"
+        runner = self.runner(reply("A1"), reply("B1"), reply("Summary."), room_format="roundrobin", max_turns=2,
+                             transcripts=folder)
+        outcome = self.room(runner)
+        self.assertEqual(outcome["format"], "roundrobin")
+        (md_path,) = list(folder.glob("*.md"))
+        self.assertIn("Format: roundrobin", md_path.read_text(encoding="utf-8"))
+        self.assertEqual(json.loads(md_path.with_suffix(".json").read_text(encoding="utf-8"))["format"], "roundrobin")
+
+    def test_a_moderated_outcome_names_moderated(self):
+        outcome = self.room(self.runner(reply("END\nDone.")))
+        self.assertEqual(outcome["format"], "moderated")
 
 
 if __name__ == "__main__":

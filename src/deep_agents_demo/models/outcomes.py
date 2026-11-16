@@ -43,3 +43,11 @@ class RoomOutcome(TypedDict):
     ended_by: NotRequired[str]     # moderator, turn limit, budget or stopped
     note: NotRequired[str]
     error: NotRequired[str]
+    positions: NotRequired[dict]          # name -> {"position", "confidence"}, each participant's last
+    decision: NotRequired[str]            # the moderator's recommendation, in one sentence
+    dissent: NotRequired[list[str]]       # who still disagrees, and why
+    actions: NotRequired[list[str]]       # next steps
+    model_calls: NotRequired[int]         # every model call the room made, moderator included
+    input_tokens: NotRequired[int]
+    output_tokens: NotRequired[int]
+    decision_sources: NotRequired[dict]   # how each moderator decision was read (json, text, ...)

@@ -104,7 +104,10 @@ def run_room(model, backend, task, settings, tmp: Path, label: str, keep: Path |
     room = RoomRunner(make, Approvals(interactive=False), None, NullSink(), thread=label,
                       max_turns=settings.room_max_turns, budget=settings.orchestration_max_calls,
                       interactive=False, transcripts=transcripts,
-                      describe=lambda name: DESCRIPTIONS.get(name, ""))
+                      describe=lambda name: DESCRIPTIONS.get(name, ""),
+                      # the room settings the app passes (ui/cli/repl.py runners_for)
+                      recent_turns=settings.room_recent_turns,
+                      opening_round=settings.room_opening_round, format=settings.room_format)
     room.quiet = True
     outcome = room.run({"type": "start_room", "question": full_prompt(task),
                         "participants": ["analyst", "skeptic"]})

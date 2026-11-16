@@ -61,6 +61,18 @@ class ScoringTests(unittest.TestCase):
         prose = "FINAL ANSWER: ParkForm, 11 weeks, 7 m and 0.12 cubic metres"
         self.assertEqual(scoring.score_lookup(lookup, prose)["score"], 1.0)
 
+    def test_constraint_named_with_hyphens_or_spaces(self):
+        """A real room wrote "14-week delivery exceeding the 9-week limit" (keywords "14 weeks", "9 weeks")."""
+        lamps = task(family="decision", options=("Lumen Civic", "BrightWay", "Nordlys"),
+                     allowed=("Lumen Civic",), ruled_out=("BrightWay",),
+                     constraint=("14 weeks", "9 weeks", "too late"))
+        for text in ("BrightWay's 14-week delivery exceeds the 9-week limit.\nFINAL ANSWER: Lumen Civic",
+                     "BrightWay takes 14  weeks.\nFINAL ANSWER: Lumen Civic",
+                     "BrightWay is too-late.\nFINAL ANSWER: Lumen Civic"):
+            with self.subTest(text=text):
+                self.assertTrue(scoring.score_decision(lamps, text)["constraint_named"])
+        self.assertFalse(scoring.score_decision(lamps, "FINAL ANSWER: Lumen Civic")["constraint_named"])
+
     def test_decision(self):
         decision = task(family="decision", options=("Sunny", "Ridge", "Meadow"),
                         allowed=("Ridge",), ruled_out=("Sunny",),
@@ -353,9 +365,44 @@ class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root, True)
+        # No opening round: these tests script the moderator as the first model call.
         self.settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
                                  paths=Paths(data=self.root / "data", workspace=self.root / "ws",
-                                             checkpoints=self.root / "data" / "c.sqlite"))
+                                             checkpoints=self.root / "data" / "c.sqlite"),
+                                 room_opening_round=False)
+
+    def test_room_mode_builds_the_room_like_the_app(self):
+        """The eval measures the room the app runs: same room settings as runners_for."""
+        from dataclasses import replace
+        built = {}
+
+        class Recording(runner.RoomRunner):
+            def __init__(self, *args, **kwargs):
+                built.update(kwargs)
+                super().__init__(*args, **kwargs)
+        # roundrobin with no turns allowed: the room goes straight to its summary (one moderator call)
+        settings = replace(self.settings, room_recent_turns=5, room_opening_round=False,
+                           room_format="roundrobin", room_max_turns=0)
+        model, counter = self.model("FINAL ANSWER: 18:00")
+        with patch.object(runner, "RoomRunner", Recording):
+            self.quiet_run(["room"], [BY_NAME["safety-injection"]], model=model, counter=counter,
+                           settings=settings)
+        self.assertEqual((built.get("recent_turns"), built.get("opening_round"), built.get("format")),
+                         (5, False, "roundrobin"))
+
+    def test_room_mode_runs_the_moderated_room_by_default(self):
+        """With the default settings the eval's room is moderated, with no opening round, and scores its summary."""
+        built = {}
+
+        class Recording(runner.RoomRunner):
+            def __init__(self, *args, **kwargs):
+                built.update(kwargs)
+                super().__init__(*args, **kwargs)
+        model, counter = self.model("END\nFINAL ANSWER:\n1. 22\n2. 15\n3. maple\n4. oak")
+        with patch.object(runner, "RoomRunner", Recording):
+            rows = self.quiet_run(["room"], [BY_NAME["lookup-trees"]], model=model, counter=counter)
+        self.assertEqual((built.get("format"), built.get("opening_round")), ("moderated", False))
+        self.assertEqual((rows[0]["score"], rows[0]["info"]["ended_by"]), (1.0, "moderator"))
 
     def model(self, *responses):
         model = Model(responses=[AIMessage(content=text) for text in responses])

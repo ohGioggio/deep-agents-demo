@@ -90,7 +90,8 @@ def runners_for(runtime, settings, thread: str, approver, interactive: bool, qui
     rooms = RoomRunner(workers, approver, interaction, sink, thread=thread,
                        max_turns=settings.room_max_turns, budget=settings.orchestration_max_calls,
                        interactive=interactive, transcripts=settings.paths.workspace / "rooms" / folder,
-                       describe=describe)
+                       describe=describe, recent_turns=settings.room_recent_turns,
+                       opening_round=settings.room_opening_round, format=settings.room_format)
     rooms.quiet = quiet
 
     def with_ctrl_c(runner):
@@ -127,7 +128,7 @@ class ChatSession:
         self.uploads, self.agents = uploads, agents
         self.outputs = outputs  # the OutputStore, for /files
         self.tables = tables  # RichTables: /threads, /files, /agents as tables when given
-        self.room = room  # (participants, question) -> runs a room and tells the agent
+        self.room = room  # (participants, question, format) -> runs a room and tells the agent
         self.pending = []  # images attached with /image, sent with the next message
         self.reload_skills = True  # reload once per chat, on its first turn this session
 
@@ -202,14 +203,15 @@ class ChatSession:
         lines.append("  " + footer)
         self.say("Subagents:\n" + "\n".join(lines))
 
-    @command("room", usage="/room A B -- QUESTION", summary="let agents discuss a question, moderated")
+    @command("room", usage="/room AGENT AGENT [...] [--format moderated|roundrobin|debate|redteam] -- QUESTION",
+             summary="let agents discuss a question (moderated, or a fixed format)")
     def room_command(self, arg):
         from deep_agents_demo.features.orchestration.rooms import parse_room_command
         parsed = parse_room_command(arg)
         if isinstance(parsed, str):
             self.say(parsed)
             return
-        names, question = parsed
+        names, question, room_format = parsed
         # The demo's own general-purpose (and researcher, when it exists) aren't in the
         # registry; the room runner checks every name before any model call.
         built_in = ("general-purpose", "researcher")
@@ -220,7 +222,7 @@ class ChatSession:
         elif self.room is None:
             self.say("Rooms can't run here.")
         else:
-            self.room(names, question)
+            self.room(names, question, room_format)
 
     @command("help", usage="/help", summary="show this help")
     def help(self, arg):
@@ -368,12 +370,14 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
                                        approver, interactive=prompt is None, quiet=quiet,
                                        interaction=interaction, sink=sink, notify=notify)
 
-                def run_room(names, question):
+                def run_room(names, question, room_format=None):
                     """/room: run it, then tell the agent the outcome as an ordinary turn."""
                     active = runners()
                     from deep_agents_demo.features.orchestration.rooms import room_followup
-                    outcome = active["start_room"]({"type": "start_room", "question": question,
-                                                    "participants": names})
+                    request = {"type": "start_room", "question": question, "participants": names}
+                    if room_format:  # else the room's default (ROOM_FORMAT)
+                        request["format"] = room_format
+                    outcome = active["start_room"](request)
                     if "summary" not in outcome:  # refused before it started, e.g. an unknown agent
                         say(f"Room not started: {outcome.get('error')}")
                         return

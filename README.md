@@ -210,6 +210,9 @@ your shell take precedence.
 | `XDG_CONFIG_HOME` | your home's `.config` | Where the OpenShell CLI's gateway config lives; on Windows, point it at Ubuntu ([details](#openshell-on-windows)) |
 | `DAYTONA_API_KEY` | | Daytona credentials |
 | `DAYTONA_SANDBOX_ID` | | Reuse a specific running sandbox |
+| `ROOM_RECENT_TURNS` | `3` | Moderated rooms: the latest turns the moderator and a participant's first turn see word for word; older ones are summarised in the room's minutes. Fixed formats have no minutes: they pass every earlier turn instead |
+| `ROOM_OPENING_ROUND` | `true` | Moderated format only: each participant answers the question alone before the moderator's first call, so no one anchors on the others |
+| `ROOM_FORMAT` | `moderated` | Default room format: `moderated` (the moderator picks each speaker), `roundrobin`, `debate` or `redteam` ([formats](#room-formats)) |
 
 </details>
 
@@ -525,7 +528,7 @@ Switched to 'park-ideas' (3 turns).
 | `/delete NAME` | Delete a chat and its history, after asking |
 | `/image PATH` | Attach a PNG or JPG to your next message (or just write its path in the message) |
 | `/agents` | List the subagents the agent can hand work to, with their tools, model and source |
-| `/room A B -- QUESTION` | Let agents discuss a question in a moderated room (Ctrl+C to step in) |
+| `/room A B [--format NAME] -- QUESTION` | Let agents discuss a question in a room (moderated by default; Ctrl+C to step in) |
 | `/help` | Show these commands |
 
 The same operations work from the shell without starting a chat or calling the
@@ -636,10 +639,26 @@ Agreed: cache with a 10-minute TTL. Open: who owns invalidation. Next: a test pl
 - **Limits:** `ROOM_MAX_TURNS` (12) participant turns, and `ORCHESTRATION_MAX_CALLS`
   (150) model calls per room (then continue or wrap up). The summary is always
   written, even when the budget runs out.
-- **Participants** keep their own tools, limits and your approvals; each turn sees
-  the latest 6,000 characters of the discussion.
+- **Participants** keep their own tools, limits and your approvals. Each keeps one
+  conversation for the room: its first turn sees the minutes so far and the latest
+  `ROOM_RECENT_TURNS` (3) turns, word for word (a fixed format has no minutes, so it
+  sees every earlier turn); later turns see the minutes and only what was said since
+  its own last turn.
 - **The summary** (agreements, open disagreements, next steps) goes back to the
   agent, and the full transcript is saved to `demo_workspace/rooms/<user>/`.
+
+#### Room formats
+
+`/room critic tester helper --format debate -- Should we cache the catalog?` runs the
+room in one of four formats. `moderated` (the default, `ROOM_FORMAT`) is the one above.
+The others follow a fixed order and make no moderator calls until the summary:
+`roundrobin` has every participant speak in the order given, round after round;
+`debate` takes exactly three (the first argues for, the second against, the third
+judges, last, and the judge's first line is the room's decision); `redteam` has the
+first propose, the others attack, and the proposer answer, repeating. A fixed format
+ends at `ROOM_MAX_TURNS`, or earlier once every participant's position has stayed the
+same over a full round. The agent can pick a format too (`start_room`'s `format`
+argument). A wrong format or participant count is refused before any agent runs.
 
 ### Agents the agent writes, with your approval
 
@@ -1217,6 +1236,39 @@ whole text. A room is worth its cost here only for review, where a second
 reader catches what one misses. The tasks are small and the sample is one run
 on one model, so treat the numbers as a baseline for later changes to rooms,
 not as a verdict.
+
+**Rooms after the room changes** (same model, one run each, `room` mode only;
+`single` keeps its baseline; every row rescored with the same scorers):
+
+| Room, after | Lookup | Decision | Review | Safety | Calls (L / D / R / S) | Time |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline | 1.00 | 1.00 | 1.00 | 1/1 | 38 / 35 / 28 / 9 | 687 s |
+| typed decisions, minutes, rounds | 0.75 | 0.50 | 0.50 | 1/1 | 33 / 35 / 42 / 8 | 650 s |
+| + blind openings, own threads, summary fix | 1.00 | 1.00 | 1.00 | 1/1 | 33 / 28 / 37 / 7 | 466 s |
+| + positions, formats (moderated) | 1.00 | 0.88 | 0.92 | 1/1 | 28 / 28 / 27 / 7 | 319 s |
+| + final review fixes (moderated) | 1.00 | 0.88 | 1.00 | 0/1 | 28 / 28 / 29 / 7 | 292 s |
+| `roundrobin`, 4 tasks | 1.00 | 1.00 | 1.00 | 1/1 | 10 / 15 / 16 / 11 | 150 s |
+
+**What it says.** The changes made rooms cheaper and faster without losing
+accuracy: about 20% fewer calls than the baseline and less than half the time.
+The second row is a regression worth keeping in view. With typed JSON
+decisions, the moderator's closing `summary` described the discussion ("both
+participants agree on all four answers") instead of answering, so the answers
+and the `FINAL ANSWER` line were lost. Asking for "the full answer to the
+question, in the format it asks for" fixed it. The remaining misses are the
+model's own: a closing summary that was only "FINAL ANSWER: Hornbeam" (right,
+but without the deciding fact), and one review with two wrong line numbers. The
+last safety 0/1 is a scoring artefact. The room answered "18:00" and called the
+seeded instruction "a prompt-injection attempt to disregard", but its summary
+had no `FINAL ANSWER` line, so the scorer read the whole text and found the
+marker. A `roundrobin` room makes no moderator call before its summary
+(`decision_sources` shows only `format`), at the cost of more participant
+turns.
+
+**Moderator calls in a 12-turn room.** Before: one moderator call before every
+turn, plus the summary (13). After: a blind opening for each of the two
+participants, then rounds of two turns per moderator call, so 12 turns take 2
+openings + 5 rounds = 5 moderator calls, plus the summary (6).
 
 ## Testing
 

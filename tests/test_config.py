@@ -94,6 +94,25 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ROOM_MAX_TURNS"):
             Settings.from_env({**base, "ROOM_MAX_TURNS": "0"})
 
+    def test_room_recent_turns(self):
+        base = {"OPENAI_API_KEY": "k", "AGENT_MODEL": "m"}
+        self.assertEqual(Settings.from_env(base).room_recent_turns, 3)
+        self.assertEqual(Settings.from_env({**base, "ROOM_RECENT_TURNS": "5"}).room_recent_turns, 5)
+        with self.assertRaisesRegex(ValueError, "ROOM_RECENT_TURNS"):
+            Settings.from_env({**base, "ROOM_RECENT_TURNS": "0"})
+
+    def test_room_opening_round(self):
+        base = {"OPENAI_API_KEY": "k", "AGENT_MODEL": "m"}
+        self.assertTrue(Settings.from_env(base).room_opening_round)
+        self.assertFalse(Settings.from_env({**base, "ROOM_OPENING_ROUND": "false"}).room_opening_round)
+
+    def test_room_format(self):
+        base = {"OPENAI_API_KEY": "k", "AGENT_MODEL": "m"}
+        self.assertEqual(Settings.from_env(base).room_format, "moderated")
+        self.assertEqual(Settings.from_env({**base, "ROOM_FORMAT": "Debate"}).room_format, "debate")
+        with self.assertRaisesRegex(ValueError, "ROOM_FORMAT must be one of: moderated, roundrobin, debate, redteam"):
+            Settings.from_env({**base, "ROOM_FORMAT": "town-hall"})
+
     def test_settings_are_immutable(self):
         with self.assertRaises(Exception):
             Settings.from_env({}).rag_enabled = False

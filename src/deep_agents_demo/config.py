@@ -21,6 +21,7 @@ CHECKPOINTS = ROOT / "demo_checkpoints.sqlite"
 ENV_FILE = ROOT / ".env"
 
 RECALL_MODES = ("tool", "auto", "both")
+ROOM_FORMATS = ("moderated", "roundrobin", "debate", "redteam")
 FILE_OUTPUT_MODES = ("auto", "always", "never")
 SANDBOX_PROVIDERS = ("none", "daytona", "openshell")
 PLACEHOLDERS = {"your-api-key", "your-model-id"}
@@ -93,6 +94,9 @@ class Settings:
     orchestration_max_calls: int = 150  # model calls one plan (or room) may use before asking
     subagent_max_parallel: int = 3    # subagents running at the same time
     room_max_turns: int = 12          # participant turns in a moderated room
+    room_recent_turns: int = 3        # turns a room's participants see verbatim (the rest is minutes)
+    room_opening_round: bool = True   # each participant answers alone before the moderator's first call
+    room_format: str = "moderated"    # the default room format (ROOM_FORMATS)
     file_output: str = "auto"         # FILE_OUTPUT: deliver documents as files (auto, always, never)
     paths: Paths = field(default_factory=Paths)
 
@@ -118,6 +122,9 @@ class Settings:
         recall_mode = get("MEMORY_RECALL", "auto").lower()
         if recall_mode not in RECALL_MODES:
             raise ValueError(f"MEMORY_RECALL must be one of: {', '.join(RECALL_MODES)}")
+        room_format = get("ROOM_FORMAT", "moderated").lower()
+        if room_format not in ROOM_FORMATS:
+            raise ValueError(f"ROOM_FORMAT must be one of: {', '.join(ROOM_FORMATS)}")
         file_output = get("FILE_OUTPUT", "auto").lower()
         if file_output not in FILE_OUTPUT_MODES:
             raise ValueError(f"FILE_OUTPUT must be one of: {', '.join(FILE_OUTPUT_MODES)}")
@@ -178,6 +185,9 @@ class Settings:
             orchestration_max_calls=at_least_one("ORCHESTRATION_MAX_CALLS", 150),
             subagent_max_parallel=at_least_one("SUBAGENT_MAX_PARALLEL", 3),
             room_max_turns=at_least_one("ROOM_MAX_TURNS", 12),
+            room_recent_turns=at_least_one("ROOM_RECENT_TURNS", 3),
+            room_opening_round=flag("ROOM_OPENING_ROUND"),
+            room_format=room_format,
         )
 
 

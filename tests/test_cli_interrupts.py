@@ -1,5 +1,6 @@
 """Ctrl+C in the CLI: plans and rooms run under the pause/stop handler when
 interactive, and Ctrl+C keeps its usual meaning in one-shot runs."""
+import shutil
 import signal
 import tempfile
 import unittest
@@ -94,7 +95,27 @@ class NewAgentsInTheSameMessageTests(unittest.TestCase):
         room = runners["start_room"]({"type": "start_room", "question": "q",
                                       "participants": ["critic", "helper"]})
         self.assertNotIn("error", room)
-        self.assertEqual(built, ["moderator"])  # it got as far as running the room
+        self.assertEqual(built, ["critic"])  # it got as far as running the room: the first opening (ROOM_OPENING_ROUND)
+
+    def test_the_room_format_setting_reaches_the_room(self):
+        from dataclasses import replace
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
+                            paths=Paths(data=root / "data", workspace=root / "ws",
+                                        checkpoints=root / "data" / "c.sqlite"))
+        built = []
+
+        def make(name, extra=()):
+            built.append(name)
+            return Stopping()
+        make.names = frozenset({"moderator", "critic", "helper"})
+        runtime = SimpleNamespace(make_worker=make, agents=None, chats=SimpleNamespace(user="u"))
+        runners = runners_for(runtime, replace(settings, room_format="debate"), "t", Approvals(),
+                              interactive=False, quiet=True)
+        room = runners["start_room"]({"type": "start_room", "question": "q", "participants": ["critic", "helper"]})
+        self.assertIn("needs exactly 3 participants", room["error"])  # debate: refused before any agent runs
+        self.assertEqual(built, [])
 
 
 class CtrlCControlsTests(unittest.TestCase):
