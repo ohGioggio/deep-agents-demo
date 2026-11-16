@@ -19,6 +19,16 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((s.sandbox.provider, s.sandbox.openshell_workdir), ("none", "/sandbox"))
         self.assertEqual(s.requests_per_minute, 0)
 
+    def test_chat_requests_time_out(self):
+        """A hung request fails after API_TIMEOUT_SECONDS and is retried, instead of waiting forever."""
+        from deep_agents_demo.providers.chat import chat_model
+        chat = dict(OPENAI_API_KEY="key", AGENT_MODEL="model")
+        self.assertEqual(Settings.from_env({}).request_timeout, 120)
+        self.assertEqual(chat_model(Settings.from_env(chat)).request_timeout, 120)
+        self.assertEqual(chat_model(Settings.from_env({**chat, "API_TIMEOUT_SECONDS": "45"})).request_timeout, 45)
+        with self.assertRaisesRegex(ValueError, "API_TIMEOUT_SECONDS must be at least 1"):
+            Settings.from_env({"API_TIMEOUT_SECONDS": "0"})
+
     def test_blank_values_fall_back_to_the_chat_settings(self):
         s = Settings.from_env({"OPENAI_API_KEY": "chat-key", "AGENT_MODEL": "chat-model",
                                "OPENAI_BASE_URL": "http://local/v1", "MEMORY_MODEL": "  ",

@@ -85,6 +85,7 @@ class Settings:
     sandbox: SandboxSettings = field(default_factory=SandboxSettings)
     rag_enabled: bool = True
     requests_per_minute: float = 0.0  # 0 = no cap
+    request_timeout: float = 120.0    # seconds a chat request may take before it is retried
     disabled_tools: tuple = ()        # tool names hidden from the agent and refused
     agent_dirs: tuple = ()            # extra folders of agent files (before demo_workspace/agents)
     subagent_max_calls: int = 25      # model calls per subagent run
@@ -168,6 +169,7 @@ class Settings:
             file_output=file_output,
             rag_enabled=flag("RAG_ENABLED"),
             requests_per_minute=number("API_REQUESTS_PER_MINUTE", 0, float),
+            request_timeout=at_least_one("API_TIMEOUT_SECONDS", 120),
             disabled_tools=tuple(dict.fromkeys(
                 name for name in re.split(r"[\s,]+", get("DISABLED_TOOLS", "")) if name)),
             agent_dirs=agent_dirs,
