@@ -112,5 +112,38 @@ class DaemonPoolTests(unittest.TestCase):
             thread.join(5)
             self.assertFalse(thread.is_alive())
 
+
+class ExitNoiseTests(unittest.TestCase):
+    """A worker left running when the chat quits can't save its state after Python starts
+    shutting down: concurrent.futures logs that as a traceback, which must not reach the screen."""
+
+    def logged(self, error):
+        import logging
+
+        import deep_agents_demo.features.orchestration.pool  # noqa: F401 - installs the filter
+        seen = []
+
+        class Keep(logging.Handler):
+            def emit(self, record):
+                seen.append(record)
+        logger = logging.getLogger("concurrent.futures")
+        handler = Keep()
+        logger.addHandler(handler)
+        try:
+            try:
+                raise error
+            except RuntimeError:
+                logger.exception("exception calling callback for %r", "future")
+        finally:
+            logger.removeHandler(handler)
+        return seen
+
+    def test_the_shutdown_error_of_an_abandoned_worker_is_not_shown(self):
+        self.assertEqual(self.logged(RuntimeError("cannot schedule new futures after shutdown")), [])
+        self.assertEqual(self.logged(RuntimeError("cannot schedule new futures after interpreter shutdown")), [])
+
+    def test_other_callback_errors_still_are(self):
+        self.assertEqual(len(self.logged(RuntimeError("something else"))), 1)
+
 if __name__ == "__main__":
     unittest.main()

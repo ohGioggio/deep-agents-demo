@@ -7,12 +7,27 @@ daemons and ``shutdown`` never joins them: Python joins non-daemon pool threads 
 still running (a model call that can't be cancelled) would hold the process up.
 """
 import contextvars
+import logging
 import queue
 import threading
 from concurrent.futures import Future
 from itertools import count
 
 _NAMES = count(1)
+
+
+class _QuietAtExit(logging.Filter):
+    """Drops the traceback ``concurrent.futures`` logs when a worker left running (a stopped
+    swarm's model call) tries to save its state after Python began shutting down: quitting the
+    chat then would print it. Every other callback error still shows."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        error = record.exc_info[1] if record.exc_info else None
+        return not (isinstance(error, RuntimeError) and "new futures after" in str(error)
+                    and "shutdown" in str(error))
+
+
+logging.getLogger("concurrent.futures").addFilter(_QuietAtExit())
 
 
 class DaemonPool:
