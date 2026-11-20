@@ -106,6 +106,28 @@ class SyncDelegation(unittest.TestCase):
         self.assertNotIn("__interrupt__", result)
         return result
 
+    def test_a_task_without_a_description_is_an_error_the_model_can_fix(self):
+        """Seen live: the model put the job under "task" instead of "description"; the new agent
+        then got an empty request and kept asking what to do. Like the task tool's own check,
+        the call gets an error naming the missing argument, and no agent runs."""
+        sub_model = Scripted(responses=[AIMessage(content="what should I do?")])
+        ran = []
+
+        def make(name, extra_middleware=()):
+            ran.append(name)
+            return create_agent(model=sub_model, tools=[remove_file], system_prompt="",
+                                checkpointer=InMemorySaver())
+        make.names = frozenset({"helper"})
+        model = Scripted(responses=[calls(("task", {"task": "delete /d1", "subagent_type": "helper"}, "t1")),
+                                    AIMessage(content="ok")])
+        parent = create_agent(model=model, tools=[task], middleware=[NewAgentDelegation(set(), lambda: make)],
+                              checkpointer=InMemorySaver())
+        result = parent.invoke({"messages": [HumanMessage(content="go")]}, self.config)
+        [answer] = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        self.assertIn("description", answer.content)
+        self.assertEqual(answer.status, "error")
+        self.assertEqual(ran, [], "no agent ran on an empty request")
+
     def test_two_pauses_approve_then_reject_keeps_the_second_file(self):
         result = self.drive(parent_for(TWO_PAUSES), [APPROVE, reject()])
         self.assertEqual(REMOVED, ["/d1"])
@@ -144,6 +166,16 @@ class SyncDelegation(unittest.TestCase):
 class AsyncDelegation(unittest.TestCase):
     def setUp(self):
         REMOVED.clear()
+
+    def test_a_task_without_a_description_is_an_error(self):
+        model = Scripted(responses=[calls(("task", {"task": "delete /d1", "subagent_type": "helper"}, "t1")),
+                                    AIMessage(content="ok")])
+        parent = parent_on(model, InMemorySaver())
+        result = asyncio.run(parent.ainvoke({"messages": [HumanMessage(content="go")]},
+                                            {"configurable": {"thread_id": "parent"}}))
+        [answer] = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        self.assertEqual(answer.status, "error")
+        self.assertIn("description", answer.content)
 
     def test_two_pauses_approve_then_reject_keeps_the_second_file(self):
         async def run():

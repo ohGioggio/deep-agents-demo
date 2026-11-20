@@ -103,8 +103,18 @@ class NewAgentDelegation(AgentMiddleware):
         return {"configurable": {"thread_id": f"task-{call.get('id') or ''}"}}
 
     @staticmethod
-    def _message(request, text: str) -> ToolMessage:
-        return ToolMessage(content=text, tool_call_id=request.tool_call.get("id") or "", name="task")
+    def _message(request, text: str, status: str = "success") -> ToolMessage:
+        return ToolMessage(content=text, tool_call_id=request.tool_call.get("id") or "", name="task",
+                           status=status)
+
+    def _missing_description(self, request):
+        """The task tool's own check, which this path skips: no job, no run. Seen live, a model
+        put the job under another key, and the agent got an empty request."""
+        if _task_text(request.tool_call).strip():
+            return None
+        return self._message(request, "Error: the task tool needs `description` (the full task for the "
+                             "agent, with every path and detail it needs) and `subagent_type`. Call it again "
+                             "with both.", status="error")
 
     def _take(self, request, name, started: bool):
         """Take the call's entry before it runs. A call that already has a started run but no
@@ -135,6 +145,9 @@ class NewAgentDelegation(AgentMiddleware):
         if target is None:
             return handler(request)
         make, name = target
+        missing = self._missing_description(request)
+        if missing is not None:
+            return missing
         agent = make(name)
         refusal = self._claim(agent, request, name)
         if refusal is not None:
@@ -164,6 +177,9 @@ class NewAgentDelegation(AgentMiddleware):
         if target is None:
             return await handler(request)
         make, name = target
+        missing = self._missing_description(request)
+        if missing is not None:
+            return missing
         agent = make(name)
         refusal = await self._aclaim(agent, request, name)
         if refusal is not None:
