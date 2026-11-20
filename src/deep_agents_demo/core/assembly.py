@@ -22,6 +22,7 @@ from langchain.agents.middleware import (
     TodoListMiddleware,
 )
 
+from deep_agents_demo.core.delegation import NewAgentDelegation
 from deep_agents_demo.core.feature import approval_configs
 from deep_agents_demo.core.middleware import (
     PinSkills,
@@ -177,7 +178,7 @@ def _assemble(model, features, *, skills_prefix, disabled_tools, agents, model_f
 
 
 def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", disabled_tools=(),
-                agents=(), model_for=None, max_calls=25, max_parallel=3):
+                agents=(), model_for=None, max_calls=25, max_parallel=3, newest_workers=None):
     """Assemble a deep agent from features.
 
     ``backend`` is where the file tools act (local files or a sandbox);
@@ -190,7 +191,8 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
     one named ``general-purpose`` or ``researcher`` replaces the demo's own.
     ``model_for(model_id)`` builds the model for agents that name one. Every subagent
     makes at most ``max_calls`` model calls per run, and at most ``max_parallel``
-    subagents run at once.
+    subagents run at once. ``newest_workers()`` gives the newest worker factory (or None): a
+    ``task`` for an agent made since the build runs from it (``core.delegation``).
     """
     a = _assemble(model, features, skills_prefix=skills_prefix, disabled_tools=disabled_tools,
                   agents=agents, model_for=model_for, max_calls=max_calls)
@@ -208,7 +210,9 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
         # Paused for the user's decision before they run; subagents inherit this.
         interrupt_on=a.interrupt_on or None,
         middleware=[TodoListMiddleware(), *(m for f in a.features for m in f.middleware),
-                    ToolAccess(*a.access), TaskLimiter(max_parallel)],
+                    ToolAccess(*a.access), TaskLimiter(max_parallel),
+                    *([NewAgentDelegation({spec["name"] for spec in a.subagents}, newest_workers)]
+                      if newest_workers is not None else [])],
         subagents=a.subagents,
         checkpointer=checkpointer,
         # Deep Agents supplies summarization and large-output offloading.

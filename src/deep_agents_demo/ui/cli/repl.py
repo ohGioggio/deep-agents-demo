@@ -3,6 +3,7 @@ import sys
 
 from deep_agents_demo.config import Settings
 from deep_agents_demo.core.approvals import Approvals
+from deep_agents_demo.core.runs import RunRecorder
 from deep_agents_demo.core.turns import run_turn
 from deep_agents_demo.features.images.uploads import (
     ImageError,
@@ -11,8 +12,9 @@ from deep_agents_demo.features.images.uploads import (
 )
 from deep_agents_demo.persistence.chats import Chats, new_name, thread_id, valid_name
 from deep_agents_demo.persistence.files import safe_folder_name
+from deep_agents_demo.providers.chat import usage_counter
 from deep_agents_demo.startup.resources import Resources
-from deep_agents_demo.startup.runtime import build_runtime
+from deep_agents_demo.startup.runtime import build_runtime, newest_worker_factory
 from deep_agents_demo.startup.workspace import prepare_workspace
 from deep_agents_demo.ui.cli.interrupts import ctrl_c_controls
 from deep_agents_demo.ui.cli.prompts import CliInteraction
@@ -54,10 +56,7 @@ class _NewestWorkers:
         self.runtime = runtime
 
     def _current(self):
-        refresh = getattr(self.runtime, "refresh", None)
-        if refresh is not None:
-            refresh()  # a no-op unless an agent change is waiting
-        return self.runtime.make_worker
+        return newest_worker_factory(self.runtime)
 
     @property
     def names(self):
@@ -243,12 +242,34 @@ class ChatSession:
     def help(self, arg):
         self.say(HELP)
 
-    @command("files", usage="/files", summary="list the files the agent delivered in this chat")
+    @command("files", usage="/files [diff NAME [V1 V2]]",
+             summary="list the files the agent delivered in this chat; diff compares two versions")
     def files(self, arg):
         if self.outputs is None:
             self.say("Files aren't available here.")
             return
         user = self.chats.user
+        words = arg.split()
+        if words[:1] == ["diff"]:
+            rest = words[1:]
+            numbers = [w[1:] if w[:1] in ("v", "V") else w for w in rest[-2:]]
+            pair = len(rest) >= 3 and all(n.isdigit() for n in numbers)
+            name = " ".join(rest[:-2] if pair else rest)
+            stray = not pair and len(rest) > 1 and rest[-1].lstrip("vV").isdigit()
+            if not name or stray:
+                self.say("Usage: /files diff NAME [V1 V2] (names and versions: /files)")
+                return
+            v1, v2 = (int(n) for n in numbers) if pair else (None, None)
+            try:
+                text = self.outputs.diff(user, self.current, name, v1, v2)
+            except ValueError as error:
+                self.say(str(error))
+                return
+            if self.tables is not None:
+                self.tables.diff(text)
+            else:
+                self.say(text)
+            return
         files, folder = self.outputs.list(user, self.current), self.outputs.folder(user, self.current)
         if self.tables is not None:
             self.tables.files(files, folder)
@@ -297,10 +318,13 @@ class ChatSession:
 
     @command("rename", usage="/rename NAME", summary="rename this chat")
     def rename(self, arg):
+        old = self.current
         try:
-            self.chats.rename(self.current, arg)
+            self.chats.rename(old, arg)
         except ValueError as error:
             self.say(str(error))
+            if self.chats.exists(arg) and not self.chats.exists(old):  # left under the new name
+                self.current = arg
         else:
             self.current = arg
             self.say(f"Renamed to {arg!r}.")
@@ -369,6 +393,10 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
                 if rich:
                     renderer, interaction, tables = _rich_parts(verbose)
                     sink, notify = renderer, renderer.notify
+                # The sink every turn, plan, room and swarm emits to: it saves each turn as a run.
+                recorder = RunRecorder(sink or CliRenderer(), resources.runs, usage_counter(), user=user,
+                                       model=settings.chat.model, say=notify or _warn)
+                sink = recorder
                 session = ChatSession(runtime.chats, thread, uploads=runtime.uploads, agents=runtime.agents,
                                       outputs=runtime.outputs, tables=tables)
                 if rich:
@@ -386,18 +414,23 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
                                        interaction=interaction, sink=sink, notify=notify)
 
                 def run_room(names, question, room_format=None):
-                    """/room: run it, then tell the agent the outcome as an ordinary turn."""
-                    active = runners()
+                    """/room: run it, then tell the agent the outcome as an ordinary turn. The
+                    room and its follow-up are one recorded run."""
                     from deep_agents_demo.features.orchestration.rooms import room_followup
-                    request = {"type": "start_room", "question": question, "participants": names}
-                    if room_format:  # else the room's default (ROOM_FORMAT)
-                        request["format"] = room_format
-                    outcome = active["start_room"](request)
-                    if "summary" not in outcome:  # refused before it started, e.g. an unknown agent
-                        say(f"Room not started: {outcome.get('error')}")
-                        return
-                    stream_turn(runtime.agent, room_followup(question, names, outcome), session.config,
-                                approver=approver, runners=active, quiet=quiet, sink=sink)
+                    with recorder.turn(session.current, f"/room {question}"):
+                        active = runners()
+                        request = {"type": "start_room", "question": question, "participants": names}
+                        if room_format:  # else the room's default (ROOM_FORMAT)
+                            request["format"] = room_format
+                        with recorder.scope("room", question) as room:  # no tool call starts a /room
+                            outcome = active["start_room"](request)
+                            if "summary" not in outcome:  # refused before it started
+                                room.status = "refused"
+                        if "summary" not in outcome:  # e.g. an unknown agent
+                            say(f"Room not started: {outcome.get('error')}")
+                            return
+                        stream_turn(runtime.agent, room_followup(question, names, outcome), session.config,
+                                    approver=approver, runners=active, quiet=quiet, sink=sink)
                 session.room = run_room
                 approver = Approvals(runtime.preview, interaction, interactive=prompt is None)
                 while True:
@@ -418,8 +451,9 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
                         continue
                     # Skills reload every turn (local files, cheap), so an approved change is
                     # visible from the next message.
-                    stream_turn(runtime.agent, session.content(line), session.config, reload_skills=True,
-                                approver=approver, runners=runners(), quiet=quiet, sink=sink)
+                    with recorder.turn(session.current, line):
+                        stream_turn(runtime.agent, session.content(line), session.config, reload_skills=True,
+                                    approver=approver, runners=runners(), quiet=quiet, sink=sink)
                     # An approved agent change: available from the next message (a room or plan
                     # in this message may have rebuilt the agents already).
                     if runtime.refresh() or session.agents is not runtime.agents:

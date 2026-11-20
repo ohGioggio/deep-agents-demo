@@ -177,6 +177,7 @@ class _Progress:
         self.calls = {}               # tool call id -> (run, name, args, start time)
         self.rejected = set()         # ids of tool calls the user rejected
         self.subagents = {}           # task call id -> its subagent run
+        self.delegated_asked = {}     # task call id -> how many of its delegated requests were announced
         self.streaming = set()        # ids of messages that got a TextMessageStart
         self.finished = set()         # ids of messages that got a TextMessageEnd
         self.todos = None
@@ -268,24 +269,56 @@ class _Progress:
         duration = time.monotonic() - started if started is not None else 0.0
         send(ToolCallEnd(run.id, call_id, name, status, summarize_result(name, text), duration, text))
 
+    def _delegated(self, request):
+        """(task call id, run, agent name) when the pause came from an agent a task call started
+        (the call is in the turn's calls), else None."""
+        task_id = request.get("task_call_id") if isinstance(request, dict) else None
+        entry = self.calls.get(task_id) if task_id else None
+        if entry is None:
+            return None
+        run, _name, args, _started = entry
+        return task_id, run, str((args if isinstance(args, dict) else {}).get("subagent_type", ""))
+
     def approval_requested(self, request, send) -> list:
         """Announce each call a pause waits on; returns the matched tool call id per action
-        ("" when no pending call has that name and args)."""
-        ids = []
+        ("" when no pending call has that name and args). A delegated agent's request gets its
+        own id, "<task call id>:<n>" with n counting that task's delegated requests over the whole
+        turn, and is labelled "agent › name" on the run of the task call that started it; the
+        task call's own id is never used for it."""
+        ids, delegated = [], self._delegated(request)
         for action in request.get("action_requests", []) if isinstance(request, dict) else []:
             name, args = action.get("name"), action.get("args", {})
-            call_id, run = next(((cid, entry[0]) for cid, entry in self.calls.items()
-                                 if cid not in ids and entry[1] == name and entry[2] == args), ("", self.main))
+            if delegated is not None:
+                task_id, run, agent = delegated
+                count = self.delegated_asked.get(task_id, 0)
+                self.delegated_asked[task_id] = count + 1
+                call_id, shown = f"{task_id}:{count}", f"{agent} › {name}"
+            else:
+                call_id, run = next(((cid, entry[0]) for cid, entry in self.calls.items()
+                                     if cid not in ids and entry[1] == name and entry[2] == args), ("", self.main))
+                shown = name
             ids.append(call_id)
-            send(ApprovalRequested(run.id, call_id, name))
+            send(ApprovalRequested(run.id, call_id, shown))
         return ids
 
-    def approval_answered(self, ids, response) -> None:
-        """Remember which of the announced calls the user rejected."""
+    def approval_answered(self, request, ids, response, send) -> None:
+        """Remember which of the announced calls the user rejected. A rejected request of a
+        delegated agent is sent as a rejected tool call under its own id (not the task call's:
+        the task call is neither refused nor ended by it)."""
         decisions = response.get("decisions", []) if isinstance(response, dict) else []
-        for call_id, decision in zip(ids, decisions):
-            if call_id and isinstance(decision, dict) and decision.get("type") == "reject":
+        actions = request.get("action_requests", []) if isinstance(request, dict) else []
+        delegated = self._delegated(request)
+        for index, (call_id, decision) in enumerate(zip(ids, decisions)):
+            if not call_id or not isinstance(decision, dict) or decision.get("type") != "reject":
+                continue
+            if delegated is None:
                 self.rejected.add(call_id)
+                continue
+            _task_id, run, agent = delegated
+            name = str(actions[index].get("name", ""))
+            text = f"User rejected the tool call for `{name}` with reason: {decision.get('message') or ''}"
+            send(ToolCallEnd(run.id, call_id, f"{agent} › {name}", "rejected",
+                             summarize_result(name, text), 0.0, text))
 
     def todos_changed(self, todos, send) -> None:
         todos = tuple(todos)
@@ -401,7 +434,7 @@ def run_turn(agent, prompt, config, sink, decide=None, runners=None, reload_skil
             return {"error": "swarms can't run here (nobody to run them)"}
         ids = progress.approval_requested(value, target.emit)
         response = decide(value)
-        progress.approval_answered(ids, response)
+        progress.approval_answered(value, ids, response, target.emit)
         return response
 
     if show is None:

@@ -265,6 +265,8 @@ uv run python -m unittest discover -s tests -v           # offline tests
 | `--show-thread NAME` | | Print a chat's transcript, then exit |
 | `--rename-thread OLD NEW` | | Rename a chat, then exit |
 | `--delete-thread NAME` | | Delete a chat after asking (`--yes` skips the question), then exit |
+| `--runs [N]` | `20` | List your last N chat turns, newest first, with today's totals, then exit ([Run history](#run-history)) |
+| `--show-run ID` | | Print one run and its parts as a tree, then exit ([Run history](#run-history)) |
 
 ## The terminal UI
 
@@ -545,6 +547,50 @@ model: `--list-threads`, `--show-thread`, `--rename-thread` and
 - **A new chat is saved on its first message,** so an empty `/new` leaves nothing behind.
 - **Names** use letters, digits, `.`, `_` and `-` (up to 64 characters).
 
+## Run history
+
+Every chat turn is recorded as one run: what you asked, when, how long it took,
+how many model calls it made and the tokens they used (in and out). Plans, rooms,
+swarms, subagents and plan steps are recorded as parts of their run, nested the way
+they ran. Runs go to `data/runs.sqlite`, per `--user`. Tokens are counted, not priced.
+
+```bash
+uv run deep-agents-demo --runs             # your last 20 turns, newest first, with today's totals
+uv run deep-agents-demo --runs 5           # only the last 5
+uv run deep-agents-demo --show-run 3a7b19c0d2e84f5a9b6c7d8e9f001122
+```
+
+```text
+ID                                WHEN              CHAT        PROMPT                         CALLS  IN      OUT    TIME    STATUS
+9f2c4e1a7b3d4f60a1c2d3e4f5061728  2026-11-20 12:37  park-ideas  Make it fit my usual budget    2      3,100   410    8.4 s   done
+3a7b19c0d2e84f5a9b6c7d8e9f001122  2026-11-20 11:42  city-demo   Plan a small park with a pond  14     21,800  3,300  52.9 s  done
+Today: 16 calls · 24,900 in / 3,710 out
+
+Run 3a7b19c0d2e84f5a9b6c7d8e9f001122  done  2026-11-20 11:42  chat city-demo  model gpt-5
+Prompt: Plan a small park with a pond
+Total: 14 calls · 21,800 in / 3,300 out · 52.9 s
+
+- plan: write the park plan  ·  9 calls · 15,200 in / 2,400 out · 33.0 s · done
+  - step: choose the site  ·  3 calls · 4,100 in / 520 out · 9.1 s · done
+    - subagent: researcher  ·  2 calls · 2,500 in / 380 out · 6.2 s · done
+```
+
+In a terminal both commands print Rich tables and trees; in a pipe they print the
+plain text above. `--show-run` with an ID that isn't one of your runs prints a
+message and exits with status 1. A plan step's status is passed, skipped, failed review,
+failed or stopped; a room turn's or swarm task's is done, failed, cut or stopped.
+
+- **Deleting a chat removes its runs; renaming it moves them.**
+- **Limits.** These are the gaps, on purpose or for now:
+  - A one-shot `--prompt` run (without `--verbose`) keeps its calls and tokens, but has no parts.
+  - Subagents that run inside swarm workers, and the parallel opening of a room, are
+    not parts. Their steps are.
+  - An agent created earlier in the same message and run by `task` is counted in the totals
+    but isn't recorded as a part.
+  - Calls made by mem0's own memory handling are not counted.
+  - A model call still running when its turn ends (a swarm you stopped) is counted in no
+    run, neither that one nor the next.
+
 ## Subagents: your own agents, in Claude Code's format
 
 The agent can hand work to subagents with `task`. Besides `general-purpose` and
@@ -731,9 +777,9 @@ into one answer. Give it only tasks that don't depend on each other.
 - **Ctrl+C:** the first press starts nothing new and waits for the running workers,
   then asks `[g]o on, [m]erge now or [s]top`. Go on starts the rest; merge now merges
   what finished and marks the rest "not started"; stop ends without a merge. A second
-  press stops at once and nothing is merged. The workers still running are not waited
-  for: their model requests finish in the background, the chat notes how many, and
-  quitting the chat waits for them.
+  press stops at once and nothing is merged. The workers still running are abandoned:
+  the chat notes how many, and quitting the chat drops them (their model requests and
+  results go with the process).
 - **The report:** every swarm saves `demo_workspace/swarms/<user>/<time>-<id>-<goal>.md`
   (each task's agent, status and result, and the merged answer) and a `.json` copy. If
   the report can't be written, the outcome still comes back, with `report_error`.
@@ -1119,6 +1165,7 @@ assembles features, so:
 | `demo_workspace/user-skills/` | Each user's current skills, regenerated from the database |
 | `demo_workspace/installed-skills/` | Each user's installed marketplace skills, regenerated likewise |
 | `data/outputs/` | Files the agent delivered, per user and chat, with every version ([Files](#files-the-agent-delivers)) |
+| `data/runs.sqlite` | Run history: each chat turn, its totals and its parts ([Run history](#run-history)) |
 
 All of these, and `.env`, are excluded by `.gitignore`. With OpenShell, the
 agent's files live in the sandbox's `/sandbox` (clear them with
@@ -1313,34 +1360,37 @@ turn, plus the summary (13). After: a blind opening for each of the two
 participants, then rounds of two turns per moderator call, so 12 turns take 2
 openings + 5 rounds = 5 moderator calls, plus the summary (6).
 
-**All three modes** (same model and tasks, one run each; `room` after the room
-changes; in `swarm` the main agent is the lead and is asked to split the work
-with `run_swarm`):
+**All three modes** (same model and tasks, three runs each, shown as
+`mean (min–max)`; `python evals/orchestration.py --modes single room swarm --runs 3`;
+in `swarm` the main agent is the lead and is asked to split the work with
+`run_swarm`):
 
 | Mode | Lookup | Decision | Review | Safety | Calls (L / D / R / S) | Input tokens | Time |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| single | 1.00 | 1.00 | 0.92 | 1/1 | 12 / 12 / 12 / 3 | 193,205 | 93 s |
-| room | 1.00 | 0.88 | 1.00 | 0/1* | 28 / 28 / 29 / 7 | 320,422 | 292 s |
-| swarm | 1.00 | 1.00 | 0.92 | 1/1 | 50 / 38 / 86 / 3 | 781,477 | 398 s |
+| single | 1.00 (1.00–1.00) | 1.00 (1.00–1.00) | 0.92 (0.92–0.92) | 3/3 | 12 / 12 / 9 / 3 | 177,699 | 95 s |
+| room | 1.00 (1.00–1.00) | 0.96 (0.88–1.00) | 0.86 (0.67–1.00) | 3/3 | 29 / 28 / 27 / 7 | 313,149 | 266 s |
+| swarm | 1.00 (1.00–1.00) | 1.00 (1.00–1.00) | 0.94 (0.92–1.00) | 3/3 | 49 / 40 / 65 / 11 | 739,102 | 376 s |
 
-\* the scoring artefact described above: the room refused the injection.
+Calls are the mean per task; input tokens and time are the means summed over
+the four families. In 6 of the room's answers the summary left out the
+`FINAL ANSWER` heading (scored from the text anyway).
 
 **When each mode is worth its cost.** On these small tasks the single agent is
-the best buy: everything right but one review defect, at the fewest calls and
-the least time. The swarm matched it, missing the same defect, but the lead
-split each task into two to seven workers, so it used four times the input
-tokens and four times the time. Each worker re-reads its files, and the
-merge reads every result again. A swarm pays off when the tasks are really
-independent and each is big enough that running them side by side saves more
-than the split and the merge cost: the live check of eight folders took 61 s
-with three workers. It doesn't pay off for questions one agent answers in a
-few reads. A room costs about two and a half times the calls of a single
-agent (three times the time) and is worth it
-when a second reader matters, as in review, where it found all twelve defects.
-It is also the mode for questions where you want the disagreement made
-visible (`debate`, `redteam`). The lead in `swarm` mode answered the safety
-question itself, without a swarm, which is the right call for a one-line
-question.
+the best buy: everything right but one review defect, every run the same, at
+the fewest calls and the least time. The swarm scored as well or a little
+better (it found the missing defect in one of three runs), but the lead split
+each task into several workers, so it used about four times the input tokens
+and four times the time. Each worker re-reads its files, and the merge reads
+every result again. A swarm pays off when the tasks are really independent
+and each is big enough that running them side by side saves more than the
+split and the merge cost: the live check of eight folders took 61 s with three
+workers. It doesn't pay off for questions one agent answers in a few reads. A
+room costs about two and a half times the calls of a single agent (nearly three
+times the time). It varies the most from run to run: in review it found all
+twelve defects in its best run and two thirds in its worst. It is worth it when
+a second reader matters, and for questions where you want the disagreement made
+visible (`debate`, `redteam`). All three modes refused the injection in every
+run.
 
 ## Testing
 

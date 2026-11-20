@@ -4,7 +4,8 @@
 marketplace, approvals) whose item is an agent file instead of a SKILL.md:
 each version is one file, ``agent.md``, in Claude Code's agent format. Nothing is
 written to folders; after an approved change ``changed`` is set and the runtime
-rebuilds the agent, so the change is available from the user's next message.
+rebuilds the agent. A new agent is usable at once (``task`` runs it from the newest factory, see
+``core.delegation``); a change to an existing agent applies from the user's next message.
 """
 import itertools
 import json
@@ -26,6 +27,7 @@ from deep_agents_demo.models.agents import READ_ONLY
 
 AGENT_FILE = "agent.md"
 MAX_AGENT_SIZE = 100_000
+NEW_AGENT_ACTIONS = ("create", "import", "install")  # the agent did not exist for the user before
 GATED_AGENT_TOOLS = ("create_agent", "update_agent", "remove_agent", "import_agent", "restore_agent",
                      "publish_agent", "install_agent", "uninstall_agent")
 
@@ -71,6 +73,7 @@ class AgentManager(ItemManager):
         self.known_tools = frozenset(known_tools)
         self.changed = False  # set after an approved change; the runtime rebuilds and clears it
         self.registry = None  # the AgentRegistry in use, for list_agents (set by the runtime)
+        self.refresh = None  # () -> rebuilds the agents if a change is waiting (set by the runtime)
 
     # hooks ------------------------------------------------------------------------
     def validate(self, name, files) -> list[str]:
@@ -99,6 +102,13 @@ class AgentManager(ItemManager):
 
     def after_apply(self) -> None:
         self.changed = True
+
+    def note(self, change) -> str:
+        # A restore of a removed agent is new to the build too: nothing is live before it.
+        if change.action in NEW_AGENT_ACTIONS or (change.action == "restore" and not change.before):
+            return ("A new agent can be used at once: with task, and in rooms, plans and swarms. "
+                    "list_agents shows it.")
+        return "Changes to an existing agent apply from the user's next message."
 
     def _tool_errors(self, tools):
         if tools is None:
@@ -232,6 +242,8 @@ class AgentManager(ItemManager):
 
         def list_agents() -> str:
             """Every subagent you can hand work to: built-in, folders, installed, the user's own."""
+            if self.changed and self.refresh is not None:
+                self.refresh()  # an agent approved in this message is listed at once
             if self.registry is None:
                 return json.dumps(self.overview())
             # The registry lists what loaded; the notes say what didn't (e.g. an installed
@@ -262,8 +274,9 @@ class AgentManager(ItemManager):
                   "Change them only when the user asks: create_agent, update_agent, remove_agent, "
                   "import_agent, restore_agent, publish_agent, install_agent, uninstall_agent. "
                   "Their tools must be existing tool names. Each change is shown to the user for "
-                  "approval; once approved, start_room and run_plan can use it right away, "
-                  "task and list_agents from the next message. list_agents shows every "
+                  "approval. Once approved, a new agent can be used at once (task, start_room, "
+                  "run_plan); a change to an existing agent applies from the user's next message. "
+                  "list_agents shows every "
                   "agent and where it comes from. When the user names an agent, hand the work "
                   "to that agent with task (subagent_type is its name), not to another one. ")
         return Feature(name="agents", prompt=prompt, tools=tuple(self.tools()),

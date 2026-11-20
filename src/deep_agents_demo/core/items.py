@@ -256,7 +256,11 @@ class ItemManager:
             result["version"] = self.store.save(change.scope, self._owner(change.scope), change.name,
                                                 change.after, change.action)
         self.after_apply()
-        return {**result, "note": "The change is available from the user's next message."}
+        return {**result, "note": self.note(change)}
+
+    def note(self, change: ItemChange) -> str:
+        """What the model is told after an approved change."""
+        return "The change is available from the user's next message."
 
     def sync_folder(self):
         """Write the user's items where they are loaded from (nothing by default)."""

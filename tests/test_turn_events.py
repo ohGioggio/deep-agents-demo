@@ -220,6 +220,127 @@ class ApprovalEventTests(EngineTest):
         self.assertEqual(sink.of(ApprovalRequested)[0].tool_call_id, "")
 
 
+class DelegatedApprovalEventTests(unittest.TestCase):
+    """A pause of an agent made in the same message, delegated by a task call."""
+
+    def setUp(self):
+        from test_delegation import REMOVED
+        REMOVED.clear()
+        self.removed = REMOVED
+
+    def run_with(self, responses, decide):
+        from test_delegation import parent_for
+        sink = RecordingSink()
+        run_turn(parent_for(responses), "go", {"configurable": {"thread_id": "t"}}, sink, decide)
+        return sink
+
+    def test_a_delegated_pause_is_shown_on_the_task_call_with_the_agent_name(self):
+        from test_delegation import APPROVE, ONE_PAUSE
+        sink = self.run_with(ONE_PAUSE, lambda request: APPROVE)
+        asked = sink.of(ApprovalRequested)
+        self.assertEqual([(a.tool_call_id, a.name) for a in asked],
+                         [("t1:0", "helper › remove_file"), ("t1:1", "helper › remove_file")])
+        self.assertEqual(asked[0].run_id, sink.of(RunStarted)[0].run_id)
+
+    def test_a_rejected_delegated_request_is_a_rejected_event(self):
+        from test_delegation import ONE_PAUSE
+        decisions = [{"type": "approve"}, {"type": "reject", "message": "no"}]
+        sink = self.run_with(ONE_PAUSE, lambda request: {"decisions": decisions})
+        self.assertEqual(self.removed, ["/d1"])
+        [rejected] = [e for e in sink.of(ToolCallEnd) if e.status == "rejected"]
+        self.assertEqual((rejected.tool_call_id, rejected.name, rejected.summary),
+                         ("t1:1", "helper › remove_file", "no"))
+        task_end = [e for e in sink.of(ToolCallEnd) if e.tool_call_id == "t1"]
+        self.assertEqual([(e.name, e.status) for e in task_end], [("task", "ok")],
+                         "the task call's own end is the only end with its id, and it is not rejected")
+        self.assertLess(sink.events.index(rejected), sink.events.index(task_end[0]))
+
+    def test_a_rejected_delegated_request_does_not_refuse_the_task_call_in_a_step(self):
+        import threading
+
+        from deep_agents_demo.features.orchestration.runner import _StepRun, _Tally
+        from test_delegation import ONE_PAUSE, parent_for
+        step = _StepRun("plan", 1, 1, "helper")
+        decisions = [{"type": "approve"}, {"type": "reject", "message": "no"}]
+        tally = _Tally(RecordingSink(), step, {"model_calls": 0, "input_tokens": 0, "output_tokens": 0},
+                       threading.Lock())
+        run_turn(parent_for(ONE_PAUSE), "go", {"configurable": {"thread_id": "t"}}, tally,
+                 lambda request: {"decisions": decisions})
+        self.assertEqual(step.refused, {"t1:1"}, "only the nested rejected request is refused")
+        self.assertEqual(step.tools_used(), ["task"], "the task call still counts as a tool the step used")
+
+    def test_a_task_that_pauses_twice_gets_distinct_ids_per_request(self):
+        from test_delegation import APPROVE, TWO_PAUSES, reject
+        answers = iter([APPROVE, reject()])
+        sink = self.run_with(TWO_PAUSES, lambda request: next(answers))
+        asked = sink.of(ApprovalRequested)
+        self.assertEqual([a.tool_call_id for a in asked], ["t1:0", "t1:1"])
+        rejected = [e for e in sink.of(ToolCallEnd) if e.status == "rejected"]
+        self.assertEqual([(e.tool_call_id, e.name) for e in rejected], [("t1:1", "helper › remove_file")])
+        self.assertEqual(self.removed, ["/d1"])
+
+    def test_a_parent_and_a_delegated_request_in_one_turn_each_get_their_own_id(self):
+        """Two pauses in a row: the parent's own approval pauses before any tool runs, so it
+        can never share a pause with a delegated agent's request."""
+        from langchain.agents import create_agent
+        from langchain.agents.middleware import HumanInTheLoopMiddleware
+        from langchain_core.tools import tool
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        from test_delegation import Scripted, calls, reject, remove_file, task
+
+        from deep_agents_demo.core.delegation import NewAgentDelegation
+
+        @tool
+        def drop(path: str) -> str:
+            """Drop a thing."""
+            return f"dropped {path}"
+
+        model = Scripted(responses=[
+            calls(("task", {"description": "go", "subagent_type": "helper"}, "t1"),
+                  ("drop", {"path": "/p"}, "p1")),
+            calls(("remove_file", {"path": "/d1"}, "r1")),
+            AIMessage(content="sub done"), AIMessage(content="all done")])
+
+        def make(name, extra_middleware=()):
+            return create_agent(model=model, tools=[remove_file], system_prompt="", checkpointer=InMemorySaver(),
+                                middleware=[HumanInTheLoopMiddleware(interrupt_on={"remove_file": True}),
+                                            *extra_middleware])
+        make.names = frozenset({"helper"})
+        parent = create_agent(model=model, tools=[task, drop], middleware=[
+            HumanInTheLoopMiddleware(interrupt_on={"drop": True}),
+            NewAgentDelegation(set(), lambda: make)], checkpointer=InMemorySaver())
+        sink = RecordingSink()
+        run_turn(parent, "go", {"configurable": {"thread_id": "t"}}, sink,
+                 lambda request: reject() if "task_call_id" in request else reject("parent no"))
+        asked = sorted(a.tool_call_id for a in sink.of(ApprovalRequested))
+        self.assertEqual(asked, ["p1", "t1:0"])
+        ends = {e.tool_call_id: e.status for e in sink.of(ToolCallEnd)}
+        self.assertEqual(ends["p1"], "rejected")
+        self.assertEqual(ends["t1:0"], "rejected")
+        self.assertEqual(ends["t1"], "ok", "the task call is not refused")
+        self.assertEqual(self.removed, [])
+
+    def test_two_task_calls_count_their_delegated_requests_apart(self):
+        from deep_agents_demo.core.turns import _Progress
+        progress = _Progress("main")
+        for task_id, agent in (("t1", "alpha"), ("t2", "beta")):
+            progress.calls[task_id] = (progress.main, "task", {"subagent_type": agent}, 0.0)
+
+        def ask(task_id, *names):
+            return progress.approval_requested(
+                {"task_call_id": task_id, "action_requests": [{"name": n, "args": {}} for n in names]},
+                lambda event: None)
+        self.assertEqual(ask("t1", "a", "b"), ["t1:0", "t1:1"])
+        self.assertEqual(ask("t2", "c"), ["t2:0"])
+        self.assertEqual(ask("t1", "d"), ["t1:2"])
+
+    def test_an_approved_delegated_request_is_not_rejected(self):
+        from test_delegation import APPROVE, ONE_PAUSE
+        sink = self.run_with(ONE_PAUSE, lambda request: APPROVE)
+        self.assertFalse([e for e in sink.of(ToolCallEnd) if e.status == "rejected"])
+
+
 def used(text):
     """A reply that reports token usage (the runner fixtures' models don't)."""
     return AIMessage(content=text, usage_metadata={"input_tokens": 100, "output_tokens": 10, "total_tokens": 110})
@@ -268,7 +389,7 @@ class PlanStepEventTests(RunnerBase):
         runner.sink = sink
         self.plan(runner, ("one", "general-purpose"), ("two", "general-purpose"))
         finished = sink.of(StepFinished)
-        self.assertEqual([e.status for e in finished], ["failed", "stopped"])
+        self.assertEqual([e.status for e in finished], ["failed review", "stopped"])
         self.assertEqual(len(sink.of(StepStarted)), 1, "a stopped step never started")
         self.assertEqual(finished[1].attempts, 0)
 

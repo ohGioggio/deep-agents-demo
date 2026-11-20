@@ -1,13 +1,15 @@
 """Agents written through the chat: versioned store, planning and approval, marketplace."""
 import shutil
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from deepagents.backends import FilesystemBackend
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from recording_ui import Approver
 
@@ -59,6 +61,20 @@ class ManagerTests(Workspace):
         self.assertEqual(change.errors, [])
         self.manager.apply(change)
         return change
+
+    def test_the_note_says_a_new_agent_is_usable_at_once_and_an_update_waits(self):
+        created = self.manager.apply(self.manager.plan_create("critic", "Finds weaknesses.", "You are a critic."))
+        self.assertIn("at once", created["note"])
+        updated = self.manager.apply(self.manager.plan_update("critic", prompt="You are harsher."))
+        self.assertIn("existing agent apply from the user's next message", updated["note"])
+        self.assertNotIn("at once", updated["note"])
+
+    def test_restoring_a_removed_agent_is_usable_at_once(self):
+        self.manager.apply(self.manager.plan_create("critic", "Finds weaknesses.", "You are a critic."))
+        self.manager.apply(self.manager.plan_remove("critic"))
+        restored = self.manager.apply(self.manager.plan_restore("critic", 1))
+        self.assertTrue(restored["saved"], restored)
+        self.assertIn("at once", restored["note"])
 
     def test_create_renders_a_claude_code_file(self):
         change = self.manager.plan_create("critic", "Finds weaknesses.", "You are a critic.",
@@ -352,6 +368,78 @@ class RuntimeTests(Workspace):
         before = runtime.agent
         self.assertFalse(self.turn(runtime, answer="r"))
         self.assertIs(runtime.agent, before)
+
+    def tool_result(self, runtime, call_id):
+        messages = runtime.agent.get_state({"configurable": {"thread_id": "t"}}).values["messages"]
+        return next(m.content for m in messages if isinstance(m, ToolMessage) and m.tool_call_id == call_id)
+
+    def test_task_runs_an_agent_made_in_the_same_message(self):
+        self.model = Model(responses=[CREATE_HELPER,
+                                      call("task", {"description": "go", "subagent_type": "helper"}, "t1"),
+                                      AIMessage(content="helper says hi"), AIMessage(content="all done")])
+        runtime, _ = self.runtime(self.model)
+        self.turn(runtime)
+        self.assertEqual(self.tool_result(runtime, "t1"), "helper says hi")
+
+    def test_task_still_refuses_an_unknown_agent(self):
+        self.model = Model(responses=[CREATE_HELPER,
+                                      call("task", {"description": "go", "subagent_type": "nobody"}, "t1"),
+                                      AIMessage(content="ok")])
+        runtime, _ = self.runtime(self.model)
+        self.turn(runtime)
+        self.assertIn("does not exist", self.tool_result(runtime, "t1"))
+
+    def test_list_agents_shows_an_agent_made_in_the_same_message(self):
+        self.model = Model(responses=[CREATE_HELPER, call("list_agents", {}, "l1"), AIMessage(content="ok")])
+        runtime, _ = self.runtime(self.model)
+        self.turn(runtime)
+        self.assertIn('"helper"', self.tool_result(runtime, "l1"))
+
+    def test_parallel_refreshes_rebuild_once(self):
+        from types import SimpleNamespace
+        rebuilds = []
+
+        def rebuild():
+            rebuilds.append(1)
+            time.sleep(0.2)  # the other callers arrive while this one is still rebuilding
+            return "agent", "agents", "make"
+        runtime = app.Runtime(agent=None, chats=SimpleNamespace(agent=None),
+                              agent_manager=SimpleNamespace(changed=True), rebuild=rebuild)
+        threads = [threading.Thread(target=runtime.refresh) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(rebuilds), 1)
+        self.assertEqual(runtime.agent, "agent")
+
+    def turn_answers(self, runtime, answers):
+        """A turn whose approval prompts get ``answers`` in order (the list must be used up)."""
+        answers = list(answers)
+        config = {"configurable": {"thread_id": "t"}}
+        with patch("builtins.print"), patch.object(app, "chat_model", return_value=self.model):
+            stream_turn(runtime.agent, "go", config,
+                        approver=Approver(runtime.preview, ask=lambda _: answers.pop(0), say=lambda *_: None))
+        self.assertEqual(answers, [], "every approval was asked")
+
+    def delegated_delete(self, answers):
+        self.model = Model(responses=[CREATE_HELPER, call("task", {"description": "go", "subagent_type": "helper"}, "t1"),
+                                      call("delete", {"file_path": "/gone.md"}, "d1"),
+                                      AIMessage(content="sub done"), AIMessage(content="all done")])
+        runtime, settings = self.runtime(self.model)
+        (settings.paths.workspace / "gone.md").write_text("bye")
+        self.turn_answers(runtime, ["a", *answers])
+        return runtime, settings
+
+    def test_an_approval_of_a_delegated_agent_is_asked_and_approve_runs_it(self):
+        runtime, settings = self.delegated_delete(["a"])
+        self.assertFalse((settings.paths.workspace / "gone.md").exists())
+        self.assertEqual(self.tool_result(runtime, "t1"), "sub done")
+
+    def test_a_rejected_approval_of_a_delegated_agent_is_passed_through(self):
+        runtime, settings = self.delegated_delete(["r", "no"])
+        self.assertTrue((settings.paths.workspace / "gone.md").exists())
+        self.assertEqual(self.tool_result(runtime, "t1"), "sub done")
 
 
 if __name__ == "__main__":

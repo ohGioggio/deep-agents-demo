@@ -352,6 +352,13 @@ class TimelineTest(unittest.TestCase):
         self.assertIn("step 1/2  general-purpose  ✗ failed: tests broke · 2 tries", out)
         self.assertIn("50 in / 5 out · 9 s", out)
 
+    def test_a_step_that_failed_review_shows_the_reviewers_reason(self):
+        t = Timeline()
+        t.handle(StepStarted("s1", "plan", 1, 2, "general-purpose"))
+        t.handle(StepFinished("s1", "plan", 1, "failed review", 2, 9.0, 50, 5, "tests still missing"))
+        out = draw(t.take_settled())
+        self.assertIn("step 1/2  general-purpose  ✗ failed review: tests still missing · 2 tries", out)
+
     def test_narrow_lines_keep_their_guides(self):
         t = Timeline(verbose=True)
         t.handle(ToolCallStart("r1", "t1", "task", {"description": "x " * 40}))
