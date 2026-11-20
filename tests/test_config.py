@@ -160,6 +160,31 @@ class DispatchTests(unittest.TestCase):
         _, run = self.dispatch("--prompt", "hi", "--thread", "t1")
         self.assertEqual(run.call_args.args[1:], ("demo-user", "t1", "hi"))
 
+    def test_an_empty_value_is_a_usage_error_and_runs_nothing(self):
+        argvs = (["--list-files", ""], ["--show-thread", ""], ["--delete-thread", " "],
+                 ["--rename-thread", "", "new"], ["--rename-thread", "old", ""], ["--index-docs", ""],
+                 ["--show-run", ""], ["--user", ""], ["--thread", " "], ["--prompt", ""])
+        for argv in argvs:
+            with self.subTest(argv=argv), patch.object(cli, "commands") as cmds, \
+                    patch.object(cli, "run_chat") as run:
+                cmds.UsageError = commands.UsageError
+                _parser, args = cli.parse_args(argv)
+                with self.assertRaisesRegex(commands.UsageError, f"{argv[0]} needs a value"):
+                    cli.dispatch(Settings.from_env({"OPENAI_API_KEY": "k", "AGENT_MODEL": "m"}), args)
+                self.assertEqual(cmds.mock_calls, [])
+                run.assert_not_called()
+
+    def test_an_empty_value_exits_2_with_the_message_on_stderr(self):
+        err = io.StringIO()
+        settings = Settings.from_env({})
+        with patch.object(cli, "load_dotenv"), patch.object(cli.Settings, "from_env", return_value=settings), \
+                patch.object(cli, "run_chat") as run, contextlib.redirect_stderr(err), \
+                self.assertRaises(SystemExit) as caught:
+            cli.main(["--show-thread", ""])
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("--show-thread needs a value", err.getvalue())
+        run.assert_not_called()
+
 
 class PlainFlagTests(unittest.TestCase):
     def test_plain_flag(self):

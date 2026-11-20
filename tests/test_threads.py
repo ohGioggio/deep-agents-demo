@@ -79,6 +79,32 @@ class ChatFilesTests(ChatsTestCase):
         ChatSession(self.chats, "roads", say=said.append, outputs=self.outputs).handle("/files")
         self.assertIn("No files delivered in this chat yet.", said[0])
 
+    def test_files_diff_command(self):
+        self.outputs.save("alice", "parks", "plan.md", b"# Plan\nnew\n")  # v2; setUp made v1
+        said = []
+        ChatSession(self.chats, "parks", say=said.append, outputs=self.outputs).handle("/files diff plan.md")
+        text = "\n".join(said)
+        self.assertIn("--- plan.md v1", text)
+        self.assertIn("+++ plan.md v2", text)
+        self.assertIn("+new", text)
+
+    def test_files_diff_explicit_versions_and_errors(self):
+        self.outputs.save("alice", "parks", "plan.md", b"# Plan\nlast\n")  # v2
+        self.outputs.save("alice", "parks", "plan.md", b"# Plan\nfinal\n")  # v3
+        said = []
+        session = ChatSession(self.chats, "parks", say=said.append, outputs=self.outputs)
+        session.handle("/files diff plan.md 2 3")
+        self.assertIn("+final", "\n".join(said))
+        said.clear()
+        session.handle("/files diff plan.md 1 9")
+        self.assertIn("plan.md has no v9 (versions: 1–3)", said[0])
+        said.clear()
+        session.handle("/files diff plan.md 1")
+        self.assertIn("Usage: /files diff NAME [V1 V2]", said[0])
+        said.clear()
+        session.handle("/files diff")
+        self.assertIn("Usage: /files diff NAME [V1 V2]", said[0])
+
 
 class LockedChatFilesTests(ChatFilesTests):
     def setUp(self):
@@ -92,6 +118,7 @@ class LockedChatFilesTests(ChatFilesTests):
 
     test_deleting_a_chat_removes_its_files = test_renaming_a_chat_moves_its_files = None
     test_rename_onto_existing_outputs_keeps_both = test_files_command = None
+    test_files_diff_command = test_files_diff_explicit_versions_and_errors = None
 
     def test_locked_files_stop_the_delete_cleanly(self):
         with self.assertRaisesRegex(ValueError, "being used"):

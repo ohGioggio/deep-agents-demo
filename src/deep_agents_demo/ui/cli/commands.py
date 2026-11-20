@@ -5,16 +5,20 @@ usual error message, so these functions don't depend on argparse.
 """
 import sys
 from contextlib import ExitStack
+from datetime import datetime
 from pathlib import Path
 
 from deep_agents_demo.config import Settings
 from deep_agents_demo.features.sandbox.providers import clear_sandbox
 from deep_agents_demo.persistence.outputs import OutputStore
+from deep_agents_demo.persistence.runs import RunStore
 from deep_agents_demo.startup.resources import document_index, sandbox_backend
 from deep_agents_demo.startup.runtime import history_runtime
 from deep_agents_demo.startup.workspace import prepare_workspace
-from deep_agents_demo.ui.cli.render import format_files, format_table, format_transcript
+from deep_agents_demo.ui.cli.render import format_files, format_run, format_runs, format_table, format_transcript
 from deep_agents_demo.ui.cli.repl import confirm
+from deep_agents_demo.ui.cli.richui.theme import make_console
+from deep_agents_demo.ui.cli.richui.tables import RichTables
 
 
 class UsageError(Exception):
@@ -85,3 +89,36 @@ def rename_thread(settings: Settings, user: str, old: str, new: str) -> None:
         except ValueError as error:
             raise UsageError(str(error)) from None
     print(f"Renamed {old!r} to {new!r}.")
+
+
+def _runs_store(settings: Settings, stack: ExitStack) -> RunStore:
+    settings.paths.data.mkdir(parents=True, exist_ok=True)
+    store = RunStore(settings.paths.data / "runs.sqlite")
+    stack.callback(store.close)
+    return store
+
+
+def list_runs(settings: Settings, user: str, limit: int = 20) -> None:
+    if limit < 1:
+        raise UsageError("--runs needs a number of at least 1")
+    start_of_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    with ExitStack() as stack:
+        store = _runs_store(settings, stack)
+        runs = store.recent(user, limit)
+        totals = store.totals(user, since=start_of_today)
+    if sys.stdout.isatty():
+        RichTables(make_console()).runs(runs, totals)
+    else:
+        print(format_runs(runs, totals))
+
+
+def show_run(settings: Settings, user: str, run_id: str) -> None:
+    with ExitStack() as stack:
+        run = _runs_store(settings, stack).get(user, run_id)
+    if run is None:
+        print(f"No run with id {run_id!r} for user {user!r}. List your runs with --runs.", file=sys.stderr)
+        raise SystemExit(1)
+    if sys.stdout.isatty():
+        RichTables(make_console()).run(run)
+    else:
+        print(format_run(run))

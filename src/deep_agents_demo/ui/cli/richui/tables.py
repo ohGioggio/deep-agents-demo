@@ -5,9 +5,19 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
+from rich.tree import Tree
 
 from deep_agents_demo.persistence.chats import shorten
-from deep_agents_demo.ui.cli.render import shown_path, size
+from deep_agents_demo.ui.cli.render import (
+    calls_text,
+    run_part_line,
+    run_part_rows,
+    run_totals_line,
+    run_when,
+    shown_path,
+    size,
+)
+from deep_agents_demo.ui.cli.richui.interaction import diff_view
 
 AGENT_COLOUR = "#a78bfa"
 FILE_COLOUR = "#7ee787"
@@ -48,6 +58,29 @@ def agents_table(rows) -> Table:
     return table
 
 
+def runs_table(runs) -> Table:
+    table = _table("ID", "WHEN", "CHAT", "PROMPT", "CALLS", "IN", "OUT", "TIME", "STATUS")
+    table.columns[0].no_wrap = True
+    for column in (4, 5, 6, 7):
+        table.columns[column].justify = "right"
+    for r in runs:
+        status = Text(r.status, style="ok" if r.status == "done" else "error")
+        table.add_row(Text(r.id, style=DIM), Text(run_when(r.started_at), style=DIM), Text(r.chat),
+                      Text(shorten(r.prompt, 40)), str(r.model_calls), f"{r.input_tokens:,}",
+                      f"{r.output_tokens:,}", f"{r.seconds:.1f} s", status)
+    return table
+
+
+def run_tree(run) -> Tree:
+    """The run's parts as a tree (one line per part, nested under its parent)."""
+    root = Tree(Text("Parts", style=DIM))
+    nodes: dict = {}
+    for _depth, part in run_part_rows(run):
+        parent = nodes.get(part.parent, root)  # a part whose parent is missing hangs off the root
+        nodes[part.part] = parent.add(Text(run_part_line(part)))
+    return root
+
+
 class RichTables:
     """Prints the three listings to a Rich console; empty lists are plain sentences."""
 
@@ -68,5 +101,26 @@ class RichTables:
         if folder is not None:
             self.console.print(Text(f"In {shown_path(str(folder))}", style=DIM))
 
+    def diff(self, text: str) -> None:
+        self.console.print(diff_view(text))
+
     def agents(self, rows) -> None:
         self.console.print(agents_table(rows))
+
+    def runs(self, runs, totals: dict) -> None:
+        if not runs:
+            self.console.print("No runs yet. A run is saved for each chat turn.")
+            return
+        self.console.print(runs_table(runs))
+        self.console.print(Text(run_totals_line(totals), style=DIM))
+
+    def run(self, run) -> None:
+        self.console.print(Text(f"Run {run.id}  {run.status}  {run_when(run.started_at)}  "
+                                f"chat {run.chat}  model {run.model}", style="bold"))
+        self.console.print(Text(f"Prompt: {run.prompt}"))
+        self.console.print(Text(f"Total: {calls_text(run.model_calls)} · {run.input_tokens:,} in / "
+                                f"{run.output_tokens:,} out · {run.seconds:.1f} s", style=DIM))
+        if run.parts:
+            self.console.print(run_tree(run))
+        else:
+            self.console.print(Text("No parts recorded for this run.", style=DIM))

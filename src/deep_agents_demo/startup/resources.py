@@ -17,6 +17,7 @@ from deep_agents_demo.features.documents.index import DocumentIndex
 from deep_agents_demo.features.memory.service import close_memory, make_memory
 from deep_agents_demo.features.sandbox.providers import BackendSetup, make_backend
 from deep_agents_demo.persistence.outputs import OutputStore
+from deep_agents_demo.persistence.runs import RunStore
 from deep_agents_demo.persistence.versioned_store import AGENT_TABLES, VersionedStore
 from deep_agents_demo.providers.embeddings import CompatibleEmbeddings
 from deep_agents_demo.providers.rate_limit import rate_limiter
@@ -54,6 +55,7 @@ class Resources:
     memory: object = None                    # one Mem0, or None when memory is off
     documents: DocumentIndex | None = None   # None when RAG is off
     outputs: OutputStore | None = None       # files the agent delivered (data/outputs)
+    runs: RunStore | None = None             # each chat turn as a run (data/runs.sqlite)
     stack: ExitStack = field(default_factory=ExitStack, repr=False)
 
     @classmethod
@@ -70,6 +72,8 @@ class Resources:
             stack.callback(skill_store.close)
             agent_store = VersionedStore(data / "agents.sqlite", AGENT_TABLES)
             stack.callback(agent_store.close)
+            runs = RunStore(data / "runs.sqlite")
+            stack.callback(runs.close)
             memory = None
             if settings.memory.enabled:
                 memory = make_memory(data, settings.memory, settings.embeddings, embeddings(settings, warn))
@@ -82,7 +86,7 @@ class Resources:
             stack.close()
             raise
         return cls(settings, checkpointer, sandbox, skill_store, agent_store, memory, documents,
-                   OutputStore(settings.paths.data / "outputs"), stack)
+                   OutputStore(settings.paths.data / "outputs"), runs, stack)
 
     def close(self) -> None:
         self.stack.close()

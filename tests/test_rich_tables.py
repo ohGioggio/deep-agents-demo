@@ -103,6 +103,23 @@ class TablesTests(unittest.TestCase):
         self.assertIn("No files delivered in this chat yet.", text)
 
 
+class DiffViewTests(unittest.TestCase):
+    def test_diff_is_coloured_like_the_approval_panel(self):
+        console = Console(file=io.StringIO(), width=100, record=True, force_terminal=True, color_system="standard")
+        RichTables(console).diff("--- plan.md v1\n+++ plan.md v2\n@@ -1 +1 @@\n-old line\n+new line")
+        styled = console.export_text(styles=True)
+        old = next(line for line in styled.splitlines() if "old line" in line)
+        self.assertIn("[", old)
+
+    def test_files_diff_uses_tables_when_given(self):
+        tables = MagicMock()
+        outputs = MagicMock()
+        outputs.diff.return_value = "+x"
+        session = ChatSession(MagicMock(), "parks", say=[].append, outputs=outputs, tables=tables)
+        session.handle("/files diff plan.md")
+        tables.diff.assert_called_once_with("+x")
+
+
 class ChatSessionTablesTests(unittest.TestCase):
     def fake_tables(self):
         tables = MagicMock()

@@ -32,7 +32,8 @@ def parse_args(argv=None):
     )
     parser.add_argument("--thread", default="city-demo")
     parser.add_argument("--user", default="demo-user", help="Mem0 user namespace; not authentication")
-    parser.add_argument("--index-docs", type=Path, help="Rebuild RAG index from .md/.txt files, then exit")
+    parser.add_argument("--index-docs", metavar="FOLDER",
+                        help="Rebuild RAG index from .md/.txt files in FOLDER, then exit")
     parser.add_argument("--prompt", help="Run one prompt instead of interactive chat (prints the answer)")
     parser.add_argument("--verbose", action="store_true",
                         help="With --prompt, print every step (tool calls, subagents), not just the answer")
@@ -47,25 +48,51 @@ def parse_args(argv=None):
     chats.add_argument("--rename-thread", nargs=2, metavar=("OLD", "NEW"), help="Rename a chat")
     chats.add_argument("--list-files", metavar="THREAD", help="List the files the agent delivered in a chat")
     chats.add_argument("--yes", action="store_true", help="Don't ask before deleting")
+    chats.add_argument("--runs", nargs="?", const=20, type=int, metavar="N",
+                       help="List your last N chat turns (default 20), newest first, with today's totals")
+    chats.add_argument("--show-run", metavar="ID", help="Print one run and its parts as a tree")
     return parser, parser.parse_args(argv)
+
+
+# The value flags an empty value is refused for: (attribute, flag).
+VALUE_FLAGS = (("list_files", "--list-files"), ("show_thread", "--show-thread"),
+               ("delete_thread", "--delete-thread"), ("rename_thread", "--rename-thread"),
+               ("show_run", "--show-run"), ("index_docs", "--index-docs"), ("user", "--user"),
+               ("thread", "--thread"), ("prompt", "--prompt"))
+
+
+def check_values(args) -> None:
+    """A value flag given with an empty (or blank) value is a usage error, not a silent no-op."""
+    for attribute, flag in VALUE_FLAGS:
+        value = getattr(args, attribute)
+        if value is None:
+            continue
+        values = value if isinstance(value, list) else [value]
+        if any(not str(item).strip() for item in values):
+            raise commands.UsageError(f"{flag} needs a value")
 
 
 def dispatch(settings: Settings, args) -> None:
     """Run the one action the arguments ask for."""
+    check_values(args)
     if args.clear_sandbox:
         commands.clear_openshell_sandbox(settings)
     elif args.list_threads:
         commands.list_threads(settings, args.user, args.thread)
-    elif args.list_files:
+    elif args.list_files is not None:
         commands.list_files(settings, args.user, args.list_files)
-    elif args.show_thread:
+    elif args.show_thread is not None:
         commands.show_thread(settings, args.user, args.show_thread)
-    elif args.delete_thread:
+    elif args.delete_thread is not None:
         commands.delete_thread(settings, args.user, args.delete_thread, yes=args.yes)
-    elif args.rename_thread:
+    elif args.rename_thread is not None:
         commands.rename_thread(settings, args.user, *args.rename_thread)
-    elif args.index_docs:
-        commands.index_docs(settings, args.index_docs)
+    elif args.runs is not None:
+        commands.list_runs(settings, args.user, args.runs)
+    elif args.show_run is not None:
+        commands.show_run(settings, args.user, args.show_run)
+    elif args.index_docs is not None:
+        commands.index_docs(settings, Path(args.index_docs))
     else:
         problem = settings.chat.problem()
         if problem:
