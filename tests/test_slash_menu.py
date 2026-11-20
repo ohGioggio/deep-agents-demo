@@ -34,6 +34,10 @@ class MenuLogicTests(unittest.TestCase):
         self.assertEqual(11, len(filter_items(items, "/")))
         self.assertEqual(["/new"], [i.value for i in filter_items(items, "/NEW")])
 
+    def test_files_entry_mentions_diff(self):
+        files = next(item for item in command_items(COMMANDS) if item.value == "/files")
+        self.assertIn("diff", files.label)
+
     def test_commands_come_once_without_aliases(self):
         values = [i.value for i in command_items(COMMANDS)]
         self.assertEqual(len(values), len(set(values)))

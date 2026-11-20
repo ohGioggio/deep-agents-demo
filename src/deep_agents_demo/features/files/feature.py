@@ -17,7 +17,8 @@ from langgraph.config import get_config
 
 from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.features.files.validate import clean_name, describe, validate
-from deep_agents_demo.persistence.outputs import OutputStore
+from deep_agents_demo.models.media import IMAGE_KINDS
+from deep_agents_demo.persistence.outputs import OutputFile, OutputStore, change_summary
 
 MODES = ("auto", "always", "never")
 
@@ -51,6 +52,17 @@ def _absolute(path: str) -> bool:
     return str(path).startswith(("/", "\\")) or bool(re.match(r"^[A-Za-z]:[\\/]", str(path)))
 
 
+def _changes(outputs: OutputStore, user: str, chat: str, saved: OutputFile, new: bytes) -> str | None:
+    """"changed from v1: +2 −1 lines" for a new text version; None for a first version or an image."""
+    if saved.version < 2 or saved.kind in IMAGE_KINDS:
+        return None  # diffs are text-only: an image's new version gets no change line
+    try:
+        old = outputs.read(user, chat, saved.name, saved.version - 1)
+    except (KeyError, OSError):  # the version is kept, so the line is only a courtesy
+        return None
+    return change_summary(old, new, saved.version - 1)
+
+
 def make_send_file(backend, outputs: OutputStore, user: str):
     @tool(response_format="content_and_artifact")
     def send_file(path: str, runtime: ToolRuntime, caption: str = "") -> tuple[str, dict | None]:
@@ -80,6 +92,9 @@ def make_send_file(backend, outputs: OutputStore, user: str):
             return f"Not sent: {type(error).__name__}: {error}", None
         result = {"name": saved.name, "version": saved.version, "bytes": saved.bytes,
                   "kind": saved.kind, "details": describe(saved.name, found.content)}
+        changes = _changes(outputs, user, chat, saved, found.content)
+        if changes:
+            result["changes"] = changes
         return json.dumps(result), {"saved": True, **saved.to_dict()}
 
     return send_file

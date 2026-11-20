@@ -3,8 +3,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from deep_agents_demo.persistence.outputs import OutputStore
+from deep_agents_demo.persistence.outputs import DIFF_MAX_LINES, OutputStore, change_summary
+
+
+def numbered(count: int, changed: int | None = None) -> bytes:
+    """``count`` lines "line 0" ...; line ``changed`` reads "changed N" instead."""
+    return "".join(f"changed {i}\n" if i == changed else f"line {i}\n" for i in range(count)).encode()
 
 
 class OutputStoreTests(unittest.TestCase):
@@ -111,6 +117,51 @@ class OutputStoreTests(unittest.TestCase):
         saved = self.store.save("alice", "parks", "plan.md", b"x", "the plan\n\nfor  the\tpark")
         self.assertEqual(saved.caption, "the plan for the park")
 
+    def test_a_delete_stopped_after_its_files_still_finds_a_colliding_folder(self):
+        # "My Chat" and "My_Chat" share a safe folder: the second name gets its hashed one.
+        self.store.save("alice", "My Chat", "a.md", b"a")
+        self.store.save("alice", "My_Chat", "b.md", b"b")
+        hashed = self.store.folder("alice", "My_Chat")
+        self.assertNotEqual(hashed, self.store.folder("alice", "My Chat"))
+        self.store.delete_thread("alice", "My Chat")  # the plain folder is free now
+        # Fail the last step, after the files are gone: the folder must still be the
+        # hashed one, so a retry removes it instead of looking at the free plain name.
+        with patch.object(Path, "rmdir", side_effect=OSError("in use")):
+            with self.assertRaises(OSError):
+                self.store.delete_thread("alice", "My_Chat")
+        self.assertTrue(hashed.exists())
+        self.assertEqual(self.store.folder("alice", "My_Chat"), hashed)
+        self.store.delete_thread("alice", "My_Chat")  # the retry
+        self.assertFalse(hashed.exists())
+
+    def test_a_rename_whose_owner_write_fails_leaves_the_files_where_they_were(self):
+        self.store.save("alice", "parks", "plan.md", b"# Plan")
+        with patch("deep_agents_demo.persistence.outputs._write", side_effect=OSError("in use")):
+            with self.assertRaises(OSError):
+                self.store.rename_thread("alice", "parks", "gardens")
+        self.assertEqual(self.store.read("alice", "parks", "plan.md"), b"# Plan")  # visible under the old name
+        self.assertFalse((self.root / "alice" / "gardens").exists())
+
+    def test_a_failed_owner_restore_does_not_hide_why_the_delete_stopped(self):
+        self.store.save("alice", "parks", "plan.md", b"x")
+        with patch.object(Path, "rmdir", side_effect=OSError("in use")),                 patch("deep_agents_demo.persistence.outputs._write", side_effect=OSError("restore denied")):
+            with self.assertRaises(OSError) as raised:
+                self.store.delete_thread("alice", "parks")
+        self.assertEqual(str(raised.exception), "in use")
+
+    def test_a_failed_move_back_does_not_hide_why_the_rename_stopped(self):
+        self.store.save("alice", "parks", "plan.md", b"# Plan")
+        real_rename = Path.rename
+
+        def rename(path, target):
+            if Path(path).name == "gardens":  # the move back
+                raise OSError("move back denied")
+            return real_rename(path, target)
+        with patch("deep_agents_demo.persistence.outputs._write", side_effect=OSError("owner denied")),                 patch.object(Path, "rename", rename):
+            with self.assertRaises(OSError) as raised:
+                self.store.rename_thread("alice", "parks", "gardens")
+        self.assertEqual(str(raised.exception), "owner denied")
+
     def test_delete_and_rename_thread(self):
         self.store.save("alice", "old", "a.md", b"a")
         self.store.save("alice", "taken", "b.md", b"b")
@@ -170,6 +221,101 @@ class OutputStoreTests(unittest.TestCase):
         folder = self.store.folder("alice", "parks")
         self.assertEqual(sorted(p.name for p in (folder / ".versions").iterdir()), ["d.csv.v1"])
         self.assertEqual([f.version for f in self.store.list("alice", "parks")], [1])
+
+
+class DiffTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp()) / "outputs"
+        self.store = OutputStore(self.root)
+
+    def test_default_diff_is_the_last_two_versions(self):
+        self.store.save("alice", "parks", "plan.md", b"one\ntwo\nthree\n")
+        self.store.save("alice", "parks", "plan.md", b"one\n2\nthree\n")
+        self.store.save("alice", "parks", "plan.md", b"one\n2\nthree\nfour\n")
+        text = self.store.diff("alice", "parks", "plan.md")
+        self.assertIn("--- plan.md v2", text)
+        self.assertIn("+++ plan.md v3", text)
+        self.assertIn("+four", text)
+        self.assertNotIn("-two", text)  # v1 is not compared by default
+
+    def test_explicit_versions(self):
+        self.store.save("alice", "parks", "plan.md", b"a\n")
+        self.store.save("alice", "parks", "plan.md", b"b\n")
+        self.store.save("alice", "parks", "plan.md", b"c\n")
+        text = self.store.diff("alice", "parks", "plan.md", 1, 3)
+        self.assertIn("-a", text)
+        self.assertIn("+c", text)
+
+    def test_identical_versions_say_so(self):
+        self.store.save("alice", "parks", "plan.md", b"same\n")
+        self.store.save("alice", "parks", "plan.md", b"same\n")
+        self.assertEqual(self.store.diff("alice", "parks", "plan.md"), "(no changes between v1 and v2)")
+
+    def test_an_image_is_not_diffed(self):
+        self.store.save("alice", "parks", "map.png", b"\x89PNG")
+        self.store.save("alice", "parks", "map.png", b"\x89PNG2")
+        with self.assertRaisesRegex(ValueError, "can't diff an image"):
+            self.store.diff("alice", "parks", "map.png")
+
+    def test_a_missing_version_says_which_exist(self):
+        for text in (b"1", b"2", b"3"):
+            self.store.save("alice", "parks", "park-plan.md", text)
+        with self.assertRaisesRegex(ValueError, r"park-plan\.md has no v4 \(versions: 1–3\)"):
+            self.store.diff("alice", "parks", "park-plan.md", 2, 4)
+
+    def test_one_version_has_nothing_to_compare(self):
+        self.store.save("alice", "parks", "plan.md", b"only")
+        with self.assertRaisesRegex(ValueError, "plan.md has only v1"):
+            self.store.diff("alice", "parks", "plan.md")
+
+    def test_an_unknown_file(self):
+        with self.assertRaisesRegex(ValueError, "No file named 'nope.md'"):
+            self.store.diff("alice", "parks", "nope.md")
+
+    def test_change_summary_counts_changed_lines(self):
+        self.assertEqual(change_summary(b"a\nb\nc\n", b"a\nB\nc\nd\n", 1), "changed from v1: +2 −1 lines")
+        self.assertEqual(change_summary(b"x\n", b"x\n", 4), "changed from v4: +0 −0 lines")
+
+    def test_only_v2_given_compares_it_with_the_version_before(self):
+        for text in (b"one\n", b"two\n", b"three\n"):
+            self.store.save("alice", "parks", "plan.md", text)
+        text = self.store.diff("alice", "parks", "plan.md", None, 2)
+        self.assertIn("--- plan.md v1", text)
+        self.assertIn("+++ plan.md v2", text)
+        self.assertNotIn("v3", text)
+
+    def test_only_v2_given_as_the_first_version_is_refused(self):
+        self.store.save("alice", "parks", "plan.md", b"one")
+        self.store.save("alice", "parks", "plan.md", b"two")
+        with self.assertRaisesRegex(ValueError, "no version before v1"):
+            self.store.diff("alice", "parks", "plan.md", None, 1)
+
+
+    def test_just_over_the_size_cap_gives_a_note_not_a_diff(self):
+        self.store.save("alice", "parks", "big.md", numbered(DIFF_MAX_LINES + 1))
+        self.store.save("alice", "parks", "big.md", numbered(DIFF_MAX_LINES + 1, changed=5))
+        with patch("deep_agents_demo.persistence.outputs.difflib.SequenceMatcher") as matcher:
+            text = self.store.diff("alice", "parks", "big.md")
+        matcher.assert_not_called()  # no line-by-line comparison at all
+        self.assertEqual(text, f"big.md v1 and v2 are too large to compare line by line (over {DIFF_MAX_LINES} lines).")
+        self.assertNotIn("\n", text)
+
+    def test_at_the_size_cap_gives_a_normal_diff(self):
+        self.store.save("alice", "parks", "big.md", numbered(DIFF_MAX_LINES))
+        self.store.save("alice", "parks", "big.md", numbered(DIFF_MAX_LINES, changed=5))
+        text = self.store.diff("alice", "parks", "big.md")
+        self.assertIn("-line 5", text.splitlines())
+        self.assertIn("+changed 5", text)
+
+    def test_change_summary_over_the_cap_says_so(self):
+        self.assertEqual(change_summary(numbered(DIFF_MAX_LINES + 1), numbered(3), 2),
+                         "changed from v2 (too large to compare line by line)")
+        self.assertEqual(change_summary(numbered(3), numbered(DIFF_MAX_LINES + 1), 1),
+                         "changed from v1 (too large to compare line by line)")
+
+    def test_change_summary_at_the_cap_counts_lines(self):
+        self.assertEqual(change_summary(numbered(DIFF_MAX_LINES), numbered(DIFF_MAX_LINES, changed=5), 1),
+                         "changed from v1: +1 −1 lines")
 
 
 if __name__ == "__main__":

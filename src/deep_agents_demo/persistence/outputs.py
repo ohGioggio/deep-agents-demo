@@ -16,6 +16,7 @@ Windows), so each folder records whose it is in ``.owner``: a name that finds th
 folder taken gets its own, with a short hash ("My_Chat-1a2b3c4d"). Folders saved
 before owners existed belong to the first name that saves into them.
 """
+import difflib
 import hashlib
 import json
 import os
@@ -27,12 +28,14 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from deep_agents_demo.models.media import IMAGE_KINDS
 from deep_agents_demo.persistence.files import safe_folder_name
 
 INDEX = ".index.json"  # a delivered file can't be named this (clean_name refuses leading dots)
 OWNER = ".owner"
 _RECORD_KEYS = {"name": str, "version": int, "bytes": int, "kind": str, "caption": str, "saved_at": str}
 _VERSION = re.compile(r"^(?P<name>.+)\.v(?P<version>\d+)$")
+DIFF_MAX_LINES = 10_000  # longer versions are not compared line by line (the matcher is slow on them)
 
 
 def _part(name: str) -> str:
@@ -71,6 +74,36 @@ class OutputFile:
 
     def to_dict(self) -> dict:
         return {**asdict(self), "path": str(self.path)}
+
+
+def _lines(data: bytes) -> list[str]:
+    return data.decode("utf-8", errors="replace").splitlines()
+
+
+def _too_large(old: list[str], new: list[str]) -> bool:
+    return max(len(old), len(new)) > DIFF_MAX_LINES
+
+
+def change_summary(old: bytes, new: bytes, since: int) -> str:
+    """"changed from v1: +2 −1 lines": lines added and removed from the version ``since`` to ``new``."""
+    old_lines, new_lines = _lines(old), _lines(new)
+    if _too_large(old_lines, new_lines):
+        return f"changed from v{since} (too large to compare line by line)"
+    added = removed = 0
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("replace", "delete"):
+            removed += i2 - i1
+        if tag in ("replace", "insert"):
+            added += j2 - j1
+    return f"changed from v{since}: +{added} −{removed} lines"
+
+
+def _span(versions: list[int]) -> str:
+    """"1–3" for consecutive versions, else "1, 3"."""
+    if versions == list(range(versions[0], versions[-1] + 1)):
+        return f"{versions[0]}–{versions[-1]}"
+    return ", ".join(map(str, versions))
 
 
 def _write(target: Path, data: bytes) -> None:
@@ -193,11 +226,66 @@ class OutputStore:
                 raise KeyError(f"{name} v{version}" if version else name)
             return (folder / ".versions" / f"{records[0]['name']}.v{version or max(versions)}").read_bytes()
 
+    def diff(self, user: str, chat: str, name: str, v1: int | None = None, v2: int | None = None) -> str:
+        """A unified diff from version ``v1`` to ``v2`` of a text file (the last two by default).
+        ValueError, in words for the user, when it can't be made."""
+        with self.lock:
+            folder = self.folder(user, chat)
+            records = [r for r in self._index(folder) if r["name"].casefold() == name.casefold()]
+            if not records:
+                raise ValueError(f"No file named {name!r} in this chat (see /files).")
+            label = records[0]["name"]
+            if records[0]["kind"] in IMAGE_KINDS:
+                raise ValueError(f"{label} is an image: can't diff an image (see /files).")
+            versions = sorted(r["version"] for r in records)
+            if v1 is None and v2 is None:
+                if len(versions) < 2:
+                    raise ValueError(f"{label} has only v{versions[0]}; there is nothing to compare.")
+                v1, v2 = versions[-2], versions[-1]
+            elif v1 is None:  # only v2: compare it with the version before it
+                earlier = [v for v in versions if v < v2]
+                if not earlier:
+                    raise ValueError(f"{label} has no version before v{v2} to compare it with.")
+                v1 = earlier[-1]
+            v2 = versions[-1] if v2 is None else v2
+            for version in (v1, v2):
+                if version not in versions:
+                    raise ValueError(f"{label} has no v{version} (versions: {_span(versions)}).")
+            old, new = self.read(user, chat, label, v1), self.read(user, chat, label, v2)
+            old_lines, new_lines = _lines(old), _lines(new)
+            if _too_large(old_lines, new_lines):
+                return (f"{label} v{v1} and v{v2} are too large to compare line by line "
+                        f"(over {DIFF_MAX_LINES} lines).")
+            text = "\n".join(difflib.unified_diff(old_lines, new_lines,
+                                                 f"{label} v{v1}", f"{label} v{v2}", lineterm=""))
+            return text or f"(no changes between v{v1} and v{v2})"
+
     def delete_thread(self, user: str, chat: str) -> None:
+        """Remove a chat's folder. The owner file goes last, so a delete stopped midway
+        still finds this folder (not another name's) when it is run again."""
         with self.lock:
             folder = self._inside(self.folder(user, chat))
-            if folder.exists():
-                shutil.rmtree(folder)
+            if not folder.exists():
+                return
+            for child in list(folder.iterdir()):
+                if child.name == OWNER:
+                    continue
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            owner_file = folder / OWNER
+            owner = owner_file.read_bytes() if owner_file.exists() else None
+            owner_file.unlink(missing_ok=True)
+            try:
+                folder.rmdir()
+            except OSError:  # the folder stays, so it must still say whose it is
+                if owner is not None:
+                    try:
+                        _write(owner_file, owner)
+                    except OSError:
+                        pass  # the error the user sees is why the delete stopped
+                raise
 
     def rename_thread(self, user: str, old: str, new: str) -> None:
         """Move a chat's files with the chat; refuse if ``new`` already has files."""
@@ -208,4 +296,11 @@ class OutputStore:
             if target.exists() and target.resolve() != source.resolve():
                 raise ValueError(f"Files for a chat named {new!r} already exist in {target}.")
             source.rename(target)
-            self._own(target, new, replace=True)
+            try:
+                self._own(target, new, replace=True)
+            except BaseException:  # the files go back, so the chat still finds them under its old name
+                try:
+                    target.rename(source)
+                except OSError:
+                    pass  # the error the user sees is why the rename stopped
+                raise

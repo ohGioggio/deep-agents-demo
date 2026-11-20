@@ -15,6 +15,11 @@ from rich.text import Text
 from deep_agents_demo.models.approvals import ApprovalRequest, Decision
 
 
+def diff_view(diff: str) -> Syntax:
+    """A unified diff in the approval panel's colours (also used by /files diff)."""
+    return Syntax(diff, "diff", theme="ansi_dark", background_color="default", word_wrap=True)
+
+
 def _keys_line() -> Text:
     line = Text()
     for key, rest in (("a", "pprove"), ("r", "eject (with a reason)"), ("d", "iff"), ("f", "ull file")):
@@ -72,8 +77,7 @@ class RichInteraction:
                 return Decision(False, "The user rejected this change"
                                 + (f": {reason}" if reason else ". Don't retry unless they ask."))
             if answer in {"d", "diff"}:
-                self._console.print(Syntax(request.diff, "diff", theme="ansi_dark",
-                                           background_color="default", word_wrap=True))
+                self._console.print(diff_view(request.diff))
             elif answer in {"f", "full"}:
                 self._console.print(Text(request.full))
             else:

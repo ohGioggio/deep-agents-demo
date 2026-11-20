@@ -120,6 +120,20 @@ class SendFileTests(FilesBase):
         self.assertEqual(self.store.read("alice", "parks", "plan.md"), b"# Plan\n\nSecret sauce.")
         self.assertEqual(self.store.list("alice", "parks")[0].caption, "the plan")
 
+    def test_a_new_version_says_what_changed(self):
+        (self.workspace / "plan.md").write_bytes(b"one\ntwo\nthree\n")
+        self.run_turn(call("send_file", {"path": "/plan.md"}, "s1"))
+        (self.workspace / "plan.md").write_bytes(b"one\n2\nthree\nfour\n")
+        [message] = self.run_turn(call("send_file", {"path": "/plan.md"}, "s2"))
+        result = json.loads(message.content)
+        self.assertEqual(result["version"], 2)
+        self.assertEqual(result["changes"], "changed from v1: +2 −1 lines")
+
+    def test_a_first_version_has_no_change_line(self):
+        (self.workspace / "plan.md").write_bytes(b"# Plan")
+        [message] = self.run_turn(call("send_file", {"path": "/plan.md"}, "s1"))
+        self.assertNotIn("changes", json.loads(message.content))
+
     def test_failures_save_nothing(self):
         (self.workspace / "notes.docx").write_text("x", encoding="utf-8")
         (self.workspace / "keys.md").write_text("key: AKIAABCDEFGHIJKLMNOP", encoding="utf-8")
@@ -266,6 +280,18 @@ class FileEventTests(FilesBase):
         self.assertEqual(len(ui.lines), 2, ui.lines)
         self.assertTrue(ui.lines[0].startswith("[file] plan.md  v1"), ui.lines)
         self.assertEqual(ui.lines[1], "Here it is.")
+
+
+class ImageListTests(unittest.TestCase):
+    def test_the_store_and_the_checks_share_one_image_list(self):
+        from deep_agents_demo.features.files import validate
+        from deep_agents_demo.models import media
+        from deep_agents_demo.persistence import outputs
+        self.assertIs(validate.IMAGE_TYPES, media.IMAGE_TYPES)
+        self.assertIs(outputs.IMAGE_KINDS, media.IMAGE_KINDS)
+        self.assertEqual(media.IMAGE_KINDS, frozenset({"png", "jpg", "jpeg"}))
+        self.assertEqual(media.IMAGE_TYPES["png"], "image/png")
+        self.assertEqual(media.IMAGE_TYPES["jpeg"], media.IMAGE_TYPES["jpg"])
 
 
 if __name__ == "__main__":

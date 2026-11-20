@@ -15,9 +15,9 @@ from pathlib import PurePosixPath
 
 from deep_agents_demo.core.media import sniff
 from deep_agents_demo.core.secrets import find_secrets, split_findings
+from deep_agents_demo.models.media import IMAGE_KINDS, IMAGE_TYPES
 
 ALLOWED = (".md", ".txt", ".csv", ".html", ".tex", ".svg", ".json", ".png", ".jpg", ".jpeg")
-IMAGES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 TEXT_LIMIT = 5 * 1024 * 1024
 IMAGE_LIMIT = 20 * 1024 * 1024
 
@@ -84,10 +84,10 @@ def validate(name: str, data: bytes) -> str | None:
     suffix = PurePosixPath(name).suffix.lower()
     if suffix not in ALLOWED:
         return f"{name}: files of this type can't be sent; use one of {', '.join(ALLOWED)}"
-    if suffix in IMAGES:
+    if suffix[1:] in IMAGE_KINDS:
         if len(data) > IMAGE_LIMIT:
             return f"{name} is larger than {IMAGE_LIMIT // (1024 * 1024)} MB"
-        if sniff(data) != IMAGES[suffix]:
+        if sniff(data) != IMAGE_TYPES[suffix[1:]]:
             kind = "PNG" if suffix == ".png" else "JPEG"
             return f"{name} is not a {kind} image (checked by its content)"
         return None
