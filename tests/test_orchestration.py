@@ -414,6 +414,190 @@ class ReviewFixTests(RunnerBase):
         runner = self.runner(*steps, reply("done"), reply("PASS\nok"))
         self.assertEqual(self.statuses(self.plan(runner, ("long job", "general-purpose"))), ["passed"])
 
+    def test_a_step_that_failed_review_is_finished_with_the_reviewers_notes(self):
+        from deep_agents_demo.models.events import StepFinished
+
+        class Events(list):
+            def emit(self, event):
+                self.append(event)
+        runner = self.runner(reply("v1 work"), reply("FAIL\nno tests"), reply("v2 work"),
+                             reply("FAIL\nstill no tests"), answers=["x"])
+        runner.sink = events = Events()
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        finished = [e for e in events if isinstance(e, StepFinished) and e.kind == "plan" and e.number == 1]
+        self.assertEqual([(e.status, e.summary) for e in finished], [("failed review", "still no tests")])
+        self.assertEqual(outcome["steps"][0]["result"], "v2 work")
+
+    def test_a_crashing_step_is_finished_with_the_crash_as_its_reason(self):
+        from deep_agents_demo.models.events import StepFinished
+
+        class Events(list):
+            def emit(self, event):
+                self.append(event)
+        runner = self.runner(interactive=False)
+        runner.make = lambda name, extra=(): Boom()
+        runner.sink = events = Events()
+        self.plan(runner, ("one", "general-purpose"))
+        finished = [e for e in events if isinstance(e, StepFinished) and e.kind == "plan" and e.number == 1]
+        self.assertEqual([e.status for e in finished], ["failed"])
+        self.assertIn("provider down", finished[0].summary)
+
+    def test_a_crash_after_a_failed_review_keeps_the_reviewers_notes(self):
+        from deep_agents_demo.features.orchestration.runner import _RunFailed
+        from deep_agents_demo.models.events import StepFinished
+
+        class Events(list):
+            def emit(self, event):
+                self.append(event)
+        runner = self.runner(reply("v1 work"), reply("FAIL\nno tests"), interactive=False)
+        original = runner._run_agent
+
+        def crash_on_attempt_two(name, text, thread_id, *args, **kwargs):
+            if thread_id.endswith(":2:worker"):
+                raise _RunFailed("provider down")
+            return original(name, text, thread_id, *args, **kwargs)
+        runner._run_agent = crash_on_attempt_two
+        runner.sink = events = Events()
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        finished = [e for e in events if isinstance(e, StepFinished) and e.kind == "plan" and e.number == 1]
+        self.assertEqual([(e.status, e.summary) for e in finished], [("failed review", "no tests")])
+        self.assertEqual(self.statuses(outcome), ["failed"])
+        self.assertEqual(outcome["steps"][0]["notes"], "no tests")
+
+    def test_a_fail_verdict_with_no_notes_gives_its_reason_from_the_verdict_line(self):
+        runner = self.runner(reply("v1"), reply("FAIL: the file is missing"), reply("v2"),
+                             reply("FAIL: the file is missing"), interactive=False)
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        self.assertEqual(outcome["steps"][0]["notes"], "the file is missing")
+
+    def test_a_bare_fail_verdict_says_the_reviewer_gave_no_reason(self):
+        from deep_agents_demo.features.orchestration.plans import parse_verdict
+        self.assertEqual(parse_verdict("**FAIL**"), (False, "the reviewer gave no reason"))
+        self.assertEqual(parse_verdict("FAIL\n\n"), (False, "the reviewer gave no reason"))
+        runner = self.runner(reply("v1"), reply("FAIL"), reply("v2"), reply("FAIL"), interactive=False)
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        self.assertEqual(outcome["steps"][0]["notes"], "the reviewer gave no reason")
+
+    def test_a_fail_verdict_reason_loses_any_kind_of_dash_in_front(self):
+        from deep_agents_demo.features.orchestration.plans import parse_verdict
+        for dash in ("-", "–", "—"):
+            with self.subTest(dash=dash):
+                self.assertEqual(parse_verdict(f"FAIL {dash} the file is missing"),
+                                 (False, "the file is missing"))
+                self.assertEqual(parse_verdict(f"**FAIL**{dash}the file is missing"),
+                                 (False, "the file is missing"))
+
+    def test_a_crash_is_told_to_the_next_worker_apart_from_the_reviewers_notes(self):
+        from deep_agents_demo.features.orchestration.runner import _RunFailed
+        runner = self.runner(reply("v2 work"), reply("PASS\nok"), interactive=False)
+        original = runner._run_agent
+
+        def crash_on_attempt_one(name, text, thread_id, *args, **kwargs):
+            if thread_id.endswith(":1:worker"):
+                raise _RunFailed("provider down")
+            return original(name, text, thread_id, *args, **kwargs)
+        runner._run_agent = crash_on_attempt_one
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["passed"])
+        worker = self.inputs()[0]
+        self.assertIn("The previous attempt stopped with an error: provider down", worker)
+        self.assertNotIn("reviewer's notes", worker)
+
+    def test_the_next_worker_gets_the_last_review_and_the_crash_separately(self):
+        from deep_agents_demo.features.orchestration.runner import _RunFailed
+        runner = self.runner(reply("v1"), reply("FAIL\nneeds a map"), reply("v3"), reply("PASS\nok"),
+                             interactive=False)
+        runner.max_attempts = 3
+        original = runner._run_agent
+
+        def crash_on_attempt_two(name, text, thread_id, *args, **kwargs):
+            if thread_id.endswith(":2:worker"):
+                raise _RunFailed("provider down")
+            return original(name, text, thread_id, *args, **kwargs)
+        runner._run_agent = crash_on_attempt_two
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["passed"])
+        worker = self.inputs()[2]
+        self.assertIn("The reviewer's notes on your last attempt:\nneeds a map", worker)
+        self.assertIn("The previous attempt stopped with an error: provider down", worker)
+
+    def test_a_crash_only_step_never_says_failed_review(self):
+        from deep_agents_demo.features.orchestration.runner import _RunFailed
+        from deep_agents_demo.models.events import NoticeEvent
+
+        class Events(list):
+            def emit(self, event):
+                self.append(event)
+        runner = self.runner(interactive=False)
+        original = runner._run_agent
+
+        def crash_every_worker(name, text, thread_id, *args, **kwargs):
+            if thread_id.endswith(":worker"):
+                raise _RunFailed("provider down")
+            return original(name, text, thread_id, *args, **kwargs)
+        runner._run_agent = crash_every_worker
+        runner.sink = events = Events()
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        notices = [e.text for e in events if isinstance(e, NoticeEvent)]
+        self.assertIn("[plan] step 1/1 stopped with an error (attempt 1/2): provider down", notices)
+        self.assertNotIn("failed review", " ".join(notices))
+        self.assertEqual(self.statuses(outcome), ["failed"])
+
+    def test_a_step_reviewed_fail_then_crashing_on_retry_finishes_failed_review(self):
+        from deep_agents_demo.features.orchestration.runner import _RunFailed
+        from deep_agents_demo.models.events import StepFinished
+
+        class Events(list):
+            def emit(self, event):
+                self.append(event)
+        runner = self.runner(reply("v1"), reply("FAIL\nno tests"), reply("v2"), reply("FAIL\nno tests"),
+                             answers=["r", "x"])
+        original = runner._run_agent
+
+        def crash_in_round_two(name, text, thread_id, *args, **kwargs):
+            if thread_id.endswith((":1:2:1:worker", ":1:2:2:worker")):
+                raise _RunFailed("provider down")
+            return original(name, text, thread_id, *args, **kwargs)
+        runner._run_agent = crash_in_round_two
+        runner.sink = events = Events()
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        finished = [e for e in events if isinstance(e, StepFinished) and e.kind == "plan" and e.number == 1]
+        self.assertEqual([(e.status, e.summary) for e in finished], [("failed review", "no tests")])
+        self.assertEqual(outcome["steps"][0]["notes"], "no tests")
+
+    def test_a_crash_only_round_then_retry_tells_the_worker_the_error_not_reviewer_notes(self):
+        from deep_agents_demo.features.orchestration.runner import _RunFailed
+        runner = self.runner(reply("v2"), reply("PASS\nok"), answers=["r"])
+        original = runner._run_agent
+
+        def crash_round_one(name, text, thread_id, *args, **kwargs):
+            if ":1:1:" in thread_id and thread_id.endswith(":worker"):
+                raise _RunFailed("provider down")
+            return original(name, text, thread_id, *args, **kwargs)
+        runner._run_agent = crash_round_one
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["passed"])
+        worker = self.inputs()[0]
+        self.assertIn("The previous attempt stopped with an error: provider down", worker)
+        self.assertNotIn("reviewer's notes", worker)
+
+    def test_a_review_fail_then_a_crash_carries_both_into_the_retry(self):
+        from deep_agents_demo.features.orchestration.runner import _RunFailed
+        runner = self.runner(reply("v1"), reply("FAIL\nno map"), reply("v3"), reply("PASS\nok"),
+                             answers=["r"], )
+        original = runner._run_agent
+
+        def crash_second_attempt(name, text, thread_id, *args, **kwargs):
+            if thread_id.endswith(":1:1:2:worker"):
+                raise _RunFailed("provider down")
+            return original(name, text, thread_id, *args, **kwargs)
+        runner._run_agent = crash_second_attempt
+        outcome = self.plan(runner, ("one", "general-purpose"))
+        self.assertEqual(self.statuses(outcome), ["passed"])
+        worker = self.inputs()[2]
+        self.assertIn("The reviewer's notes on your last attempt:\nno map", worker)
+        self.assertIn("The previous attempt stopped with an error: provider down", worker)
+
     def test_a_crashing_run_is_a_failed_attempt(self):
         runner = self.runner(interactive=False)
         runner.make = lambda name, extra=(): Boom()
@@ -559,6 +743,82 @@ class WiringTests(Workspace):
         result = json.loads([m for m in last_main_call if m.type == "tool"][-1].content)
         self.assertEqual([s["status"] for s in result["steps"]], ["passed"])
         self.assertEqual(result["steps"][0]["result"], "hi")
+
+    def test_a_plan_turn_is_recorded_as_a_run_with_its_plan_and_step(self):
+        """The real event order of a plan: the recorder, as the chat's sink, saves the turn
+        with the plan part and its step nested under it."""
+        from contextlib import ExitStack
+
+        from deep_agents_demo.config import (
+            ChatSettings,
+            MemorySettings,
+            Paths,
+            Settings,
+        )
+        from deep_agents_demo.core.runs import RunRecorder
+        from deep_agents_demo.persistence.runs import RunStore
+        from deep_agents_demo.providers.chat import usage_counter
+        from deep_agents_demo.startup import runtime as app
+        from deep_agents_demo.startup.workspace import prepare_workspace
+        from deep_agents_demo.ui.cli.repl import runners_for
+
+        class Nowhere:
+            def emit(self, event):
+                pass
+
+        settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
+                            memory=MemorySettings(enabled=False), rag_enabled=False,
+                            paths=Paths(data=self.root / "data", workspace=self.root / "ws",
+                                        checkpoints=self.root / "data" / "checkpoints.sqlite"))
+        prepare_workspace(settings)
+        model = Model(responses=[call("run_plan", {"goal": "greet", "steps": [{"task": "say hi"}]}, "p"),
+                                 reply("hi"), reply("PASS\nfine"), reply("all done")])
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        store = RunStore(self.root / "runs.sqlite")
+        stack.callback(store.close)
+        recorder = RunRecorder(Nowhere(), store, usage_counter(), user="alice", model="unused")
+        with patch.object(app, "chat_model", return_value=model):
+            runtime = app.build_runtime(stack.enter_context(app.Resources.open(settings)), "alice")
+            approver = Approver(interactive=False)
+            config = {"configurable": {"thread_id": "alice:t"}}
+            with patch("builtins.print"), recorder.turn("c1", "go"):
+                stream_turn(runtime.agent, "go", config, approver=approver, sink=recorder,
+                            runners=runners_for(runtime, settings, "alice:t", approver, interactive=False,
+                                                sink=recorder))
+        listed = store.recent("alice")
+        self.assertEqual(len(listed), 1)
+        run = store.get("alice", listed[0].id)
+        self.assertEqual((run.chat, run.status), ("c1", "done"))
+        self.assertEqual([(p.kind, p.parent) for p in run.parts], [("plan", None), ("step", 1)])
+        self.assertEqual(run.parts[0].label, "greet")
+
+
+class StepModelCallsTests(unittest.TestCase):
+    """A step's StepFinished counts the model calls its runs made (the run store records them)."""
+
+    def test_the_step_finished_event_carries_its_model_calls(self):
+        from deep_agents_demo.features.orchestration.limits import BUDGET_STOP
+        from deep_agents_demo.features.orchestration.runner import Runner, _Tally
+        from deep_agents_demo.models.events import StepFinished, TextMessageEnd
+
+        class Collect:
+            def __init__(self):
+                self.events = []
+
+            def emit(self, event):
+                self.events.append(event)
+
+        sink = Collect()
+        runner = Runner(None, None, None, sink, thread="alice:t")
+        step = runner.begin_step("plan", 1, 2, "general-purpose")
+        tally = _Tally(sink, step, runner.usage, runner._usage_lock)
+        tally.emit(TextMessageEnd("r1", "m1", "thinking", 10, 1, True))
+        tally.emit(TextMessageEnd("r1", "m2", "done", 20, 2, False))
+        tally.emit(TextMessageEnd("r1", "m3", BUDGET_STOP, 0, 0, False))  # the budget's stop: no call made
+        runner.finish_step(step, "done", "ok")
+        finished = [e for e in sink.events if isinstance(e, StepFinished)][0]
+        self.assertEqual(finished.model_calls, 2)
 
 
 if __name__ == "__main__":

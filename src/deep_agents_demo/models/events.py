@@ -176,7 +176,18 @@ class StepStarted(_StepEvent):
 
 @dataclass(frozen=True)
 class StepFinished(_StepEvent):
-    """A plan step or room turn finished."""
+    """A plan step, room turn or swarm task finished. ``status`` is one of:
+
+    - plan step: "passed" (the reviewer passed it), "skipped" (the user skipped it after a
+      failure), "failed review" (the reviewer's last verdict was FAIL, and the user stopped
+      the plan), "failed" (every attempt crashed, or no agent of that name), "stopped" (the
+      plan stopped before or at this step);
+    - room turn: "done", "failed" (the opening or turn could not answer), "cut" (the request
+      budget ran out, keeping the partial answer; or the room was stopped mid-turn, with no
+      answer kept), "stopped" (the room was stopped while a parallel opening was running);
+    - swarm task: "done", "failed", "cut" and "stopped", as for a room turn; the swarm's merge
+      step is "done", "failed" or "stopped".
+    """
     run_id: str
     kind: str
     number: int
@@ -186,6 +197,7 @@ class StepFinished(_StepEvent):
     input_tokens: int
     output_tokens: int
     summary: str = ""
+    model_calls: int = 0  # the model calls its runs made (retries and reviews included)
 
 
 @dataclass(frozen=True)

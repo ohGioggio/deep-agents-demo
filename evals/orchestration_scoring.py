@@ -244,7 +244,7 @@ def format_table(summary: list[dict]) -> str:
             entry["mode"],
             entry["family"],
             _score_cell(entry),
-            _cell(entry["calls"], runs, lambda v: f"{v:g}"),
+            _cell(entry["calls"], runs, lambda v: f"{round(v):,}"),
             _cell(entry["input_tokens"], runs, lambda v: f"{round(v):,}"),
             _cell(entry["output_tokens"], runs, lambda v: f"{round(v):,}"),
             _cell(entry["seconds"], runs, lambda v: f"{round(v)} s"),

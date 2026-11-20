@@ -684,5 +684,16 @@ class RunnerTests(unittest.TestCase):
                 self.quiet_run(["swarm"], [BY_NAME["safety-injection"]], model=model, counter=counter)
 
 
+
+class TableRoundingTests(unittest.TestCase):
+    def test_a_mean_of_calls_is_a_whole_number(self):
+        metric = lambda values: {"mean": sum(values) / len(values), "min": min(values), "max": max(values)}
+        entry = {"mode": "room", "family": "lookup", "runs": 3, "no_heading": 0, "errors": 0,
+                 "score": metric([1, 1, 1]), "calls": metric([28, 28, 30]),
+                 "input_tokens": metric([10, 10, 10]), "output_tokens": metric([1, 1, 1]),
+                 "seconds": metric([5, 5, 5]), "score_per_1k": metric([0.1, 0.1, 0.1])}
+        row = scoring.format_table([entry]).splitlines()[-1]
+        self.assertIn("| 29 (28–30) |", row)
+
 if __name__ == "__main__":
     unittest.main()

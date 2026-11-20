@@ -14,7 +14,7 @@ import re
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import wait
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
@@ -22,6 +22,7 @@ from typing import Protocol
 from langgraph.types import interrupt
 
 from deep_agents_demo.features.orchestration.limits import Budget, _WrapUp
+from deep_agents_demo.features.orchestration.pool import DaemonPool
 from deep_agents_demo.features.orchestration.room_decisions import (
     DEFAULT_ASK,
     Decision,
@@ -218,6 +219,7 @@ class RoomRunner(Runner):
         self.recent_turns = recent_turns
         self.opening_round = opening_round
         self.max_parallel = max_parallel      # threads for the read-only participants' openings
+        self._stop_noticed = False  # a wave that was stopped has said so (with its count)
         format = str(format).strip().lower()
         if format not in FORMATS:  # the config and the tools check first; this is for other callers
             raise ValueError(format_problem(format, []))
@@ -435,17 +437,22 @@ class RoomRunner(Runner):
         """The wave: each read-only opening on a pool thread, at most ``max_parallel`` at a time.
         Their text is not streamed (the openings would garble the one answer box); once the wave
         is done, each held opening is shown whole, in participant order. Returns the turns counted."""
-        pool = ThreadPoolExecutor(max_workers=self.max_parallel)
+        pool = DaemonPool(self.max_parallel)
         futures = {}
-        for offset, name in enumerate(names):
-            self.say(f"{self.label} opening: {name}")
-            futures[name] = pool.submit(self._worker_opening, name, question, turns + offset + 1, ledger)
         try:
-            self._wait(list(futures.values()))
-        except KeyboardInterrupt:  # the openings still running are not waited for
-            pool.shutdown(wait=False, cancel_futures=True)
-            raise
-        pool.shutdown(wait=True)  # every future is done
+            for offset, name in enumerate(names):
+                self.say(f"{self.label} opening: {name}")
+                futures[name] = pool.submit(self._worker_opening, name, question, turns + offset + 1, ledger)
+            try:
+                self._wait(list(futures.values()))
+            except KeyboardInterrupt:  # the openings still running are abandoned, not waited for
+                running = sum(1 for future in futures.values() if future.running())
+                if running:  # their daemon threads don't hold up quitting the chat
+                    self._stop_noticed = True
+                    self.say(f"{self.label} Stopped. {running} request(s) still running were abandoned.")
+                raise
+        finally:  # every exit, an error included: idle workers must not stay blocked on the queue
+            pool.shutdown(cancel_pending=True)  # on the normal path every future is already done
         for name in names:
             status, text, tools = futures[name].result()
             held[name] = (status, text)
@@ -654,7 +661,9 @@ class RoomRunner(Runner):
             ended_by = ended.choice
         except KeyboardInterrupt:  # a second Ctrl+C: stop the room, keep the chat
             self.lines.append("*(stopped by the user)*")
-            self.say(f"{self.label} Stopped.")
+            if not self._stop_noticed:  # a stopped wave has already said so, with its count
+                self.say(f"{self.label} Stopped.")
+            self._stop_noticed = False
             ended_by = "stopped"
         if self.ending is None and not isinstance(policy, ModeratorPolicy):
             self.ending = policy.verdict()  # a fixed format's end, when the cap came before its own

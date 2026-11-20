@@ -40,7 +40,7 @@ class _StepRun:
     def __init__(self, kind: str, number: int, total: int, agent: str):
         self.id, self.kind, self.number, self.total, self.agent = uuid.uuid4().hex, kind, number, total, agent
         self.started = time.monotonic()
-        self.attempts = self.input_tokens = self.output_tokens = 0
+        self.attempts = self.input_tokens = self.output_tokens = self.model_calls = 0
         self.tool_calls: list[tuple[str, str]] = []  # (call id, tool name) of each call its runs started
         self.refused: set[str] = set()  # the ids of the calls that were refused (rejected, never ran)
 
@@ -89,6 +89,8 @@ class _Tally:
             elif isinstance(event, ToolCallEnd) and self.step is not None and event.status == "rejected":
                 self.step.refused.add(event.tool_call_id)
             elif isinstance(event, TextMessageEnd) and event.text.strip() != BUDGET_STOP:  # no model call made
+                if self.step is not None:
+                    self.step.model_calls += 1
                 self.usage["model_calls"] += 1
                 self.usage["input_tokens"] += event.input_tokens
                 self.usage["output_tokens"] += event.output_tokens
@@ -170,7 +172,7 @@ class Runner:
         if not self.quiet:
             self.sink.emit(StepFinished(step.id, step.kind, step.number, status, step.attempts,
                                         time.monotonic() - step.started, step.input_tokens,
-                                        step.output_tokens, first_line(summary)))
+                                        step.output_tokens, first_line(summary), step.model_calls))
 
     def settle_unstarted(self, kind: str, numbers) -> None:
         """Steps settled without ever starting (the later steps of a stopped plan)."""

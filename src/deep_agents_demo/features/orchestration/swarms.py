@@ -12,7 +12,7 @@ import re
 import threading
 import time
 import uuid
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, wait
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +20,7 @@ from langgraph.types import interrupt
 
 from deep_agents_demo.core.middleware import ToolAccess
 from deep_agents_demo.features.orchestration.limits import Budget, _WrapUp
+from deep_agents_demo.features.orchestration.pool import DaemonPool
 from deep_agents_demo.features.orchestration.runner import LockedSink, Runner, _RunFailed, first_line
 from deep_agents_demo.models.agents import READ_ONLY
 
@@ -218,15 +219,16 @@ class SwarmRunner(Runner):
         """Runs ``slots`` on a pool, at most ``max_parallel`` at a time. "done" when they all ran;
         "merge now" or "stop" when the user chose so at a pause; "stop" when stopped (the workers
         still running are cut off and reported stopped)."""
-        pool, queue, active = ThreadPoolExecutor(max_workers=self.max_parallel), list(slots), {}
+        pool, queue, active = DaemonPool(self.max_parallel), list(slots), {}
         try:
-            result = self._drive(pool, goal, total, queue, active)
-        except KeyboardInterrupt:  # the second press, raised in this thread
-            result = "stop"
-        if result == "stop":
-            self._abandon(pool, active)
-        else:
-            pool.shutdown(wait=True)
+            try:
+                result = self._drive(pool, goal, total, queue, active)
+            except KeyboardInterrupt:  # the second press, raised in this thread
+                result = "stop"
+            if result == "stop":
+                self._abandon(pool, active)
+        finally:  # every exit, an error included: the idle workers must not stay blocked on the queue
+            pool.shutdown(cancel_pending=True)
         return result
 
     def _drive(self, pool, goal: str, total: int, queue: list, active: dict) -> str:
@@ -272,7 +274,7 @@ class SwarmRunner(Runner):
     def _abandon(self, pool, active: dict) -> None:
         """Stop now: nothing waits for the running workers. They are reported stopped, their budget
         is used up (so they stop at their next model call), and nothing more reaches the sink."""
-        pool.shutdown(wait=False, cancel_futures=True)
+        pool.shutdown(cancel_pending=True)
         if not active:
             return
         self.budget.drain()
@@ -284,9 +286,8 @@ class SwarmRunner(Runner):
                     slot.closed, slot.status = True, "stopped"
                     if slot.step is not None:
                         self.finish_step(slot.step, "stopped")
-        if running:  # their provider calls finish in the background; quitting the chat waits for them
-            self.say(f"{self.label} Stopped. {running} request(s) still running will finish in the "
-                     "background; quitting the chat waits for them.")
+        if running:  # abandoned: their threads are daemons, so quitting the chat doesn't wait for them
+            self.say(f"{self.label} Stopped. {running} request(s) still running were abandoned.")
         self.sink.close()
 
     def _settle(self, slot: _Slot, status: str, result: str) -> None:

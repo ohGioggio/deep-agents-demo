@@ -8,6 +8,7 @@
   resumes the tool with the outcome.
 """
 import json
+import re
 import uuid
 
 from langgraph.types import interrupt
@@ -40,6 +41,7 @@ def run_plan(goal: str, steps: list[dict]) -> str:
 
 EARLIER_LIMIT = 300   # characters of each earlier step's result in the next worker's input
 _VERDICT_MARKS = "*#>_` \t"
+_VERDICT_WORD = re.compile(r"^[\s*#>_`]*(?:PASS|FAIL)\w*", re.IGNORECASE)
 
 
 def parse_verdict(text: str) -> tuple[bool, str]:
@@ -51,6 +53,9 @@ def parse_verdict(text: str) -> tuple[bool, str]:
     if first.startswith("PASS"):
         return True, notes
     if first.startswith("FAIL"):
+        if not notes:  # the reason may sit on the verdict line itself: "FAIL: the file is missing"
+            reason = _VERDICT_WORD.sub("", lines[0], count=1).strip(_VERDICT_MARKS + ":;,.-–—")
+            notes = reason or "the reviewer gave no reason"
         return False, notes
     return False, f"the reviewer gave no clear verdict: {str(text or '')[:200]}"
 
@@ -83,15 +88,17 @@ class PlanRunner(Runner):
             return None
         return None if answer.strip().lower() == "/stop" else answer.strip()
 
-    def _worker_input(self, goal, step, number, total, done, review_notes, user_note) -> str:
+    def _worker_input(self, goal, step, number, total, done, review_notes, user_note, crash="") -> str:
         parts = [f"Goal: {goal}", f"Step {number} of {total}: {step.task}"]
         if done:
             parts.append("Earlier steps:\n" + "\n".join(
                 f"- Step {i} ({r.status}): {r.result[:EARLIER_LIMIT]}" for i, r in enumerate(done, 1)))
         if user_note:
             parts.append(f"Note from the user: {user_note}")
-        if review_notes:
+        if review_notes:  # the last review's notes, kept across a crash
             parts.append(f"The reviewer's notes on your last attempt:\n{review_notes}")
+        if crash:  # the attempt just before this one stopped with an error
+            parts.append(f"The previous attempt stopped with an error: {crash}")
         parts.append("Do only this step: later steps are done separately, after review. "
                      "Then reply with what you did and the result.")
         return "\n\n".join(parts)
@@ -102,29 +109,44 @@ class PlanRunner(Runner):
                 f"The worker's result:\n{result}\n\nReply PASS or FAIL on the first line, then notes.")
 
     # one step ---------------------------------------------------------------------------
-    def _attempts(self, goal, step, number, total, done, user_note, round_no, notes="") -> StepResult:
+    def _attempts(self, goal, step, number, total, done, user_note, round_no, notes="",
+                  reviewed_before=False, crash_before="") -> tuple[StepResult, bool, str]:
+        """The step's result; whether a reviewer gave a FAIL (in this round or an earlier one: then
+        the result's notes are the last review's); and the error the last attempt stopped with ("" if
+        it did not crash). ``notes`` and ``crash_before`` are the last review's notes and the last
+        error, carried in from an earlier round."""
         label = f"[plan] step {number}/{total}"
         if not self._exists(step.agent):
-            return StepResult(step, "failed", notes=f"no agent named {step.agent!r}")
-        result = ""
+            return StepResult(step, "failed", notes=f"no agent named {step.agent!r}"), False, ""
+        result, review_notes, reviewed_once, crash = "", notes, reviewed_before, crash_before
         for attempt in range(1, self.max_attempts + 1):
             if self.step is not None:
                 self.step.attempts += 1
             self.say(f"{label} - {step.agent}")
             base = f"{self.thread}:plan:{self.plan_id}:{number}:{round_no}:{attempt}"
+            reviewed, failed_with = False, ""
             try:
                 result = self._run_agent(step.agent, self._worker_input(
-                    goal, step, number, total, done, notes, user_note), f"{base}:worker")
+                    goal, step, number, total, done, review_notes, user_note, crash), f"{base}:worker")
                 verdict = self._run_agent("reviewer", self._review_input(
                     goal, step, number, total, result), f"{base}:review")
-                passed, notes = parse_verdict(verdict)
+                passed, reason = parse_verdict(verdict)
+                reviewed = True
             except _RunFailed as error:
-                passed, notes = False, str(error)
+                passed, reason = False, str(error)
+                failed_with = reason
+            crash = failed_with  # only the next attempt is told about a crash
             if passed:
                 self.say(f"{label} passed review")
-                return StepResult(step, "passed", result, notes)
-            self.say(f"{label} failed review (attempt {attempt}/{self.max_attempts}): {notes}")
-        return StepResult(step, "failed", result, notes)
+                return StepResult(step, "passed", result, reason), False, ""
+            if reviewed:  # kept even when a later attempt crashes
+                review_notes, reviewed_once = reason, True
+                self.say(f"{label} failed review (attempt {attempt}/{self.max_attempts}): {reason}")
+            else:
+                self.say(f"{label} stopped with an error (attempt {attempt}/{self.max_attempts}): {reason}")
+        if reviewed_once:
+            return StepResult(step, "failed", result, review_notes), True, crash
+        return StepResult(step, "failed", result, crash), False, crash
 
     def _decide(self, outcome: StepResult, number: int, total: int) -> str:
         """After a failed step: 'retry', 'skip' or 'stop'."""
@@ -156,6 +178,8 @@ class PlanRunner(Runner):
                  for s in request.get("steps", [])]
         done: list[StepResult] = []
         user_note, notes, round_no, number = "", "", 1, 0
+        reviewed_fail = False  # a reviewer failed the open step in an earlier round (kept across retries)
+        crash = ""             # the error the open step's last attempt stopped with (kept across retries)
         total = len(steps)
         current = None  # the open step's events: kept across a retry, closed when it settles
         while number < total:
@@ -172,8 +196,8 @@ class PlanRunner(Runner):
                 current = self.begin_step("plan", number + 1, total, step.agent)
             self.step = current
             try:
-                outcome = self._attempts(goal, step, number + 1, total, done, user_note,
-                                         round_no, notes)
+                outcome, reviewed, crashed = self._attempts(goal, step, number + 1, total, done, user_note,
+                                                            round_no, notes, reviewed_fail, crash)
             except KeyboardInterrupt:  # a second Ctrl+C: stop the plan, keep the chat
                 self.say(f"{self.label} Stopped.")
                 done += [StepResult(rest, "stopped", notes="stopped by the user")
@@ -192,8 +216,10 @@ class PlanRunner(Runner):
             user_note = ""
             if outcome.status == "failed":
                 choice = self._decide(outcome, number + 1, total)
-                if choice == "retry":  # fresh threads, keeping the last review's notes
-                    round_no, notes = round_no + 1, outcome.notes
+                if choice == "retry":  # fresh threads; the last review's notes, or else the last error, carry on
+                    round_no, reviewed_fail, crash = round_no + 1, reviewed, crashed
+                    if reviewed:  # outcome.notes is the last review's notes only when a reviewer gave them
+                        notes = outcome.notes
                     continue
                 if choice == "skip":
                     outcome.status = "skipped"
@@ -201,13 +227,16 @@ class PlanRunner(Runner):
                     done.append(outcome)
                     done += [StepResult(rest, "stopped", notes="the plan was stopped")
                              for rest in steps[number + 1:]]
-                    self.finish_step(current, "failed", outcome.result or outcome.notes)
+                    if reviewed:  # the timeline shows "failed review: <the reviewer's reason>"
+                        self.finish_step(current, "failed review", outcome.notes)
+                    else:
+                        self.finish_step(current, "failed", outcome.result or outcome.notes)
                     self.settle_unstarted("plan", range(number + 2, total + 1))
                     break
             self.finish_step(current, outcome.status, outcome.result or outcome.notes)
             current = None
             done.append(outcome)
-            number, round_no, notes = number + 1, 1, ""
+            number, round_no, notes, reviewed_fail, crash = number + 1, 1, "", False, ""
         return {"goal": goal, "steps": [r.as_dict() for r in done],
                 "note": ("Tell the user how each step went. The user decided what happens to "
                          "failed, skipped and stopped steps: don't redo them yourself unless "

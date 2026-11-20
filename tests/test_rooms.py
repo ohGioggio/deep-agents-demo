@@ -550,6 +550,30 @@ class WiringTests(Workspace):
         self.assertEqual((outcome["ended_by"], outcome["summary"]), ("moderator", "Agreed: ship."))
         self.assertTrue(outcome["transcript"].startswith(str(self.root / "ws" / "rooms" / "alice")))
 
+    def test_a_room_command_is_recorded_as_one_run(self):
+        """/room in the chat loop: the room and its follow-up turn are one recorded run."""
+        from deep_agents_demo.config import ChatSettings, MemorySettings, Paths, Settings
+        from deep_agents_demo.persistence.runs import RunStore
+        from deep_agents_demo.startup import runtime as app
+        from deep_agents_demo.ui.cli.repl import run_chat
+        settings = Settings(chat=ChatSettings(api_key="unused", model="unused", base_url=None),
+                            memory=MemorySettings(enabled=False), rag_enabled=False,
+                            paths=Paths(data=self.root / "data", workspace=self.root / "ws",
+                                        checkpoints=self.root / "data" / "checkpoints.sqlite"))
+        model = Model(responses=[reply("first"), reply("NEXT: critic\nRisks?"), reply("One risk."),
+                                 reply("END\nAgreed: ship."), reply("done"), reply("done"), reply("done")])
+        with patch.object(app, "chat_model", return_value=model), patch("builtins.print"):
+            run_chat(settings, "alice", "c1", prompt="/room critic general-purpose -- Ship?",
+                     verbose=True)  # quiet runs keep no parts
+        store = RunStore(self.root / "data" / "runs.sqlite")
+        try:
+            listed = store.recent("alice")
+            self.assertEqual([(r.chat, r.prompt) for r in listed], [("c1", "/room Ship?")])
+            run = store.get("alice", listed[0].id)
+        finally:
+            store.close()
+        self.assertEqual(run.parts[0].kind, "room")
+
 
 def recorded_invokes(runner):
     """Every agent run the room makes: (thread id, text), in order (the real run still happens)."""
@@ -937,6 +961,61 @@ class ParallelOpeningTests(RoomBase):
                   if (isinstance(e, TextMessageContent) and "opening." in e.delta)
                   or (isinstance(e, NoticeEvent) and ("(opening)" in e.text or e.text == "late notice"))]
         self.assertEqual(leaked, [])
+
+    def test_a_second_ctrl_c_in_the_wave_says_how_many_requests_still_run(self):
+        from concurrent.futures import wait
+        from types import SimpleNamespace
+        from deep_agents_demo.models.events import NoticeEvent
+        runner, _ = self.opening_runner(("critic", "scout"))
+        tap = runner.sink = Tap(runner.sink)
+        started, gate = threading.Event(), threading.Event()
+        self.addCleanup(gate.set)  # the critic's run is let go, and finished, whatever the test does
+
+        class Held:
+            """The critic's graph: it runs until ``gate`` is set."""
+
+            def stream(self, *args, **kwargs):
+                started.set()
+                gate.wait(10)
+                return iter(())
+
+            def get_state(self, config):
+                return SimpleNamespace(values={})
+
+        real_make = runner.make
+
+        def make(name, extra=()):
+            return Held() if name == "critic" and extra else real_make(name, extra)  # the critic's opening
+        make.names, make.read_only = real_make.names, real_make.read_only
+        runner.make = make
+
+        def interrupt_while_critic_runs(futures):  # the second Ctrl+C, once only the critic's run is going
+            self.assertTrue(started.wait(5))
+            wait(futures[1:], timeout=5)  # the scout's opening is over
+            raise KeyboardInterrupt
+        runner._wait = interrupt_while_critic_runs
+        outcome = self.room(runner, participants=("critic", "scout"))
+        self.assertEqual(outcome["ended_by"], "stopped")
+        stops = [e.text for e in tap.events if isinstance(e, NoticeEvent) and "Stopped" in e.text]
+        self.assertEqual(stops, ["[room] Stopped. 1 request(s) still running were abandoned."])
+
+    def test_an_error_in_the_wave_still_shuts_its_pool_down(self):
+        from concurrent.futures import wait
+        threads_before = set(threading.enumerate())
+        runner, _ = self.opening_runner(("critic", "scout"))
+
+        def broken(futures):  # both openings finish, then the wave itself fails
+            wait(futures, timeout=5)
+            raise RuntimeError("the wave broke")
+        runner._wait = broken
+        with self.assertRaises(RuntimeError):
+            self.room(runner, participants=("critic", "scout"))
+        pool_threads = [t for t in threading.enumerate()
+                        if t not in threads_before and t.name.startswith("dad-pool")]
+        self.assertTrue(pool_threads)
+        for thread in pool_threads:
+            thread.join(5)
+        self.assertEqual([t.name for t in pool_threads if t.is_alive()], [])
 
     def test_a_read_only_opening_is_refused_an_approval_without_asking(self):
         from deep_agents_demo.core.feature import Feature

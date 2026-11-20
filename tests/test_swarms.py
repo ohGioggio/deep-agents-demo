@@ -527,8 +527,39 @@ class CtrlC(SwarmBase):
                 _thread.interrupt_main()
         self.presser(second_press)
         runner.run(request("a", "b", "c"))
-        self.assertIn("[swarm] Stopped. 2 request(s) still running will finish in the background; "
-                      "quitting the chat waits for them.", ui.lines)
+        self.assertIn("[swarm] Stopped. 2 request(s) still running were abandoned.", ui.lines)
+
+    def test_second_press_leaves_the_blocked_workers_on_daemon_threads(self):
+        runner, _ = self.swarm(self.make(model=Held(responses=[AIMessage(content="done")])), max_parallel=2)
+
+        def second_press():
+            if wait_for_running(2, cancel=self.cancel):
+                runner.stop()
+                _thread.interrupt_main()
+        self.presser(second_press)
+        runner.run(request("a", "b", "c"))
+        blocked = [t for t in threading.enumerate()
+                   if t not in self.threads_before and t.name.startswith("dad-pool") and t.is_alive()]
+        self.assertEqual(len(blocked), 2)  # the two workers still held: nothing waited for them
+        self.assertTrue(all(t.daemon for t in blocked))
+
+    def test_an_error_in_the_wave_still_shuts_its_pool_down(self):
+        from concurrent.futures import wait
+        threads_before = set(threading.enumerate())
+        runner, _ = self.swarm(self.make(), max_parallel=2)
+
+        def drive(pool, goal, total, queue, active):  # two quick workers finish, then the wave fails
+            wait([pool.submit(lambda: None) for _ in range(2)], timeout=5)
+            raise RuntimeError("the wave broke")
+        runner._drive = drive
+        with self.assertRaises(RuntimeError):
+            runner._wave("g", [], 0)
+        pool_threads = [t for t in threading.enumerate()
+                        if t not in threads_before and t.name.startswith("dad-pool")]
+        self.assertTrue(pool_threads)
+        for thread in pool_threads:
+            thread.join(5)
+        self.assertEqual([t.name for t in pool_threads if t.is_alive()], [])
 
     def test_second_press_during_the_merge_stops_and_finishes_its_step(self):
         sink = Collect()
