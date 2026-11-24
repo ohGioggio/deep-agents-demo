@@ -456,6 +456,8 @@ uv run deep-agents-demo --prompt "Search the documents for the default triangle 
 
 ## Long-term memory
 
+<p align="center"><a href="assets/memory.svg"><img src="assets/memory.svg" width="100%" alt="Long-term memory: you say I moved to Milan; the agent calls remember; the write policy refuses secrets; the decider sees the fact, your five closest memories ranked with BM25 and the last six messages, and returns an Operation (kind UPDATE, memory a1, text Lives in Milan). The four outcomes: added, updated, already known, or to forget, which the agent carries out with forget after your approval. Mem0 keeps one clean set of facts per user, and recall brings them back into each turn. In the live eval, clean sequences went from 38% with Mem0 add to 96% with remember."/></a></p>
+
 ```bash
 uv run deep-agents-demo --user alice --thread first
 ```
