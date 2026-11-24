@@ -53,13 +53,25 @@ def usage_counter() -> UsageCounter:
     return _USAGE
 
 
-def chat_model(settings: Settings, model: str | None = None) -> ChatOpenAI:
-    """The configured chat model, or another ``model`` id on the same endpoint and key."""
+def _client(settings: Settings, model: str, api_key, base_url) -> ChatOpenAI:
     # Shares the request cap with the embeddings; retries ride out transient errors, and the
     # timeout turns a hung request into one of them instead of a wait without end.
-    return ChatOpenAI(model=model or settings.chat.model, api_key=settings.chat.api_key,
-                      base_url=settings.chat.base_url,
+    return ChatOpenAI(model=model, api_key=api_key, base_url=base_url,
                       rate_limiter=rate_limiter(settings.requests_per_minute), max_retries=6,
                       timeout=settings.request_timeout,
                       stream_usage=True,  # token counts on streamed answers too
                       callbacks=[_USAGE])  # counted for the run store (persistence/runs.py)
+
+
+def chat_model(settings: Settings, model: str | None = None) -> ChatOpenAI:
+    """The configured chat model, or another ``model`` id on the same endpoint and key."""
+    return _client(settings, model or settings.chat.model, settings.chat.api_key,
+                   settings.chat.base_url)
+
+
+def memory_chat_model(settings: Settings) -> ChatOpenAI:
+    """The model that decides how a new memory changes the old ones (settings.memory).
+    Blank memory settings fall back to the chat model's."""
+    memory, chat = settings.memory, settings.chat
+    return _client(settings, memory.model or chat.model, memory.api_key or chat.api_key,
+                   memory.base_url or chat.base_url)

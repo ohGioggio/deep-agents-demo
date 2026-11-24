@@ -29,12 +29,13 @@ from deep_agents_demo.features.memory.feature import file_memory_feature, memory
 from deep_agents_demo.features.memory.service import (
     MemoryService,
 )
+from deep_agents_demo.features.memory.updates import MemoryDecider
 from deep_agents_demo.features.orchestration.feature import orchestration_feature
 from deep_agents_demo.features.skills.manager import SkillManager
 from deep_agents_demo.persistence.chats import Chats
 from deep_agents_demo.persistence.outputs import OutputStore
 from deep_agents_demo.persistence.runs import RunStore
-from deep_agents_demo.providers.chat import chat_model
+from deep_agents_demo.providers.chat import chat_model, memory_chat_model
 from deep_agents_demo.startup.resources import Resources
 
 
@@ -109,7 +110,9 @@ def features(resources: Resources, user: str, skills=None, guardrails=None, agen
         yield agents.feature()
     yield orchestration_feature()  # run_plan: subagent-driven execution with review
     if resources.memory is not None:
-        service = MemoryService(resources.memory, user)  # this user's id, on the shared store
+        decider = MemoryDecider(memory_chat_model(settings))  # how a new fact changes memories
+        # this user's id, on the shared store
+        service = MemoryService(resources.memory, user, decider=decider)
         if guardrails is not None:
             guardrails.describe_memory = service.describe  # show what `forget` would remove
         yield memory_feature(service, settings.memory.recall_mode)

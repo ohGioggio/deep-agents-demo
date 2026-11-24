@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from deep_agents_demo.core.secrets import find_secrets, redact
+from deep_agents_demo.features.memory.updates import MemoryDecider, rank_candidates
 from deep_agents_demo.providers.embeddings import Mem0EmbeddingAdapter
 
 
@@ -75,6 +76,8 @@ def close_memory(memory):
 
 
 RECALL_TOP_K = 5
+ALL_MEMORIES_LIMIT = 10_000  # see MemoryService._every_memory
+NEW_TEXT_REFUSED = "refused: the new text looks like a secret"
 
 
 def _results(response):
@@ -104,8 +107,9 @@ class MemoryService:
     Results are plain dicts, ready to serialize for a tool.
     """
 
-    def __init__(self, memory, user_id: str, policy: WritePolicy = WritePolicy()):
-        self.memory, self.user_id, self.policy = memory, user_id, policy
+    def __init__(self, memory, user_id: str, policy: WritePolicy = WritePolicy(),
+                 decider: MemoryDecider | None = None):
+        self.memory, self.user_id, self.policy, self.decider = memory, user_id, policy, decider
 
     def _shown(self, item) -> dict:
         """A memory as shown to the model: id, redacted text, and score if present."""
@@ -114,20 +118,88 @@ class MemoryService:
             shown["score"] = round(float(item["score"]), 3)
         return shown
 
-    def remember(self, fact: str) -> dict:
+    def remember(self, fact: str, recent: list[str] | tuple = ()) -> dict:
+        """Store ``fact``, or let the decider say how it changes what is remembered.
+
+        Without a decider the fact is added as given. With one, the decider picks add,
+        update, nothing, or delete; delete is never done here, only proposed for ``forget``.
+        Any failure to decide adds the fact and says so in ``note``.
+        """
         kinds = self.policy.find_secrets(fact)
         if kinds:
             return {"stored": False, "reason": "refused: looks like a secret", "detected": kinds,
                     "advice": "Secrets are never stored in memory. Tell the user to keep "
                               "them in a password manager or environment variables."}
-        stored = _results(self.memory.add([{"role": "user", "content": fact}], user_id=self.user_id))
+        if self.decider is None:
+            return self._add(fact, reason="stored as given")
+        memories = self._every_memory()  # redacted: the decider never sees a stored secret
+        if not memories:
+            return self._add(fact, reason="no memories yet")
+        candidates = rank_candidates(fact, memories)  # ranks all of them, keeps the best 5
+        shown_recent = [self.policy.redact(text) for text in recent]
+        try:
+            operation = self.decider.decide(fact, shown_recent, candidates)
+        except Exception as error:
+            return self._add(fact, note=f"couldn't decide ({self.policy.redact(str(error))}); "
+                                        "added as a new memory")
+        reason = self.policy.redact(operation.reason)
+        if operation.kind == "ADD":
+            text = (operation.text or "").strip() or fact
+            if self.policy.find_secrets(text):
+                return {"stored": False, "reason": NEW_TEXT_REFUSED}
+            return self._add(text, reason=reason)
+        target = next((c for c in candidates if c["id"] == operation.memory_id), None)
+        if operation.kind == "NONE" and target is None:  # changes nothing: no id to protect
+            return {"stored": False, "action": "already known", "reason": reason}
+        if target is None:  # never act on an id the decider was not shown (or another user's)
+            return self._add(fact, note=f"couldn't decide (memory id {operation.memory_id!r} is not "
+                                        "among the candidates); added as a new memory")
+        if operation.kind == "NONE":
+            return {"stored": False, "action": "already known", "id": target["id"],
+                    "memory": target["memory"], "reason": reason}
+        if operation.kind == "DELETE":
+            return {"stored": False, "action": "to forget", "id": target["id"],
+                    "memory": target["memory"], "reason": reason,
+                    "advice": "Call forget with this id; the user approves the deletion."}
+        text = (operation.text or "").strip()
+        if not text:
+            return self._add(fact, reason=reason,
+                             note="couldn't decide (the update had no text); added as a new memory")
+        if self.policy.find_secrets(text):
+            return {"stored": False, "reason": NEW_TEXT_REFUSED}
+        try:
+            self.memory.update(target["id"], text)
+        except Exception as error:
+            return self._add(fact, reason=reason,
+                             note=f"couldn't update {target['id']} ({self.policy.redact(str(error))}); "
+                                  "added as a new memory")
+        return {"stored": True, "action": "updated", "id": target["id"], "before": target["memory"],
+                "after": text, "reason": reason}
+
+    def _every_memory(self) -> list[dict]:
+        """All of this user's memories, redacted, for ranking. Mem0 scrolls its index in storage
+        order, so a small limit can leave out the memory to update; ALL_MEMORIES_LIMIT is the
+        demo's ceiling per user (a larger store would need paging)."""
+        items = _results(self.memory.get_all(filters={"user_id": self.user_id},
+                                             top_k=ALL_MEMORIES_LIMIT))
+        return [self._shown(item) for item in items]
+
+    def _add(self, text: str, reason: str = "", note: str | None = None) -> dict:
+        """Add ``text`` as given, with no extraction by Mem0 (it would rewrite the user's words)."""
+        stored = _results(self.memory.add([{"role": "user", "content": text}],
+                                          user_id=self.user_id, infer=False))
         # Mem0 rewrites facts with an LLM; never keep a rewrite that looks secret.
         removed = [item["id"] for item in stored
                    if item.get("id") and self.policy.find_secrets(item.get("memory", ""))]
         for memory_id in removed:
             self.memory.delete(memory_id)
         kept = [self._shown(item) for item in stored if item.get("id") not in removed]
-        return {"stored": bool(kept), "results": kept, "removed_as_secret": len(removed)}
+        result = {"stored": bool(kept), "action": "added", "results": kept, "reason": reason,
+                  "removed_as_secret": len(removed)}
+        if note:  # a fallback: the user should know, e.g. to spot a duplicate in list_memories
+            result["note"] = (f"{note}. Tell the user, so they can check their memories with "
+                              "list_memories.")
+        return result
 
     def search(self, query: str, top_k: int = RECALL_TOP_K) -> list[dict]:
         hits = _results(self.memory.search(query, filters={"user_id": self.user_id}, top_k=top_k))
