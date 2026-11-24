@@ -195,7 +195,7 @@ your shell take precedence.
 | `API_REQUESTS_PER_MINUTE` | no cap | Total requests per minute across chat and embeddings; set `40` for NVIDIA's free tier |
 | `API_TIMEOUT_SECONDS` | `120` | Seconds a chat request may take before it is retried (up to 6 times), so a hung request can't stall a chat or an eval |
 | `MEMORY_ENABLED` | `true` | Enable Mem0 long-term memory |
-| `MEMORY_MODEL` / `MEMORY_API_KEY` / `MEMORY_BASE_URL` | agent settings | Model used to extract memories |
+| `MEMORY_MODEL` / `MEMORY_API_KEY` / `MEMORY_BASE_URL` | agent settings | Model that decides how a new memory changes the saved ones (add, update, nothing or forget) |
 | `MEMORY_RECALL` | `auto` | `auto`, `tool` or `both`: how memories reach the agent ([details](#long-term-memory)) |
 | `FILE_OUTPUT` | `auto` | `auto`, `always` or `never`: deliver documents and data as files ([details](#files-the-agent-delivers)) |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model for memory and RAG |
@@ -472,7 +472,7 @@ The agent manages memories with four tools, all bound to the current `--user`:
 
 | Tool | What it does |
 | --- | --- |
-| `remember` | Saves a fact, only when you ask. Refuses secrets (see below) |
+| `remember` | Saves a fact, only when you ask. Refuses secrets (see below). Updates, skips or proposes forgetting a memory that already covers it (see below) |
 | `recall` | Searches your memories (only when `MEMORY_RECALL` is `tool` or `both`; in `auto` they arrive automatically) |
 | `list_memories` | Shows everything remembered about you, with ids. Try `What do you remember about me?` |
 | `forget` | Deletes one memory by id. Try `Forget that I like red cars.` |
@@ -498,6 +498,24 @@ reaches Mem0's extraction model or its history database. As a second check, any
 memory Mem0 rewrites into something secret-looking is deleted straight away, and
 memories shown by `recall`, `list_memories` or automatic recall are redacted, in
 case an older one slipped through. The detector errs on the side of refusing.
+
+**How a write is decided.** Mem0 no longer rewrites what you say: `remember`
+stores the fact as given. Before storing, it looks up the five saved memories
+most similar to the new fact (BM25 keyword match, from `rank-bm25` through
+`langchain-community`) and the last six chat messages, both with secrets
+redacted, and asks the `MEMORY_MODEL` for one of four decisions:
+
+- **added**: the fact is new. Stored as given.
+- **updated**: the fact changes a saved memory (`Lives in Milan` replaces
+  `Lives in Rome`). The reply shows the memory before and after.
+- **already known**: a saved memory already says it. Nothing is stored.
+- **to forget**: the user retracted a memory. Nothing is deleted here; the agent
+  calls `forget` with its id and you approve the deletion.
+
+The decider may only name a memory it was shown; any other id adds the fact
+instead. If the decision fails, the fact is added and the reply says why. With
+no saved memories yet, the model isn't asked at all. How well this works is
+measured in [Evaluating memory updates](#evaluating-memory-updates).
 
 - **Per user, across threads.** The same user and thread also resume the
   conversation history.
@@ -1270,6 +1288,54 @@ November 2026):
   many memories, automatic recall injects more text per turn. In the secret
   test the model refused on its own and never called `remember`, so the
   policy's own refusal is covered by the unit tests rather than this eval.
+
+## Evaluating memory updates
+
+```bash
+uv run python evals/memory_updates.py                          # both parts, one run
+uv run python evals/memory_updates.py --runs 3 --parts decision
+```
+
+A live eval of the write decision (paid calls, temporary memory stores; your
+real memories are never touched). It has two parts:
+
+- **Decision:** 22 scenarios, each with saved memories, recent messages, a new
+  fact and the expected answer: a changed fact (UPDATE), a repeat in other
+  words (NONE), something new (ADD), a retraction (DELETE), and traps such as
+  a similar but different fact, or a fact about someone else, which must be
+  added. Scored on the kind and, for UPDATE and DELETE, the memory named.
+- **Before and after on real Mem0:** 8 sequences of `remember` calls (a move,
+  a changed job, a retraction, repeats, ...) run through the old path (Mem0's
+  own `add` with extraction) and the new one. Each ends with an expected set
+  of memories; it counts stale ones (an old fact still there), missing and
+  extra ones, and time per write.
+
+**Results** (3 runs, `nvidia/nemotron-3.5-super-vl-120b-a12b` for both chat and
+memory, November 2026):
+
+| | Kind right | Memory named right | Clean sequences | Stale / sequence | Extra / sequence | Seconds / write p50 | p95 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Decision (22 scenarios) | 98% (95–100%) | 100% | | | | | |
+| Old path: Mem0 `add` | | | 38% | 0.6 | 0.8 | 25.7 | 261.9 |
+| New path: `remember` | | | 96% (88–100%) | 0 | 0.0 (0–0.1) | 10.5 | 44.6 |
+
+- **The old path never updates.** In every sequence where a fact changed (a
+  move, a new job, a new favourite colour, a retraction), the old memory stayed
+  next to the new one, every run. It was clean only where nothing changed.
+- **The new path left no stale memory** in any run. One miss in 66 decisions:
+  "I gave Miso away, so I no longer have a cat" was once an UPDATE instead of a
+  DELETE. One sequence in 24 (a retraction) kept one extra memory.
+- **It is faster too:** one structured call (about 250 input and 280 output
+  tokens per write) instead of Mem0's extraction. The model reasons, so a call
+  still takes 4–60 s. The old path's p95 includes one write that took 12
+  minutes (a provider stall).
+- **A bug the eval found:** the model sometimes answered "already known" without
+  naming the memory, and the fallback then added a duplicate. Now an "already
+  known" answer stores nothing, named or not; the prompt asks for the id.
+- **Caveats:** one model and small sequences. Mem0's own calls in the old path
+  are not counted in tokens. BM25 matches words, so a paraphrase with no word
+  in common ("moved to Milan" against "lives in Rome") relies on the other top
+  candidates; with few memories, all are shown.
 
 ## Evaluating orchestration: one agent or a room
 
