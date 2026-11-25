@@ -1,7 +1,4 @@
-"""Memory updates: the operation model, BM25 candidate ranking and the decider."""
-import itertools
-import subprocess
-import sys
+"""Memory updates: the operation model and the decider."""
 import unittest
 
 import pydantic
@@ -9,10 +6,8 @@ from langchain_core.runnables import RunnableLambda
 
 from deep_agents_demo.features.memory.updates import (
     DECISION_PROMPT,
-    UPDATE_CANDIDATES,
     MemoryDecider,
     Operation,
-    rank_candidates,
 )
 
 
@@ -29,72 +24,6 @@ class FakeDecisionModel:
             return self.answer
 
         return RunnableLambda(respond)
-
-
-class RankCandidatesTests(unittest.TestCase):
-    def test_the_memory_about_the_same_thing_ranks_first(self):
-        memories = [
-            {"id": "1", "memory": "Lives in Rome"},
-            {"id": "2", "memory": "Likes green tea"},
-            {"id": "3", "memory": "Has a dog named Rex"},
-        ]
-        ranked = rank_candidates("Now lives in Milan, not Rome", memories)
-        self.assertEqual(ranked[0]["id"], "1")
-
-    def test_case_and_punctuation_do_not_hide_a_match(self):
-        memories = [
-            {"id": "1", "memory": "Lives in Rome."},
-            {"id": "2", "memory": "Likes green tea"},
-            {"id": "3", "memory": "Has a dog named Rex"},
-        ]
-        for order in itertools.permutations(memories):  # a tie must never decide it
-            with self.subTest(order=[m["id"] for m in order]):
-                ranked = rank_candidates("Moved away from rome", list(order))
-                self.assertEqual(ranked[0]["id"], "1")
-
-    def test_composed_and_decomposed_accents_match(self):
-        memories = [{"id": "1", "memory": "Favourite place: Café Nero"},
-                    {"id": "2", "memory": "Likes green tea"},
-                    {"id": "3", "memory": "Has a dog named Rex"}]
-        for order in itertools.permutations(memories):
-            with self.subTest(order=[m["id"] for m in order]):
-                ranked = rank_candidates("no longer goes to café", list(order))
-                self.assertEqual(ranked[0]["id"], "1")
-
-    def test_the_rank_module_import_does_not_load_langchain_community(self):
-        code = (
-            "import sys\n"
-            "import deep_agents_demo.features.memory.updates\n"
-            "print('langchain_community' in sys.modules)\n"
-        )
-        result = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, check=True
-        )
-        self.assertEqual(result.stdout.strip(), "False")
-
-    def test_ranking_prints_no_langchain_community_sunset_warning(self):
-        code = (
-            "import warnings\n"
-            "warnings.simplefilter('always')\n"
-            "from deep_agents_demo.features.memory.updates import rank_candidates\n"
-            "rank_candidates('x', [{'id': '1', 'memory': 'y'}])\n"
-        )
-        result = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, check=True
-        )
-        self.assertNotIn("sunset", result.stderr)
-
-    def test_at_most_k_candidates_and_none_without_memories(self):
-        memories = [{"id": str(i), "memory": f"Fact number {i} about hobbies"} for i in range(8)]
-        self.assertEqual(len(rank_candidates("hobbies", memories, k=5)), 5)
-        self.assertEqual(UPDATE_CANDIDATES, 5)
-        self.assertEqual(rank_candidates("x", []), [])
-
-    def test_one_memory_or_a_punctuation_fact_still_ranks(self):
-        one = [{"id": "1", "memory": "Lives in Rome"}]
-        self.assertEqual(rank_candidates("Lives in Milan", one), one)
-        three = [{"id": str(i), "memory": f"Fact {i}"} for i in range(3)]
-        self.assertLessEqual(len(rank_candidates("?!", three)), 3)
 
 
 class OperationTests(unittest.TestCase):

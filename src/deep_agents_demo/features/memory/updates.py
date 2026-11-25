@@ -1,7 +1,4 @@
 """Deciding how a new fact changes what is already remembered: add, update, delete or nothing."""
-import re
-import unicodedata
-import warnings
 from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
@@ -41,37 +38,6 @@ class Operation(BaseModel):
     memory_id: str | None = None
     text: str | None = None
     reason: str = ""
-
-
-def _words(text: str) -> list[str]:
-    """Lowercase word tokens, so case, punctuation and how an accent is encoded (NFC or NFD)
-    do not block a match."""
-    return re.findall(r"\w+", unicodedata.normalize("NFC", text).lower())
-
-
-def _bm25_retriever():
-    """BM25Retriever, imported on first use: langchain_community is slow to import and noisy."""
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"`langchain-community` is being sunset",
-            category=DeprecationWarning,
-        )
-        from langchain_community.retrievers import BM25Retriever
-    return BM25Retriever
-
-
-def rank_candidates(fact: str, memories: list[dict], k: int = UPDATE_CANDIDATES) -> list[dict]:
-    """The at most ``k`` memories most similar to ``fact``, best first (BM25 over the memory texts)."""
-    if not memories:
-        return []
-    retriever = _bm25_retriever().from_texts(
-        [memory["memory"] for memory in memories],
-        metadatas=[{"id": memory["id"]} for memory in memories],
-        preprocess_func=_words,
-        k=k,
-    )
-    return [{"id": doc.metadata["id"], "memory": doc.page_content} for doc in retriever.invoke(fact)]
 
 
 class MemoryDecider:

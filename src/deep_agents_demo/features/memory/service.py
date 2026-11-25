@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from deep_agents_demo.core.secrets import find_secrets, redact
-from deep_agents_demo.features.memory.updates import MemoryDecider, rank_candidates
+from deep_agents_demo.features.memory.updates import UPDATE_CANDIDATES, MemoryDecider
 from deep_agents_demo.providers.embeddings import Mem0EmbeddingAdapter
 
 
@@ -76,8 +76,8 @@ def close_memory(memory):
 
 
 RECALL_TOP_K = 5
-ALL_MEMORIES_LIMIT = 10_000  # see MemoryService._every_memory
 NEW_TEXT_REFUSED = "refused: the new text looks like a secret"
+SAVED_DESPITE_ERROR = "Mem0 reported an error after saving the update; the memory has the new text"
 
 
 def _results(response):
@@ -132,10 +132,13 @@ class MemoryService:
                               "them in a password manager or environment variables."}
         if self.decider is None:
             return self._add(fact, reason="stored as given")
-        memories = self._every_memory()  # redacted: the decider never sees a stored secret
-        if not memories:
+        try:
+            candidates = self._candidates(fact)
+        except Exception as error:
+            return self._add(fact, note=f"couldn't decide ({self.policy.redact(str(error))}); "
+                                        "added as a new memory")
+        if not candidates:
             return self._add(fact, reason="no memories yet")
-        candidates = rank_candidates(fact, memories)  # ranks all of them, keeps the best 5
         shown_recent = [self.policy.redact(text) for text in recent]
         try:
             operation = self.decider.decide(fact, shown_recent, candidates)
@@ -167,35 +170,65 @@ class MemoryService:
                              note="couldn't decide (the update had no text); added as a new memory")
         if self.policy.find_secrets(text):
             return {"stored": False, "reason": NEW_TEXT_REFUSED}
+        updated = {"stored": True, "action": "updated", "id": target["id"], "before": target["memory"],
+                   "after": text, "reason": reason}
         try:
             self.memory.update(target["id"], text)
         except Exception as error:
+            if self._holds(target["id"], text):  # the write landed before the error
+                return {**updated, "note": SAVED_DESPITE_ERROR}
             return self._add(fact, reason=reason,
                              note=f"couldn't update {target['id']} ({self.policy.redact(str(error))}); "
                                   "added as a new memory")
-        return {"stored": True, "action": "updated", "id": target["id"], "before": target["memory"],
-                "after": text, "reason": reason}
+        return updated
 
-    def _every_memory(self) -> list[dict]:
-        """All of this user's memories, redacted, for ranking. Mem0 scrolls its index in storage
-        order, so a small limit can leave out the memory to update; ALL_MEMORIES_LIMIT is the
-        demo's ceiling per user (a larger store would need paging)."""
-        items = _results(self.memory.get_all(filters={"user_id": self.user_id},
-                                             top_k=ALL_MEMORIES_LIMIT))
-        return [self._shown(item) for item in items]
+    def _candidates(self, fact: str) -> list[dict]:
+        """This user's memories most similar to ``fact``, by Mem0 vector search: the best
+        UPDATE_CANDIDATES, redacted, as {"id", "memory"} only. Only a hit whose user_id is this
+        user's is kept: a hit without one is not provably theirs, so it is dropped too."""
+        hits = _results(self.memory.search(fact, filters={"user_id": self.user_id},
+                                           top_k=UPDATE_CANDIDATES, threshold=0.0))
+        candidates = []
+        for hit in hits:
+            if hit.get("user_id") != self.user_id:
+                continue
+            shown = self._shown(hit)
+            candidates.append({"id": shown["id"], "memory": shown["memory"]})
+        return candidates
+
+    def _holds(self, memory_id: str, text: str) -> bool:
+        """Whether this user's memory ``memory_id`` already reads ``text``, after a failed update."""
+        try:
+            item = self.memory.get(memory_id)
+        except Exception:
+            return False
+        return (isinstance(item, dict) and item.get("user_id") == self.user_id
+                and (item.get("memory") or "").strip() == (text or "").strip())
 
     def _add(self, text: str, reason: str = "", note: str | None = None) -> dict:
         """Add ``text`` as given, with no extraction by Mem0 (it would rewrite the user's words)."""
-        stored = _results(self.memory.add([{"role": "user", "content": text}],
-                                          user_id=self.user_id, infer=False))
+        try:
+            stored = _results(self.memory.add([{"role": "user", "content": text}],
+                                              user_id=self.user_id, infer=False))
+        except Exception as error:  # e.g. the embedding provider is down: report it, don't raise
+            return {"stored": False,
+                    "reason": f"couldn't store the memory ({self.policy.redact(str(error))})"}
         # Mem0 rewrites facts with an LLM; never keep a rewrite that looks secret.
         removed = [item["id"] for item in stored
                    if item.get("id") and self.policy.find_secrets(item.get("memory", ""))]
+        deleted, warnings = [], []
         for memory_id in removed:
-            self.memory.delete(memory_id)
-        kept = [self._shown(item) for item in stored if item.get("id") not in removed]
+            try:
+                self.memory.delete(memory_id)
+                deleted.append(memory_id)
+            except Exception as error:  # the rewrite stays stored: say so, with the id to forget
+                warnings.append(f"memory {memory_id} looks like a secret and could not be deleted "
+                                f"({self.policy.redact(str(error))}); call forget with this id")
+        kept = [self._shown(item) for item in stored if item.get("id") not in deleted]
         result = {"stored": bool(kept), "action": "added", "results": kept, "reason": reason,
-                  "removed_as_secret": len(removed)}
+                  "removed_as_secret": len(deleted)}
+        if warnings:
+            result["warning"] = "; ".join(warnings)
         if note:  # a fallback: the user should know, e.g. to spot a duplicate in list_memories
             result["note"] = (f"{note}. Tell the user, so they can check their memories with "
                               "list_memories.")

@@ -16,7 +16,7 @@ from deep_agents_demo.core.assembly import build_agent
 from deep_agents_demo.core.secrets import find_secrets, redact
 from deep_agents_demo.features.memory.feature import file_memory_feature, memory_feature
 from deep_agents_demo.features.memory.recall import AutoRecallMiddleware
-from deep_agents_demo.features.memory.service import MemoryService, WritePolicy
+from deep_agents_demo.features.memory.service import SAVED_DESPITE_ERROR, MemoryService, WritePolicy
 from deep_agents_demo.features.memory.tools import memory_tools
 from deep_agents_demo.features.memory.updates import Operation
 
@@ -25,12 +25,16 @@ HEADER = "## Recalled memories about this user"
 
 
 class FakeMemory:
-    """Just enough of mem0.Memory: per-user storage and word-overlap search."""
+    """Just enough of mem0.Memory: per-user storage and word-overlap search.
+
+    ``search_hits`` replaces the overlap search with fixed hits; ``search_error`` makes search raise.
+    Every search's arguments are recorded in ``search_kwargs``."""
 
     def __init__(self, rewrite=None):
         self.items, self.ids, self.rewrite = {}, itertools.count(1), rewrite
-        self.add_calls = self.search_calls = 0
+        self.add_calls = self.search_calls = self.get_all_calls = 0
         self.infers = []
+        self.search_kwargs, self.search_hits, self.search_error = [], None, None
 
     def seed(self, user_id, text):
         memory_id = f"m{next(self.ids)}"
@@ -45,14 +49,24 @@ class FakeMemory:
         memory_id = self.seed(user_id, text)
         return {"results": [{"id": memory_id, "memory": text, "event": "ADD"}]}
 
-    def search(self, query, filters, top_k):
+    def search(self, query, filters, top_k, threshold=None):
         self.search_calls += 1
+        self.search_kwargs.append({"filters": filters, "top_k": top_k, "threshold": threshold})
+        if self.search_error:
+            raise self.search_error
+        if self.search_hits is not None:
+            return {"results": self.search_hits}
+        # Overlapping words score 0.9, others 0.1; like Mem0, a threshold drops hits below it
+        # (no threshold: 0.5, so only overlapping hits; threshold=0.0: every memory, best first).
         words = set(query.lower().split())
-        hits = [dict(i, score=0.9) for i in self.items.values()
-                if i["user_id"] == filters["user_id"] and words & set(i["memory"].lower().split())]
+        hits = [dict(i, score=0.9 if words & set(i["memory"].lower().split()) else 0.1)
+                for i in self.items.values() if i["user_id"] == filters["user_id"]]
+        floor = 0.5 if threshold is None else threshold
+        hits = sorted((h for h in hits if h["score"] >= floor), key=lambda h: -h["score"])
         return {"results": hits[:top_k]}
 
     def get_all(self, filters, top_k):
+        self.get_all_calls += 1
         return {"results": [i for i in self.items.values() if i["user_id"] == filters["user_id"]][:top_k]}
 
     def get(self, memory_id):
@@ -263,6 +277,21 @@ class FakeDecider:
         return self.answer
 
 
+class RaisingUpdate(FakeMemory):
+    """update() raises after saving (as a timeout can); get() reads back what ``read_back`` returns."""
+
+    def __init__(self, read_back):
+        super().__init__()
+        self.read_back = read_back
+
+    def update(self, memory_id, data):
+        self.items[memory_id]["memory"] = data  # the write may land before the error
+        raise RuntimeError("timeout after write")
+
+    def get(self, memory_id):
+        return self.read_back(memory_id)
+
+
 class FakeRuntime:
     def __init__(self, state):
         self.state = state
@@ -406,16 +435,6 @@ class RememberDecisionTests(unittest.TestCase):
         self.assertEqual(result, {"stored": False, "reason": "refused: the new text looks like a secret"})
         self.assertEqual(self.mem.add_calls, 0)
 
-    def test_the_target_past_the_hundredth_memory_is_still_a_candidate(self):
-        for i in range(150):
-            self.mem.seed("alice", f"Fact number {i} about hobbies")
-        target = self.mem.seed("alice", "Lives in Rome")
-        decider = FakeDecider(Operation(kind="UPDATE", memory_id=target, text="Lives in Milan"))
-        result = self.service(decider).remember("Now lives in Milan")
-        self.assertIn(target, [c["id"] for c in decider.calls[0][2]])
-        self.assertEqual((result["action"], self.mem.items[target]["memory"]),
-                         ("updated", "Lives in Milan"))
-
     def test_a_failed_update_adds_the_fact_and_says_so(self):
         class FailingUpdate(FakeMemory):
             def update(self, memory_id, data):
@@ -431,6 +450,173 @@ class RememberDecisionTests(unittest.TestCase):
         self.assertIn("Tell the user", result["note"], "a fallback must reach the user, not only the agent")
         self.assertEqual(mem.infers, [False])
         self.assertEqual(mem.items[pine]["memory"], "Lives in Rome")
+
+    def test_candidates_come_from_search_for_this_user(self):
+        decider = FakeDecider(Operation(kind="NONE", memory_id=self.pine))
+        self.service(decider).remember("Resides in Rome")
+        self.assertEqual(self.mem.search_kwargs,
+                         [{"filters": {"user_id": "alice"}, "top_k": 5, "threshold": 0.0}])
+        self.assertEqual(self.mem.get_all_calls, 0)
+        self.assertEqual(decider.calls[0][2], [{"id": self.pine, "memory": "Lives in Rome"}])
+
+    def test_candidates_are_the_redacted_search_hits_without_scores(self):
+        self.mem.search_hits = [{"id": "h1", "memory": f"Key {KEY}", "user_id": "alice", "score": 0.8}]
+        decider = FakeDecider(Operation(kind="NONE", memory_id="h1"))
+        self.service(decider).remember("Resides in Rome")
+        self.assertEqual(decider.calls[0][2], [{"id": "h1", "memory": "Key [REDACTED]"}])
+        self.assertNotIn(KEY, json.dumps(decider.calls))
+
+    def test_no_search_hits_adds_without_asking(self):
+        self.mem.search_hits = []
+        decider = FakeDecider(Operation(kind="NONE", memory_id=self.pine))
+        result = self.service(decider).remember("Likes green tea")
+        self.assertEqual((result["action"], result["stored"]), ("added", True))
+        self.assertEqual(result["reason"], "no memories yet")
+        self.assertEqual(decider.calls, [])
+
+    def test_a_hit_for_another_user_is_never_a_candidate(self):
+        self.mem.search_hits = [
+            {"id": self.pine, "memory": "Lives in Rome", "user_id": "alice", "score": 0.9},
+            {"id": "x", "memory": "Lives in Oslo", "user_id": "someone-else", "score": 0.95},
+        ]
+        decider = FakeDecider(Operation(kind="NONE", memory_id=self.pine))
+        self.service(decider).remember("Resides in Rome")
+        self.assertEqual([c["id"] for c in decider.calls[0][2]], [self.pine])
+
+    def test_a_hit_without_a_user_id_is_never_a_candidate(self):
+        self.mem.search_hits = [
+            {"id": self.pine, "memory": "Lives in Rome", "user_id": "alice", "score": 0.9},
+            {"id": "y", "memory": "Likes tea", "score": 0.95},  # no user_id: not provably this user's
+        ]
+        decider = FakeDecider(Operation(kind="NONE", memory_id=self.pine))
+        self.service(decider).remember("Resides in Rome")
+        self.assertEqual([c["id"] for c in decider.calls[0][2]], [self.pine])
+
+    def test_a_failed_add_after_a_failed_search_reports_not_stored(self):
+        class FailingAdd(FakeMemory):
+            def add(self, messages, user_id, infer=True):
+                raise RuntimeError("embedder down")
+
+        mem = FailingAdd()
+        mem.seed("alice", "Lives in Rome")
+        mem.search_error = RuntimeError("search down")
+        decider = FakeDecider(Operation(kind="NONE", memory_id="x"))
+        result = self.service(decider, mem).remember("Likes green tea")
+        self.assertEqual(result, {"stored": False, "reason": "couldn't store the memory (embedder down)"})
+
+    def test_a_failed_add_without_a_decider_reports_not_stored(self):
+        class FailingAdd(FakeMemory):
+            def add(self, messages, user_id, infer=True):
+                raise RuntimeError("key sk-proj-abcDEF1234567890ghijKLMNOP rejected")
+
+        result = self.service(None, FailingAdd()).remember("Likes green tea")
+        self.assertEqual(result["stored"], False)
+        self.assertTrue(result["reason"].startswith("couldn't store the memory ("), result)
+        self.assertNotIn(KEY, result["reason"])
+
+    def test_search_failure_still_stores_the_fact(self):
+        self.mem.search_error = RuntimeError("embedder down")
+        decider = FakeDecider(Operation(kind="NONE", memory_id=self.pine))
+        result = self.service(decider).remember("Likes green tea")
+        self.assertEqual((result["action"], result["stored"]), ("added", True))
+        self.assertIn("couldn't decide", result["note"])
+        self.assertIn("embedder down", result["note"])
+        self.assertEqual(decider.calls, [])
+
+    def test_update_that_raised_but_saved_is_reported_updated(self):
+        mem = RaisingUpdate(read_back=lambda memory_id: {"id": memory_id, "memory": "Lives in Milan",
+                                                         "user_id": "alice"})
+        pine = mem.seed("alice", "Lives in Rome")
+        decider = FakeDecider(Operation(kind="UPDATE", memory_id=pine, text="Lives in Milan", reason="moved"))
+        result = self.service(decider, mem).remember("Now lives in Milan")
+        self.assertEqual((result["action"], result["stored"], result["id"]), ("updated", True, pine))
+        self.assertEqual((result["before"], result["after"]), ("Lives in Rome", "Lives in Milan"))
+        self.assertEqual(result["note"],
+                         "Mem0 reported an error after saving the update; the memory has the new text")
+        self.assertEqual(mem.add_calls, 0)
+
+    def test_update_that_raised_and_did_not_save_adds(self):
+        mem = RaisingUpdate(read_back=lambda memory_id: {"id": memory_id, "memory": "Lives in Rome",
+                                                         "user_id": "alice"})
+        pine = mem.seed("alice", "Lives in Rome")
+        decider = FakeDecider(Operation(kind="UPDATE", memory_id=pine, text="Lives in Milan"))
+        result = self.service(decider, mem).remember("Now lives in Milan")
+        self.assertEqual((result["action"], result["stored"]), ("added", True))
+        self.assertIn("note", result)
+        self.assertEqual(mem.add_calls, 1)
+
+    def test_update_that_raised_and_cannot_be_read_back_adds(self):
+        def unreadable(memory_id):
+            raise RuntimeError("store offline")
+
+        mem = RaisingUpdate(read_back=unreadable)
+        pine = mem.seed("alice", "Lives in Rome")
+        decider = FakeDecider(Operation(kind="UPDATE", memory_id=pine, text="Lives in Milan"))
+        result = self.service(decider, mem).remember("Now lives in Milan")
+        self.assertEqual((result["action"], result["stored"]), ("added", True))
+        self.assertIn("note", result)
+
+    def test_update_read_back_of_another_users_memory_adds(self):
+        mem = RaisingUpdate(read_back=lambda memory_id: {"id": memory_id, "memory": "Lives in Milan",
+                                                         "user_id": "someone-else"})
+        pine = mem.seed("alice", "Lives in Rome")
+        decider = FakeDecider(Operation(kind="UPDATE", memory_id=pine, text="Lives in Milan"))
+        result = self.service(decider, mem).remember("Now lives in Milan")
+        self.assertEqual((result["action"], result["stored"]), ("added", True))
+        self.assertEqual(mem.add_calls, 1)
+
+    def test_update_read_back_with_surrounding_whitespace_counts_as_saved(self):
+        mem = RaisingUpdate(read_back=lambda memory_id: {"id": memory_id, "memory": "  Lives in Milan \n",
+                                                         "user_id": "alice"})
+        pine = mem.seed("alice", "Lives in Rome")
+        decider = FakeDecider(Operation(kind="UPDATE", memory_id=pine, text="Lives in Milan", reason="moved"))
+        result = self.service(decider, mem).remember("Now lives in Milan")
+        self.assertEqual((result["action"], result["stored"], result["id"]), ("updated", True, pine))
+        self.assertEqual(result["note"], SAVED_DESPITE_ERROR)
+        self.assertEqual(mem.add_calls, 0)
+
+    def test_update_read_back_that_is_missing_adds(self):
+        mem = RaisingUpdate(read_back=lambda memory_id: None)
+        pine = mem.seed("alice", "Lives in Rome")
+        decider = FakeDecider(Operation(kind="UPDATE", memory_id=pine, text="Lives in Milan"))
+        result = self.service(decider, mem).remember("Now lives in Milan")
+        self.assertEqual((result["action"], result["stored"]), ("added", True))
+        self.assertIn("note", result)
+        self.assertEqual(mem.add_calls, 1)
+
+    def test_a_secret_rewrite_that_cannot_be_deleted_is_reported_not_raised(self):
+        class StuckDelete(FakeMemory):
+            def delete(self, memory_id):
+                raise RuntimeError(f"database locked, key {KEY}")
+
+        mem = StuckDelete(rewrite=lambda text: f"Key is {KEY}")
+        result = self.service(None, mem).remember("Likes green tea")
+        memory_id = result["results"][0]["id"]
+        self.assertEqual(result["stored"], True)
+        self.assertEqual(result["removed_as_secret"], 0)
+        self.assertEqual(result["warning"],
+                         f"memory {memory_id} looks like a secret and could not be deleted "
+                         "(database locked, key [REDACTED]); call forget with this id")
+        self.assertNotIn(KEY, json.dumps(result))
+
+    def test_several_secret_rewrites_that_cannot_be_deleted_are_joined_in_one_warning(self):
+        class StuckDelete(FakeMemory):
+            def add(self, messages, user_id, infer=True):
+                self.add_calls += 1
+                self.infers.append(infer)
+                first, second = self.seed(user_id, f"Key is {KEY}"), self.seed(user_id, f"Password is hunter2 {KEY}")
+                return {"results": [dict(self.items[first]), dict(self.items[second])]}
+
+            def delete(self, memory_id):
+                raise RuntimeError("locked")
+
+        result = self.service(None, StuckDelete()).remember("Likes green tea")
+        first, second = (item["id"] for item in result["results"])
+        self.assertEqual(result["warning"],
+                         f"memory {first} looks like a secret and could not be deleted (locked); "
+                         f"call forget with this id; memory {second} looks like a secret and could not be "
+                         "deleted (locked); call forget with this id")
+        self.assertEqual(result["removed_as_secret"], 0)
 
     def test_the_reason_is_redacted(self):
         decider = FakeDecider(Operation(kind="NONE", memory_id=self.pine, reason=f"same, key {KEY}"))
