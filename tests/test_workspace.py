@@ -1,13 +1,15 @@
 """Workspace seeding, skills and system prompt tests."""
+import hashlib
 import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import deep_agents_demo
 from deep_agents_demo.config import ChatSettings, Paths, Settings
 from deep_agents_demo.core.assembly import system_prompt
-from deep_agents_demo.startup.workspace import SEED_DIR, prepare_workspace, seed_files
+from deep_agents_demo.startup.workspace import SEED_DIR, SUPERSEDED, prepare_workspace, seed_files
 
 OLD_MEMORY = b"# User preferences\nUse metres. Prefer realistic assets.\n"
 
@@ -57,6 +59,31 @@ class SeedTests(unittest.TestCase):
 
 
 class SupersededSeedTests(unittest.TestCase):
+    def test_the_sandbox_skill_before_the_uv_recipe_is_superseded(self):
+        old_hash = "b1594318f20b0e848f21dc98edeaa7e09518960e7f248d67b7b23cc580642259"
+        self.assertIn(old_hash, SUPERSEDED["sandbox-skills/sandbox/SKILL.md"])
+
+    def test_unedited_sandbox_skill_from_before_the_uv_recipe_is_upgraded(self):
+        old = b"old skill text\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            target = workspace / "sandbox-skills/sandbox/SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(old)
+            hashes = {hashlib.sha256(old).hexdigest()}
+            with patch.dict(SUPERSEDED, {"sandbox-skills/sandbox/SKILL.md": hashes}):
+                seed_files(workspace)
+            self.assertEqual(target.read_bytes(), (SEED_DIR / "sandbox-skills/sandbox/SKILL.md").read_bytes())
+
+    def test_edited_sandbox_skill_is_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            target = workspace / "sandbox-skills/sandbox/SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"my own notes\n")
+            seed_files(workspace)
+            self.assertEqual(target.read_bytes(), b"my own notes\n")
+
     def test_unedited_old_seeds_are_upgraded_even_with_crlf(self):
         for content in (OLD_MEMORY, OLD_MEMORY.replace(b"\n", b"\r\n")):
             with tempfile.TemporaryDirectory() as tmp:
@@ -91,6 +118,13 @@ class SkillFormatTests(unittest.TestCase):
         for expected in ("uv venv", "uv pip install", "uv run --with", 'matplotlib.use("Agg")',
                          "openshell policy set"):
             self.assertIn(expected, text)
+
+    def test_sandbox_skill_recipe_is_idempotent(self):
+        text = (SEED_DIR / "sandbox-skills/sandbox/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("uv venv --allow-existing", text)
+        self.assertIn("uv run --with matplotlib", text)
+        self.assertNotIn("uv venv            # once", text)
+        self.assertIn("uv venv --allow-existing && uv pip install -r requirements.txt", text)
 
 
 def _tool(name):

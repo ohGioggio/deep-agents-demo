@@ -1,6 +1,7 @@
 """The engine's run, text, tool call and subagent events (alongside today's events)."""
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from test_orchestration import RunnerBase
 from test_rooms import RoomBase
 
 from deep_agents_demo.core.assembly import build_agent
-from deep_agents_demo.core.turns import _failed, run_turn, summarize_result
+from deep_agents_demo.core.turns import _failed, _Progress, run_turn, summarize_result
 from deep_agents_demo.features.guardrails.feature import Guardrails
 from deep_agents_demo.models.events import (
     ApprovalRequested,
@@ -519,6 +520,93 @@ class SummaryTests(unittest.TestCase):
         self.assertTrue(_failed("start_room", text))
         self.assertEqual(summarize_result("start_room", text), "no agent named 'a'; see list_agents (or /agents)")
         self.assertFalse(_failed("start_room", json.dumps({"summary": "agreed", "error": ""})))
+
+    def test_a_failed_command_is_an_error_with_its_exit_code(self):
+        text = "Traceback (most recent call last):\n  File \"x.py\"\n[Command failed with exit code 1]"
+        self.assertTrue(_failed("execute", text))
+        self.assertEqual(summarize_result("execute", text), "exit 1 · Traceback (most recent call last):")
+
+    def test_a_command_without_output_shows_only_its_exit_code(self):
+        self.assertEqual(summarize_result("execute", "[Command failed with exit code 127]"), "exit 127")
+
+    def test_a_successful_command_keeps_its_summary(self):
+        text = "3 packages installed\n[Command succeeded with exit code 0]"
+        self.assertFalse(_failed("execute", text))
+        self.assertEqual(summarize_result("execute", text), "3 packages installed")
+
+    def test_the_artifact_exit_code_decides_a_command(self):
+        self.assertTrue(_failed("execute", "boom", exit_code=2))
+        self.assertEqual(summarize_result("execute", "boom", exit_code=2), "exit 2 · boom")
+        self.assertFalse(_failed("execute", "[Command failed with exit code 1]", exit_code=0))
+
+    def test_a_failed_command_result_is_an_error_event(self):
+        from langchain_core.messages import ToolMessage
+        progress = _Progress("main")
+        progress.calls["e1"] = (progress.main, "execute", {"command": "x"}, time.monotonic())
+        events = []
+        message = ToolMessage(content="ModuleNotFoundError: no module\n[Command failed with exit code 1]",
+                              tool_call_id="e1", name="execute", artifact={"exit_code": 1})
+        progress.message((), message, "main", events.append)
+        [end] = events
+        self.assertEqual((end.status, end.summary), ("error", "exit 1 · ModuleNotFoundError: no module"))
+
+    def test_an_image_read_is_summarized_by_its_size(self):
+        from langchain_core.messages import ToolMessage
+        block = {"type": "image", "source_type": "base64", "data": "A" * 177920, "mime_type": "image/png"}
+        self.assertEqual(summarize_result("read_file", "", media=block), "image · 130.3 KB")
+        progress = _Progress("main")
+        progress.calls["r1"] = (progress.main, "read_file", {}, time.monotonic())
+        events = []
+        progress.message((), ToolMessage(content=[block], tool_call_id="r1", name="read_file"), "main", events.append)
+        [end] = events
+        self.assertEqual((end.status, end.summary), ("ok", "image · 130.3 KB"))
+
+    def test_an_image_without_data_is_just_image(self):
+        self.assertEqual(summarize_result("read_file", "", media={"type": "image_url", "image_url": {"url": "x"}}),
+                         "image")
+
+    def test_the_last_exit_marker_decides_a_command(self):
+        text = "[Command failed with exit code 1]\nok\n[Command succeeded with exit code 0]"
+        self.assertFalse(_failed("execute", text))
+        self.assertFalse(summarize_result("execute", text).startswith("exit"))
+        self.assertEqual(summarize_result("execute", text), "[Command failed with exit code 1]")
+
+    def test_a_negative_exit_code_is_a_failure(self):
+        self.assertTrue(_failed("execute", "[Command failed with exit code -9]"))
+        self.assertEqual(summarize_result("execute", "[Command failed with exit code -9]"), "exit -9")
+
+    def test_a_known_exit_code_decides_alone(self):
+        text = "Error handling demo\n[Command succeeded with exit code 0]"
+        self.assertFalse(_failed("execute", text))
+        self.assertEqual(summarize_result("execute", text), "Error handling demo")
+        self.assertFalse(_failed("execute", '{"error": "none"}', exit_code=0))
+        self.assertTrue(_failed("execute", "Error: boom"), "no exit code: the error heuristic still applies")
+
+    def test_a_successful_command_result_is_ok_even_if_it_starts_with_error(self):
+        from langchain_core.messages import ToolMessage
+        progress = _Progress("main")
+        progress.calls["e2"] = (progress.main, "execute", {"command": "x"}, time.monotonic())
+        events = []
+        message = ToolMessage(content="Error handling demo\n[Command succeeded with exit code 0]",
+                              tool_call_id="e2", name="execute", artifact={"exit_code": 0})
+        progress.message((), message, "main", events.append)
+        [end] = events
+        self.assertEqual((end.status, end.summary), ("ok", "Error handling demo"))
+
+    def test_a_pdf_read_is_summarized_as_a_file(self):
+        from langchain_core.messages import ToolMessage
+        block = {"type": "file", "base64": "A" * 177920, "mime_type": "application/pdf"}
+        self.assertEqual(summarize_result("read_file", "", media=block), "file (pdf) · 130.3 KB")
+        self.assertEqual(summarize_result("read_file", "", media={"type": "file", "mime_type": "application/pdf"}),
+                         "file (pdf)")
+        self.assertEqual(summarize_result("read_file", "", media={"type": "file"}), "file")
+        progress = _Progress("main")
+        progress.calls["p1"] = (progress.main, "read_file", {}, time.monotonic())
+        events = []
+        progress.message((), ToolMessage(content_blocks=[block], tool_call_id="p1", name="read_file"), "main",
+                         events.append)
+        [end] = events
+        self.assertEqual((end.status, end.summary), ("ok", "file (pdf) · 130.3 KB"))
 
     def test_a_rejection_shows_its_reason(self):
         reason = "Not shown to the user because it is invalid: agent 'x' already exists. Fix it."

@@ -115,22 +115,91 @@ def _json_error(content: str) -> str:
 _REJECTED = re.compile(r"^User rejected the tool call for `[^`]*` with reason:\s*")
 
 
-def _failed(name: str, content: str) -> bool:
+# How deepagents ends a command's output with its exit code (every marker, in order).
+_COMMAND_END = re.compile(r"\[Command (succeeded|failed) with exit code (-?\d+)\]")
+_TRAILING_END = re.compile(r"\s*\[Command (?:succeeded|failed) with exit code -?\d+\]\s*\Z")
+
+
+def _artifact_exit_code(message) -> int | None:
+    """The exit code an execute result's artifact carries, or None."""
+    artifact = getattr(message, "artifact", None)
+    code = artifact.get("exit_code") if isinstance(artifact, dict) else None
+    return code if isinstance(code, int) and not isinstance(code, bool) else None
+
+
+def _exit_code(content: str, exit_code: int | None) -> int | None:
+    """The exit code of a command: the artifact's when known, else the last marker in its text
+    (0 when that marker says it succeeded), else None."""
+    if exit_code is not None:
+        return exit_code
+    markers = _COMMAND_END.findall(content)
+    if not markers:
+        return None
+    outcome, code = markers[-1]
+    return 0 if outcome == "succeeded" else int(code)
+
+
+def _failed(name: str, content: str, exit_code: int | None = None) -> bool:
+    code = _exit_code(content, exit_code) if name == "execute" else None
+    if code is not None:  # a known exit code decides on its own
+        return code != 0
     return (content.startswith("Error") or bool(_json_error(content))
             or (name == "send_file" and content.startswith(_SEND_FILE_FAILURES)))
 
 
-def summarize_result(name: str, content: str) -> str:
-    """A tool result in a few words: "12 lines", "3 entries", "v2 · 4.2 KB", or its first line."""
+def _media_block(message):
+    """The media block (image or file) of a message whose content is a list (a read of
+    a binary file), or None."""
+    content = getattr(message, "content", None)
+    if not isinstance(content, list):
+        return None
+    return next((b for b in content if isinstance(b, dict)
+                 and b.get("type") in ("image", "image_url", "file")), None)
+
+
+def _media_summary(block) -> str:
+    """"image · 130.3 KB", "file (pdf) · 130.3 KB" (the size only when the block carries data)."""
+    data = _image_data(block)
+    size = f" · {_size(len(data) * 3 // 4)}" if data else ""
+    if block.get("type") != "file":
+        return f"image{size}"
+    mime = block.get("mime_type") or ""
+    if "/" not in mime:
+        return "file"
+    return f"file ({mime.split('/', 1)[1]}){size}"
+
+
+def _image_data(block) -> str:
+    """The base64 text of an image block (a data URL's payload too), or ""."""
+    url = block.get("image_url")
+    url = url.get("url") if isinstance(url, dict) else url
+    if isinstance(url, str) and url.startswith("data:") and "," in url:
+        return url.split(",", 1)[1]
+    data = block.get("base64") or block.get("data")
+    return data if isinstance(data, str) else ""
+
+
+def summarize_result(name: str, content: str, *, exit_code: int | None = None, media=None) -> str:
+    """A tool result in a few words: "12 lines", "3 entries", "v2 · 4.2 KB", "image · 130.3 KB",
+    "exit 1 · its first output line", or its first line. ``exit_code`` is an execute result's
+    artifact exit code; ``media`` is the image or file block of a read."""
     content = _REJECTED.sub("", content.strip())
     lines = content.splitlines()
     first = (lines[0] if lines else "")[:60]
-    error = _json_error(content)
-    if error:
-        return error.splitlines()[0][:60] if error.strip() else first
-    if _failed(name, content):
+    code = _exit_code(content, exit_code) if name == "execute" else None
+    if code:
+        body = _TRAILING_END.sub("", content)
+        output = next((line.strip() for line in body.splitlines() if line.strip()), "")
+        return f"exit {code} · {output[:50]}" if output else f"exit {code}"
+    if code is None:  # no exit code known: the generic error shapes
+        error = _json_error(content)
+        if error:
+            return error.splitlines()[0][:60] if error.strip() else first
+    if _failed(name, content, exit_code):
         return first
     if name == "read_file":
+        if media is not None:
+            return _media_summary(media)
         return f"{len(content.splitlines())} lines"
     if name in ("ls", "glob"):
         parsed = _parsed(content, ast.literal_eval)
@@ -256,7 +325,8 @@ class _Progress:
         run, name, _args, started = self.calls.pop(call_id, (None, message.name or "", {}, None))
         run = run or self.run_for(namespace, send)
         text = _text(message)
-        status = "error" if getattr(message, "status", None) == "error" or _failed(name, text) else "ok"
+        exit_code = _artifact_exit_code(message) if name == "execute" else None
+        status = "error" if getattr(message, "status", None) == "error" or _failed(name, text, exit_code) else "ok"
         if call_id in self.rejected:
             self.rejected.discard(call_id)
             status = "rejected"
@@ -267,7 +337,8 @@ class _Progress:
         else:  # a task whose subagent never showed itself
             run.pending_tasks[:] = [task for task in run.pending_tasks if task[0] != call_id]
         duration = time.monotonic() - started if started is not None else 0.0
-        send(ToolCallEnd(run.id, call_id, name, status, summarize_result(name, text), duration, text))
+        summary = summarize_result(name, text, exit_code=exit_code, media=_media_block(message))
+        send(ToolCallEnd(run.id, call_id, name, status, summary, duration, text))
 
     def _delegated(self, request):
         """(task call id, run, agent name) when the pause came from an agent a task call started

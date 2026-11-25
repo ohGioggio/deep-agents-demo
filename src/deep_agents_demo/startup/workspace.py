@@ -20,6 +20,8 @@ SUPERSEDED = {
     # ... and the version before it declared its tools (allowed-tools).
     "skills/scene-planning/SKILL.md": {"f3c5e9a23b13fb33bb9ad2a3dde67d6b8a4f3ef2df4c1c50b17048cd7492ae16",
                                        "e0169860721c38ec66e3bcba27f5f5f5e3a79196d3f15f49a58d45eb3548e2c6"},
+    # Sandbox skill before its idempotent uv recipe (uv venv --allow-existing).
+    "sandbox-skills/sandbox/SKILL.md": {"b1594318f20b0e848f21dc98edeaa7e09518960e7f248d67b7b23cc580642259"},
 }
 
 

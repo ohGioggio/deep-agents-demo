@@ -34,25 +34,30 @@ Only `uv` and Python may reach PyPI, and only Git may reach GitHub.
 
 `pip` is not installed and `pip install` will fail. Use `uv` instead:
 
-- **Reusable environment for a task** (preferred):
+- **One-off script or plot** (simplest; nothing to set up):
   ```bash
-  cd /sandbox && uv venv            # once; creates /sandbox/.venv
-  uv pip install matplotlib numpy   # installs into /sandbox/.venv
+  cd /sandbox && uv run --with matplotlib --with numpy python script.py
+  ```
+- **Reusable environment for a longer task:**
+  ```bash
+  cd /sandbox && uv venv --allow-existing   # safe to repeat; /sandbox/.venv may already exist
+  uv pip install matplotlib numpy           # installs into /sandbox/.venv
   .venv/bin/python script.py
   ```
-- **One-off script:** `uv run --with requests python script.py`
+  Reuse `/sandbox/.venv`; never delete it. It has no `pip` and no `uv` inside: install with
+  `uv pip install`, run with `.venv/bin/python`.
 - **A project with dependencies:** `uv init myproj && cd myproj && uv add rich`,
   then `uv run python main.py`.
 - **A cloned repository:** if it has `pyproject.toml`, run `uv sync`, then
   `uv run pytest` (or the project's own test command). If it only has
-  `requirements.txt`, run `uv venv && uv pip install -r requirements.txt`.
+  `requirements.txt`, run `uv venv --allow-existing && uv pip install -r requirements.txt`.
 
 Use the system Python 3.12. `uv python install` and Python downloads from
 GitHub releases are blocked, so do not request another Python version.
 
 ## Plots and images
 
-Install matplotlib with uv and use the non-interactive backend:
+Run the plot script with `uv run --with matplotlib python script.py`, and use the non-interactive backend:
 
 ```python
 import matplotlib
