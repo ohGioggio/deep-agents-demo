@@ -99,4 +99,10 @@ SEQUENCES = [
              [Expect(["cello"], []), Expect(["sister|sibling"], []), Expect(["violin"], [])]),
     Sequence("someone-else", ["I live in Rome.", "My brother lives in Berlin."],
              [Expect(["rome"], []), Expect(["brother|sibling", "berlin"], [])]),
+    Sequence("paraphrase-move", ["I like green tea.", "I have a dog named Rex.", "I play the piano.",
+                                 "I am allergic to peanuts.", "My favourite colour is blue.",
+                                 "I work as a nurse.", "I live in Rome.", "I relocated to Milan."],
+             [Expect(["tea"], []), Expect(["rex|dog"], []), Expect(["piano"], []),
+              Expect(["peanut|peanuts"], []), Expect(["blue"], []), Expect(["nurse"], []),
+              Expect(["milan|milano"], ["rome"])]),
 ]

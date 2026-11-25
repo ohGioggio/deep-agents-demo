@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "evals"))
 
-from deep_agents_demo.features.memory.updates import Operation, rank_candidates  # noqa: E402
+from deep_agents_demo.features.memory.updates import Operation  # noqa: E402
 import memory_updates as runner  # noqa: E402
 from memory_update_scenarios import DECISIONS, SEQUENCES, Decision, Expect, Sequence  # noqa: E402
 
@@ -46,6 +46,11 @@ class ScoreFinalTests(unittest.TestCase):
         self.sequence = Sequence("move", ["x"], [Expect(["milan"], ["rome"]),
                                                  Expect(["teach|teaches"], ["nurse"])])
 
+    def test_one_memory_cannot_meet_two_expects(self):
+        sequence = Sequence("merged", ["x"], [Expect(["tea"], []), Expect(["rex|dog"], [])])
+        self.assertEqual(runner.score_final(sequence, ["Has a dog named Rex and likes green tea"])["missing"], 1)
+        self.assertEqual(runner.score_final(sequence, ["Likes green tea", "Has a dog named Rex"])["missing"], 0)
+
     def test_a_stale_memory_is_counted(self):
         result = runner.score_final(self.sequence, ["Lives in Rome", "Teaches maths"])
         self.assertEqual(result["stale"], 1)
@@ -70,6 +75,10 @@ class ScoreFinalTests(unittest.TestCase):
         sequence = Sequence("two", ["x"], [Expect(["oat", "coffee"], [])])
         self.assertEqual(runner.score_final(sequence, ["Takes oat milk", "Likes coffee"])["missing"], 1)
         self.assertEqual(runner.score_final(sequence, ["Takes oat milk in coffee"])["missing"], 0)
+
+    def test_matching_is_maximal_not_greedy(self):
+        sequence = Sequence("two", ["x"], [Expect(["tea"], []), Expect(["tea", "rex"], [])])
+        self.assertEqual(runner.score_final(sequence, ["tea rex", "tea"])["missing"], 0)
 
     def test_an_alternative_in_must_meets_the_expect(self):
         sequence = Sequence("veg", ["x"], [Expect(["vegetarian|meat"], [])])
@@ -100,9 +109,44 @@ class ScoreFinalTests(unittest.TestCase):
     def test_a_memory_that_states_the_past_is_history_not_stale(self):
         sequence = Sequence("past", ["x"], [Expect(["rex|dog"], ["miso|cat", "rome"])])
         self.assertEqual(runner.score_final(sequence, ["Used to live in Rome", "Has a dog named Rex"])["stale"], 0)
-        self.assertEqual(runner.score_final(sequence, ["Gave Miso away", "Has a dog named Rex"])["stale"], 0)
+        self.assertEqual(runner.score_final(sequence, ["Gave away Miso", "Has a dog named Rex"])["stale"], 0)
         self.assertEqual(runner.score_final(sequence, ["Used to have a cat", "Has a dog named Rex"])["stale"], 0)
         self.assertEqual(runner.score_final(sequence, ["Lives in Rome", "Has a dog named Rex"])["stale"], 1)
+
+    def test_paraphrase_move_clean_final_scores_clean(self):
+        sequence = next(s for s in SEQUENCES if s.name == "paraphrase-move")
+        result = runner.score_final(sequence, ["Likes green tea", "Has a dog named Rex", "Plays the piano",
+                                               "Allergic to peanuts", "Favourite colour is blue",
+                                               "Works as a nurse", "Lives in Milan"])
+        self.assertEqual((result["stale"], result["missing"], result["extra"]), (0, 0, 0))
+
+    def test_gave_a_talk_is_not_history(self):
+        sequence = Sequence("talk", ["x"], [Expect(["rex|dog"], ["pycon", "cat"])])
+        self.assertEqual(runner.score_final(sequence, ["Gave a talk at PyCon", "Has a dog named Rex"])["stale"], 1)
+        self.assertEqual(runner.score_final(sequence, ["Gave away the cat", "Has a dog named Rex"])["stale"], 0)
+
+
+class DecisionPartTests(unittest.TestCase):
+    class Stub:
+        """A decider stand-in that records each call and always answers NONE."""
+        calls = []
+
+        def __init__(self, model):
+            pass
+
+        def decide(self, fact, recent, candidates):
+            DecisionPartTests.Stub.calls.append((fact, candidates))
+            return Operation(kind="NONE")
+
+    def test_decision_candidates_are_the_seeded_memories_in_order(self):
+        self.Stub.calls = []
+        with mock.patch.object(runner, "MemoryDecider", self.Stub):
+            runner.run_decisions(SimpleNamespace(callbacks=None), DECISIONS)
+        self.assertEqual(len(self.Stub.calls), len(DECISIONS))
+        for decision, (fact, candidates) in zip(DECISIONS, self.Stub.calls):
+            expected = [{"id": str(i), "memory": m} for i, m in enumerate(decision.memories)]
+            self.assertEqual(fact, decision.fact, decision.name)
+            self.assertEqual(candidates, expected, decision.name)
 
 
 class NearestRankTests(unittest.TestCase):
@@ -137,13 +181,22 @@ class ScenarioTests(unittest.TestCase):
             else:
                 self.assertIsNone(decision.target, decision.name)
 
-    def test_the_target_is_among_the_candidates_the_decider_sees(self):
+    def test_every_decision_scenario_has_at_most_five_memories(self):
         for decision in DECISIONS:
-            if decision.target is None:
-                continue
-            memories = [{"id": str(i), "memory": m} for i, m in enumerate(decision.memories)]
-            ids = [c["id"] for c in rank_candidates(decision.fact, memories)]
-            self.assertIn(str(decision.target), ids, decision.name)
+            self.assertLessEqual(len(decision.memories), 5, decision.name)
+
+    def test_paraphrase_move_sequence_exists(self):
+        by_name = {s.name: s for s in SEQUENCES}
+        self.assertIn("paraphrase-move", by_name)
+        sequence = by_name["paraphrase-move"]
+        self.assertEqual(sequence.facts[:6], ["I like green tea.", "I have a dog named Rex.", "I play the piano.",
+                                              "I am allergic to peanuts.", "My favourite colour is blue.",
+                                              "I work as a nurse."])
+        self.assertEqual(sequence.facts[6:], ["I live in Rome.", "I relocated to Milan."])
+        self.assertEqual(len(sequence.expected), 7)
+        self.assertEqual(sequence.expected[-1], Expect(["milan|milano"], ["rome"]))
+        after_rome = sequence.facts[sequence.facts.index("I live in Rome.") + 1:]
+        self.assertFalse(any("rome" in fact.lower() for fact in after_rome))
 
     def test_the_traps_are_there(self):
         names = {d.name for d in DECISIONS}

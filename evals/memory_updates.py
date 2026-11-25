@@ -38,13 +38,13 @@ sys.path.insert(0, str(ROOT / "evals"))
 from deep_agents_demo.config import Settings  # noqa: E402
 from deep_agents_demo.features.memory.service import close_memory, make_memory  # noqa: E402
 from deep_agents_demo.features.memory.updates import (  # noqa: E402
-    RECENT_MESSAGES, MemoryDecider, Operation, rank_candidates)
+    RECENT_MESSAGES, MemoryDecider, Operation)
 from orchestration_scoring import UsageCounter  # noqa: E402
 from memory_update_scenarios import DECISIONS, SEQUENCES, Decision, Expect, Sequence  # noqa: E402
 
 USER = "eval-user"
 # Words that say a memory is about the past (history), not a current fact.
-PAST = "used to|formerly|previously|no longer|moved from|gave away|gave|former|anymore"
+PAST = "used to|formerly|previously|no longer|moved from|gave away|former|anymore"
 NOTES = [
     "Old path: mem0's own model calls and tokens are not counted; its timing, errors and final memories are.",
     "New path: remember gets the sequence's previous facts (last 6) as recent messages.",
@@ -82,7 +82,9 @@ def score_final(sequence: Sequence, memories: list[str]) -> dict:
 
     stale: a memory with a must_not keyword of an expect, that matches none of that expect's
            must entries (so "Moved from Rome to Milan" is not stale).
-    missing: expected memories where no single memory meets the expect.
+    missing: expects left without a memory in a best one-to-one pairing (maximum matching): each expect
+           takes one memory that meets it, and a memory meets only one expect (a merged memory
+           cannot satisfy two).
     extra: memories beyond the number expected.
     """
     stale = 0
@@ -94,7 +96,20 @@ def score_final(sequence: Sequence, memories: list[str]) -> dict:
                     and not any(_has(keyword, memory) for keyword in expect.must):
                 stale += 1
                 break
-    missing = sum(not any(_meets(expect, memory) for memory in memories) for expect in sequence.expected)
+    owner: dict[int, int] = {}  # memory index -> the expect index holding it
+
+    def take(expect_index: int, seen: set[int]) -> bool:
+        """Augmenting path: give this expect a memory, moving earlier expects to others if needed."""
+        for index, memory in enumerate(memories):
+            if index in seen or not _meets(sequence.expected[expect_index], memory):
+                continue
+            seen.add(index)
+            if index not in owner or take(owner[index], seen):
+                owner[index] = expect_index
+                return True
+        return False
+
+    missing = sum(not take(i, set()) for i in range(len(sequence.expected)))
     expected = len(sequence.expected)
     return {"count": len(memories), "expected": expected, "extra": max(0, len(memories) - expected),
             "stale": stale, "missing": missing}
@@ -162,7 +177,7 @@ def run_decisions(model, decisions) -> dict:
     rows, errors = [], 0
     for decision in decisions:
         ids = [str(index) for index in range(len(decision.memories))]
-        candidates = rank_candidates(decision.fact, [{"id": i, "memory": m} for i, m in zip(ids, decision.memories)])
+        candidates = [{"id": i, "memory": m} for i, m in zip(ids, decision.memories)]
         try:
             op = decider.decide(decision.fact, decision.recent, candidates)
             score = score_decision(decision, op, ids)
