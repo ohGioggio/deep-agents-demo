@@ -1,10 +1,12 @@
 """Agents written through the chat: versioned store, planning and approval, marketplace."""
+import json
 import shutil
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from deepagents.backends import FilesystemBackend
@@ -191,6 +193,54 @@ class ManagerTests(Workspace):
         self.create()
         self.assertTrue(self.manager.changed)
 
+    def tool_map(self):
+        return {tool.__name__: tool for tool in self.manager.tools()}
+
+    def test_a_refused_create_settles_its_call_false_and_a_saved_one_true(self):
+        tools = self.tool_map()
+        refused = json.loads(tools["create_agent"]("critic", "d", "p", tools=["make_coffee"],
+                                                   runtime=SimpleNamespace(tool_call_id="c1")))
+        self.assertFalse(refused["saved"])
+        self.assertIs(self.manager.settled["c1"], False)
+        saved = json.loads(tools["create_agent"]("critic", "d", "p", runtime=SimpleNamespace(tool_call_id="c2")))
+        self.assertTrue(saved["saved"])
+        self.assertIs(self.manager.settled["c2"], True)
+        self.assertIs(self.manager.settled["c1"], False)
+
+    def test_a_create_whose_plan_raises_settles_false_and_still_raises(self):
+        tools = self.tool_map()
+        with patch.object(self.manager, "plan_create", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                tools["create_agent"]("critic", "d", "p", runtime=SimpleNamespace(tool_call_id="c1"))
+        self.assertIs(self.manager.settled["c1"], False)
+
+    def test_an_apply_that_raises_settles_false_and_still_raises(self):
+        tools = self.tool_map()
+        with patch.object(self.manager, "_apply", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                tools["install_agent"]("critic", runtime=SimpleNamespace(tool_call_id="c1"))
+        self.assertIs(self.manager.settled["c1"], False)
+
+    def test_install_and_import_settle_their_calls_too(self):
+        tools = self.tool_map()
+        tools["install_agent"]("nothing", runtime=SimpleNamespace(tool_call_id="i1"))
+        tools["import_agent"](str(self.root / "missing.md"), runtime=SimpleNamespace(tool_call_id="i2"))
+        self.assertEqual((self.manager.settled["i1"], self.manager.settled["i2"]), (False, False))
+
+    def test_nothing_is_recorded_without_a_runtime(self):
+        tools = self.tool_map()
+        tools["create_agent"]("critic", "d", "p", tools=["make_coffee"])
+        with patch.object(self.manager, "plan_create", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                tools["create_agent"]("critic", "d", "p")
+        self.assertEqual(self.manager.settled, {})
+
+    def test_the_runtime_is_hidden_from_the_models_schema(self):
+        from langchain_core.tools import StructuredTool
+        for name in ("create_agent", "install_agent", "import_agent"):
+            tool = StructuredTool.from_function(self.tool_map()[name])
+            self.assertNotIn("runtime", tool.tool_call_schema.model_json_schema()["properties"], name)
+
     def test_definitions_give_the_users_agents(self):
         self.create()
         installed, own, notes = self.manager.definitions()
@@ -299,6 +349,7 @@ class ToolTests(Workspace):
         self.assertIsNone(self.store.get("user", "alice", "helper"))
         self.run_turn(CREATE_HELPER, answers=["a"])
         self.assertIsNotNone(self.store.get("user", "alice", "helper"))
+        self.assertEqual(list(self.manager.settled.values()), [True])  # the real runtime gave the call id
 
     def test_prompt_routes_named_agents_to_themselves(self):
         """Live finding: right after creating 'tester', the model asked general-purpose to

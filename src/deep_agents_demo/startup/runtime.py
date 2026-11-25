@@ -58,21 +58,36 @@ class Runtime:
     outputs: object = None  # the OutputStore: files the agent delivered, for front ends to list
     lookup_tools: frozenset = frozenset()  # the enabled lookup tools (swarm workers may use them too)
     lock: object = field(default_factory=threading.RLock, repr=False, compare=False)  # one rebuild at a time
+    rebuild_failed: bool = field(default=False, repr=False, compare=False)  # the last rebuild raised
+    last_rebuild_error: str | None = field(default=None, repr=False, compare=False)  # its text, last warned
 
-    def refresh(self) -> bool:
+    def refresh(self, retry: bool = False) -> bool:
         """After an approved agent change, rebuild: a new agent is usable at once (task, rooms,
-        plans, swarms), a changed one from the next message. Parallel callers rebuild once."""
+        plans, swarms), a changed one from the next message. Parallel callers rebuild once.
+
+        A rebuild that raised is not repeated by the calls inside the same message (a ``task``
+        waiting for its agent polls this): it waits for a new approved change, or for ``retry``
+        (the REPL asks after each message)."""
         with self.lock:
-            if self.agent_manager is None or not self.agent_manager.changed or self.rebuild is None:
+            if self.agent_manager is None or self.rebuild is None:
+                return False
+            if not (self.agent_manager.changed or (retry and self.rebuild_failed)):
                 return False
             try:
                 self.agent, self.agents, self.make_worker = self.rebuild()
             except Exception as error:  # keep chatting with the agents that worked
-                self.say(f"Couldn't rebuild the agents ({error}); the previous ones stay in use. "
-                         "It will be tried again after your next message.")
+                self.rebuild_failed = True
+                self.agent_manager.changed = False  # held until a new change or the next message
+                text = str(error)
+                if text != self.last_rebuild_error:  # the same error again is not said again
+                    self.say(f"Couldn't rebuild the agents ({error}); the previous ones stay in use. "
+                             "It will be tried again after your next message.")
+                self.last_rebuild_error = text
                 return False
             self.chats.agent = self.agent
             self.agent_manager.changed = False
+            self.rebuild_failed = False
+            self.last_rebuild_error = None
             return True
 
 
@@ -167,7 +182,8 @@ def build_runtime(resources: Resources, user: str, notify=None) -> Runtime:
                       max_calls=settings.subagent_max_calls)
         agent = build_agent(chat_model(settings), saver, setup.backend, enabled,
                             max_parallel=settings.subagent_max_parallel,
-                            newest_workers=newest_workers, **shared)
+                            newest_workers=newest_workers,
+                            newest_settled=my_agents.settled.get, **shared)
         # Plan workers and reviewers: the same agents and limits, run by the chat loop.
         make = worker_factory(chat_model(settings), saver, setup.backend, enabled,
                               builtins=tuple(BUILTIN_AGENTS.values()), **shared)

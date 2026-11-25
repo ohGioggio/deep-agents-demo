@@ -11,6 +11,8 @@ import itertools
 import json
 from pathlib import Path
 
+from langchain.tools import ToolRuntime
+
 from deep_agents_demo.core.feature import Feature
 from deep_agents_demo.core.items import MARKETPLACE, USER, ItemChange, ItemManager
 from deep_agents_demo.core.secrets import find_secrets, split_findings
@@ -74,6 +76,10 @@ class AgentManager(ItemManager):
         self.changed = False  # set after an approved change; the runtime rebuilds and clears it
         self.registry = None  # the AgentRegistry in use, for list_agents (set by the runtime)
         self.refresh = None  # () -> rebuilds the agents if a change is waiting (set by the runtime)
+        # Tool call id -> whether that create, install or import saved its change (False: refused or
+        # raised), written when the call ends. A ``task`` in the same reply that waits for the agent
+        # reads it (core.delegation) to stop waiting once the creating call has settled.
+        self.settled: dict[str, bool] = {}
 
     # hooks ------------------------------------------------------------------------
     def validate(self, name, files) -> list[str]:
@@ -192,20 +198,31 @@ class AgentManager(ItemManager):
 
     # the agent's tools ----------------------------------------------------------------
     def tools(self):
-        def done(plan, *args, **kwargs):
-            # Plan and apply under one lock, so parallel calls see each other's results.
-            with self.lock:
-                return json.dumps(self._apply(plan(*args, **kwargs)), default=str)
+        def done(plan, *args, runtime=None, **kwargs):
+            # Plan and apply under one lock, so parallel calls see each other's results. The call's
+            # outcome (saved, refused, or raised) is recorded for a task waiting on it.
+            call_id = getattr(runtime, "tool_call_id", None)
+            saved = False
+            try:
+                with self.lock:
+                    change = plan(*args, **kwargs)
+                    result = self._apply(change)
+                    saved = bool(result["saved"])
+                    return json.dumps(result, default=str)
+            finally:
+                if call_id:
+                    with self.lock:
+                        self.settled[call_id] = saved
 
         def create_agent(name: str, description: str, prompt: str, tools: list[str] | None = None,
                          model: str | None = None, skills: list[str] | None = None,
-                         scope: str = "user") -> str:
+                         scope: str = "user", runtime: ToolRuntime = None) -> str:
             """Create a subagent (only when the user asks). name: letters, digits, '-' or '_'.
             description: what it does and when to use it. prompt: its instructions.
             tools: existing tool names it may use (omit for all tools). model: a model id
             (omit to use the configured model). skills: skill names to give it at start.
             scope: "user" (default) or "marketplace" (only if asked). Needs approval."""
-            return done(self.plan_create, name, description, prompt, tools, model, skills, scope)
+            return done(self.plan_create, name, description, prompt, tools, model, skills, scope, runtime=runtime)
 
         def update_agent(name: str, description: str | None = None, prompt: str | None = None,
                          tools: list[str] | None = None, model: str | None = None,
@@ -218,10 +235,10 @@ class AgentManager(ItemManager):
             """Remove a subagent (only when asked); its history is kept. Needs approval."""
             return done(self.plan_remove, name, scope)
 
-        def import_agent(path: str, scope: str = "user") -> str:
+        def import_agent(path: str, scope: str = "user", runtime: ToolRuntime = None) -> str:
             """Import one agent file (Claude Code format, e.g. from .claude/agents) on the
             user's machine (only when asked). Needs approval."""
-            return done(self.plan_import, path, scope)
+            return done(self.plan_import, path, scope, runtime=runtime)
 
         def restore_agent(name: str, version: int, scope: str = "user") -> str:
             """Restore an earlier version of a subagent (see agent_history). Needs approval."""
@@ -231,10 +248,10 @@ class AgentManager(ItemManager):
             """Publish one of the user's agents to the marketplace (only when asked). Needs approval."""
             return done(self.plan_publish, name)
 
-        def install_agent(name: str) -> str:
+        def install_agent(name: str, runtime: ToolRuntime = None) -> str:
             """Install a marketplace agent for this user (only when asked; see browse_agents).
             Needs approval."""
-            return done(self.plan_install, name)
+            return done(self.plan_install, name, runtime=runtime)
 
         def uninstall_agent(name: str) -> str:
             """Uninstall a marketplace agent for this user (only when asked). Needs approval."""

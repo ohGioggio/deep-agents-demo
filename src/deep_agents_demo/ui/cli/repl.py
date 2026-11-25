@@ -455,8 +455,9 @@ def run_chat(settings: Settings, user: str, thread: str, prompt: str | None = No
                         stream_turn(runtime.agent, session.content(line), session.config, reload_skills=True,
                                     approver=approver, runners=runners(), quiet=quiet, sink=sink)
                     # An approved agent change: available from the next message (a room or plan
-                    # in this message may have rebuilt the agents already).
-                    if runtime.refresh() or session.agents is not runtime.agents:
+                    # in this message may have rebuilt the agents already). A rebuild that failed
+                    # during the message is tried again here, once per message.
+                    if runtime.refresh(retry=True) or session.agents is not runtime.agents:
                         session.agents = runtime.agents
                         say("Agents updated.")
                     if prompt is not None:

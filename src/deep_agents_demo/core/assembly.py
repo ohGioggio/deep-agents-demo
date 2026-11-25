@@ -178,7 +178,8 @@ def _assemble(model, features, *, skills_prefix, disabled_tools, agents, model_f
 
 
 def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", disabled_tools=(),
-                agents=(), model_for=None, max_calls=25, max_parallel=3, newest_workers=None):
+                agents=(), model_for=None, max_calls=25, max_parallel=3, newest_workers=None,
+                newest_settled=None):
     """Assemble a deep agent from features.
 
     ``backend`` is where the file tools act (local files or a sandbox);
@@ -193,6 +194,9 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
     makes at most ``max_calls`` model calls per run, and at most ``max_parallel``
     subagents run at once. ``newest_workers()`` gives the newest worker factory (or None): a
     ``task`` for an agent made since the build runs from it (``core.delegation``).
+    ``newest_settled(call_id)`` says whether a tool call that creates an agent saved it (True), did not
+    (False) or still runs (None); a ``task`` waiting for an agent made in the same reply stops once
+    every creating call has settled (None: it waits out the full time).
     """
     a = _assemble(model, features, skills_prefix=skills_prefix, disabled_tools=disabled_tools,
                   agents=agents, model_for=model_for, max_calls=max_calls)
@@ -211,7 +215,8 @@ def build_agent(model, checkpointer, backend, features=(), *, skills_prefix="", 
         interrupt_on=a.interrupt_on or None,
         middleware=[TodoListMiddleware(), *(m for f in a.features for m in f.middleware),
                     ToolAccess(*a.access), TaskLimiter(max_parallel),
-                    *([NewAgentDelegation({spec["name"] for spec in a.subagents}, newest_workers)]
+                    *([NewAgentDelegation({spec["name"] for spec in a.subagents}, newest_workers,
+                                          newest_settled)]
                       if newest_workers is not None else [])],
         subagents=a.subagents,
         checkpointer=checkpointer,
