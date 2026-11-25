@@ -371,6 +371,16 @@ class SameReplyCreate(unittest.TestCase):
         timer.start()
         self.addCleanup(timer.cancel)
 
+    def saves_later(self, factory, settled, call_id, name="sweeper", after=0.1):
+        """A create that saves, in the app's order: the agent exists before its call is settled
+        (two separate timers raced on a slow runner and settled first)."""
+        def save():
+            factory.names = frozenset({*factory.names, name})
+            settled[call_id] = True
+        timer = threading.Timer(after, save)
+        timer.start()
+        self.addCleanup(timer.cancel)
+
     def test_a_sibling_create_settling_false_during_the_wait_ends_it_early(self):
         delegation.NEW_AGENT_WAIT = 5.0
         factory, settled = Factory({"helper"}), {}
@@ -393,8 +403,7 @@ class SameReplyCreate(unittest.TestCase):
 
     def test_one_refused_sibling_does_not_end_the_wait_of_one_that_saves(self):
         factory, settled = Factory({"helper"}), {"s0": False}
-        self.learns_later(factory)
-        self.settle_later(settled, "s1", True)
+        self.saves_later(factory, settled, "s1")
         request = same_reply(("create_agent", {"name": "sweeper"}), ("install_agent", {"name": "sweeper"}))
         result = NewAgentDelegation(set(), lambda: factory, settled.get).wrap_tool_call(request, self.handler)
         self.assertEqual(result.content, "done")
@@ -425,8 +434,7 @@ class SameReplyCreate(unittest.TestCase):
     def test_a_sibling_create_answered_by_a_tool_message_is_not_waited_on(self):
         delegation.NEW_AGENT_WAIT = 5.0
         factory, settled = Factory({"helper"}), {}
-        self.learns_later(factory)
-        self.settle_later(settled, "s1", True)
+        self.saves_later(factory, settled, "s1")
         request = same_reply(("create_agent", {"name": "sweeper"}), ("create_agent", {"name": "sweeper"}))
         request.state["messages"].append(ToolMessage(content="rejected", tool_call_id="s0", name="create_agent"))
         result = NewAgentDelegation(set(), lambda: factory, settled.get).wrap_tool_call(request, self.handler)
